@@ -1,0 +1,73 @@
+[project]
+name = "tepub"
+version = "0.2.0"
+description = "TEPUB - Tools for EPUB: A comprehensive toolkit for EPUB processing including translation, audiobook generation, and export"
+requires-python = ">=3.10"
+authors = [
+  { name = "Xiaolai" },
+]
+readme = "README.md"
+dependencies = [
+  "Pillow>=10.2",
+  "click>=8.1",
+  "ebooklib>=0.18",
+  "edge-tts>=6.1",
+  "langdetect>=1.0.9",
+  "lxml>=5.0",
+  "mutagen>=1.47",
+  "nltk>=3.9",
+  "openai>=1.0",
+  "portalocker>=3.0",
+  "pydantic>=2.6",
+  "pydub>=0.25",
+  "requests>=2.31",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=4.1",
+  "ruff>=0.5",
+  "black>=24.4",
+]
+
+[project.scripts]
+tepub = "cli.main:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+
+[tool.setuptools.package-data]
+web_templates = ["index.html", "assets/css/*.css", "assets/js/*.js"]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = "--cov=cli --cov=epub_io --cov=extraction --cov=translation --cov=injection --cov=state --cov-report=xml"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.black]
+target-version = ["py310"]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "UP", "B", "N"]
+ignore = ["E203"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+omit = [
+  "tests/*",
+]
