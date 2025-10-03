@@ -1,0 +1,369 @@
+# ============================================================
+# TEPUB Global Configuration (Example)
+# ============================================================
+# Welcome! This file shows you all the settings you can customize.
+#
+# To use this:
+# 1. Copy this file to ~/.tepub/config.yaml
+# 2. Uncomment the lines you want to change (remove the # at the start)
+# 3. Edit the values to match your preferences
+#
+# Per-book settings: Each book gets its own config.yaml in its workspace
+# folder (e.g., mybook/config.yaml) which overrides these global settings.
+
+# ============================================================
+# Where TEPUB Saves Files
+# ============================================================
+# TEPUB uses different directories for different purposes:
+#
+# 1. work_root: Global settings and cache (default: ~/.tepub/)
+#    Stores global config and temporary files used across all books
+#    Uncomment to change the global TEPUB directory:
+#    # work_root: ~/.config/tepub
+#
+# 2. work_dir: Per-book workspace (default: next to your EPUB file)
+#    By default, creates "mybook/" folder next to "mybook.epub"
+#    Uncomment to override and put ALL books in one location:
+#    # work_dir: ~/Documents/TEPUB
+#
+# 3. cache_dir: Temporary files (default: work_root/cache)
+#    Used for provider-specific caching and temporary processing
+#    Uncomment to customize:
+#    # cache_dir: /tmp/tepub-cache
+#
+# Most users don't need to change these - the defaults work well!
+
+# ============================================================
+# Translation Languages
+# ============================================================
+# What languages to translate between
+source_language: auto              # "auto" detects the language automatically
+target_language: Simplified Chinese
+
+# Common target languages:
+# - Simplified Chinese
+# - Traditional Chinese
+# - Spanish
+# - French
+# - German
+# - Japanese
+# - Korean
+# - Italian
+# - Portuguese
+# - Russian
+# - Arabic
+
+# ============================================================
+# Speed Settings (Parallel Processing)
+# ============================================================
+# How many sections to work on at the same time
+# More workers = faster but uses more API credits
+translation_workers: 3   # Default: 3 (good balance of speed and cost)
+audiobook_workers: 3     # Default: 3
+
+# Adjust based on your needs:
+# - 1 worker: Slowest, cheapest
+# - 3 workers: Good balance (recommended)
+# - 5+ workers: Fastest, most expensive
+
+# ============================================================
+# Output Format
+# ============================================================
+# Choose how you want your translated books
+output_mode: bilingual   # Options: bilingual, translated_only
+
+# - bilingual: Shows original and translation side-by-side
+#   (Great for language learning, larger file size)
+# - translated_only: Only the translation, looks like a native book
+#   (Smaller file size, can't compare with original)
+
+# ============================================================
+# Translation Service (AI Provider)
+# ============================================================
+# Which AI service to use for translation
+# Uncomment and edit the section for your preferred service
+
+# Option 1: OpenAI (ChatGPT) - Best quality, costs money
+# Recommended for most users
+primary_provider:
+  name: openai
+  model: gpt-4o              # Options: gpt-4o, gpt-4o-mini, gpt-4-turbo
+  # api_key: ${OPENAI_API_KEY}   # Reads from environment variable
+
+# Option 2: Anthropic (Claude) - Great for literature
+# anthropic_provider:
+#   name: anthropic
+#   model: claude-3-5-sonnet-20241022
+#   # api_key: ${ANTHROPIC_API_KEY}
+
+# Option 3: Google Gemini
+# gemini_provider:
+#   name: gemini
+#   model: gemini-1.5-flash
+#   # api_key: ${GEMINI_API_KEY}
+
+# Option 4: xAI Grok
+# grok_provider:
+#   name: grok
+#   model: grok-beta
+#   # api_key: ${GROK_API_KEY}
+
+# Option 5: DeepL - Translation specialist
+# Note: DeepL uses language codes like "ZH" instead of "Simplified Chinese"
+# deepl_provider:
+#   name: deepl
+#   # api_key: ${DEEPL_API_KEY}
+
+# Option 6: Ollama - Free, runs on your computer (no internet needed)
+fallback_provider:
+  name: ollama
+  model: qwen2.5:14b-instruct   # Good free model for translation
+  base_url: http://localhost:11434
+
+# ============================================================
+# Backup Service (Fallback Provider)
+# ============================================================
+# If your main service fails, TEPUB automatically switches to this one
+# Uncomment to set a backup:
+# fallback_provider:
+#   name: ollama
+#   model: qwen2.5:14b-instruct
+#   base_url: http://localhost:11434
+
+# ============================================================
+# Retry Settings
+# ============================================================
+# What to do if translation fails temporarily (network issues, etc.)
+# retry:
+#   max_attempts: 3          # Try up to 3 times before giving up
+#   backoff_seconds: 1.5     # Wait 1.5 seconds between retries
+#   jitter: 0.1              # Add random delay to avoid overwhelming server
+
+# ============================================================
+# Rate Limiting
+# ============================================================
+# Control how fast TEPUB sends requests to avoid hitting API limits
+# rate_limit:
+#   requests_per_minute: 60   # Maximum requests per minute
+#   concurrency: 1            # How many requests at the same time
+
+# ============================================================
+# Skip Rules - What NOT to Translate
+# ============================================================
+# Tell TEPUB which sections to skip (saves time and money)
+# These rules apply to ALL books. Add per-book rules in the book's config.yaml
+skip_rules:
+  # Common front matter (usually not needed)
+  - keyword: cover
+  - keyword: praise
+  - keyword: also by
+  - keyword: copyright
+  - keyword: dedication
+  - keyword: acknowledgment
+  - keyword: acknowledgement
+  - keyword: the author
+
+  # Common back matter (usually not needed)
+  - keyword: further reading
+  - keyword: photograph
+  - keyword: credit
+  - keyword: glossary
+  - keyword: bibliography
+  - keyword: notes
+  - keyword: endnote
+  - keyword: endnotes
+  - keyword: index
+  - keyword: appendix
+  - keyword: appendices
+  - keyword: afterword
+  - keyword: reference
+  - keyword: references
+
+# How skip rules work:
+# - Matches chapter/section titles (not case-sensitive)
+# - Example: "keyword: index" skips any chapter titled "Index"
+# - Add your own: - keyword: prologue
+
+# ============================================================
+# Smart Back Matter Skipping
+# ============================================================
+# Automatically skip everything after the index/bibliography
+# (These sections are usually at the end and don't need translation)
+skip_after_back_matter: true   # true = skip everything after back matter
+
+# What counts as "back matter" (triggers automatic skipping)
+back_matter_triggers:
+  - index
+  - notes
+  - endnotes
+  - bibliography
+  - references
+  - glossary
+
+# Only trigger in the last 30% of the book (0.7 = 70% through)
+back_matter_threshold: 0.7
+
+# Example: If a book has 20 chapters and "Index" appears as chapter 16
+# (which is 80% through), TEPUB will skip chapters 16-20 automatically.
+
+# ============================================================
+# Custom Translation Instructions (Advanced)
+# ============================================================
+# Customize how the AI translator works (optional, for advanced users)
+# By default, TEPUB uses this built-in prompt:
+#
+# DEFAULT:
+#   "You are an expert translator and always excellent at preserving fidelity.
+#    {language_instruction}
+#    {mode_instruction}
+#    Avoid repeating the source text or adding explanations unless strictly necessary."
+#
+# To customize, uncomment and edit the prompt_preamble below:
+
+# prompt_preamble: |
+#   You are an expert translator and always excellent at preserving fidelity.
+#   {language_instruction}
+#   {mode_instruction}
+#   Avoid repeating the source text or adding explanations unless strictly necessary.
+
+# Available placeholders (automatically filled in):
+# - {source_language}: Source language name (e.g., "English", "auto-detect")
+# - {target_language}: Target language name (e.g., "Simplified Chinese")
+# - {language_instruction}: Auto-generated based on source/target
+#   Examples:
+#   - "Translate from English into Simplified Chinese."
+#   - "Detect the source language automatically and translate it into Spanish."
+# - {mode_instruction}: Technical instructions based on content type
+#   - For HTML: "Preserve HTML structure in the translation."
+#   - For text: "Return a faithful translation of the prose without adding explanations."
+
+# Example customizations:
+#
+# For literary/fiction works (more expressive):
+# prompt_preamble: |
+#   You are a literary translator specializing in preserving artistic voice.
+#   {language_instruction}
+#   {mode_instruction}
+#   Maintain the author's style, tone, metaphors, and cultural nuances.
+#   Prioritize readability and emotional impact over literal accuracy.
+#
+# For academic/technical books (more precise):
+# prompt_preamble: |
+#   You are a scholarly translator with expertise in technical texts.
+#   {language_instruction}
+#   {mode_instruction}
+#   Preserve technical terminology, maintain formal tone, and ensure precision.
+#   Use consistent terminology throughout. Do not add interpretations.
+#
+# For casual/self-help books (more accessible):
+# prompt_preamble: |
+#   You are a translator who makes content accessible and engaging.
+#   {language_instruction}
+#   {mode_instruction}
+#   Use natural, conversational language appropriate for the target culture.
+#   Keep the friendly, approachable tone of the original.
+
+# ============================================================
+# Audiobook Settings
+# ============================================================
+# Settings for creating audiobooks from your books
+
+# --- TTS Provider ---
+# Choose which text-to-speech service to use
+audiobook_tts_provider: edge   # Options: edge, openai
+
+# Edge TTS (Microsoft) - FREE, NO API KEY NEEDED
+# - 57+ voices in multiple languages
+# - Good quality
+# - Default provider
+# audiobook_voice: en-US-GuyNeural      # Clear male voice
+# audiobook_voice: en-US-JennyNeural    # Warm female voice
+# audiobook_voice: en-US-AriaNeural     # Professional female voice
+# See all voices: edge-tts --list-voices
+
+# OpenAI TTS - PAID (~$15 per 1 million characters)
+# - Higher quality, more natural sounding
+# - Requires OPENAI_API_KEY environment variable
+# To use OpenAI TTS, uncomment these lines:
+# audiobook_tts_provider: openai
+# audiobook_tts_model: tts-1        # Options: tts-1 (cheaper), tts-1-hd (higher quality)
+# audiobook_tts_speed: 1.0          # Speed: 0.25-4.0 (1.0 = normal)
+#
+# OpenAI voices (uncomment ONE):
+# audiobook_voice: alloy            # Neutral, balanced
+# audiobook_voice: echo             # Male, authoritative
+# audiobook_voice: fable            # British, expressive
+# audiobook_voice: onyx             # Deep male, professional
+# audiobook_voice: nova             # Female, friendly
+# audiobook_voice: shimmer          # Female, warm
+
+# Cost comparison (300-page book ~750,000 characters):
+# - Edge TTS: $0 (free)
+# - OpenAI tts-1: ~$11.25
+# - OpenAI tts-1-hd: ~$22.50
+
+# Cover image for audiobooks (uncomment to set a default)
+# cover_image_path: ~/Pictures/default-audiobook-cover.jpg
+
+# Opening statement (spoken before the book starts)
+# audiobook_opening_statement: |
+#   This audiobook was generated using TEPUB and Microsoft Edge Text-to-Speech.
+#   Enjoy your listening experience.
+
+# Closing statement (spoken after the book ends)
+# audiobook_closing_statement: |
+#   Thank you for listening. This audiobook was generated by TEPUB.
+
+# ============================================================
+# Advanced: Custom File Selection
+# ============================================================
+# By default, TEPUB processes all files in your EPUB.
+# After running "tepub extract", you can edit the per-book config.yaml
+# to choose specific files to translate or include in audiobooks.
+
+# These settings are only used in per-book config files (not here):
+# translation_files:   # Only translate these files
+#   - Text/chapter-001.xhtml
+#   - Text/chapter-002.xhtml
+#   # - Text/appendix.xhtml    # Commented out = skipped
+#
+# audiobook_files:     # Only include these in audiobook
+#   - Text/chapter-001.xhtml
+#   - Text/chapter-002.xhtml
+#   # - Text/notes.xhtml       # Commented out = skipped
+
+# TEPUB automatically generates these lists during extraction
+# showing all files with skip reasons for excluded files.
+
+# ============================================================
+# Environment Variables (Alternative to .env file)
+# ============================================================
+# Instead of editing this file, you can set environment variables:
+#
+# API Keys:
+# export OPENAI_API_KEY="sk-..."
+# export ANTHROPIC_API_KEY="sk-ant-..."
+# export GEMINI_API_KEY="..."
+# export GROK_API_KEY="xai-..."
+# export DEEPL_API_KEY="..."
+#
+# Service URLs:
+# export OLLAMA_BASE_URL="http://localhost:11434"
+#
+# Directory Settings:
+# export TEPUB_WORK_ROOT="~/Documents/TEPUB"        # Global TEPUB directory
+# export TEPUB_CACHE_DIR="/tmp/tepub-cache"        # Cache directory
+#
+# Audiobook Settings:
+# export TEPUB_AUDIOBOOK_COVER_PATH="~/Pictures/cover.jpg"
+
+# ============================================================
+# Getting Help
+# ============================================================
+# Questions? Check the documentation:
+# - README.md for usage guide
+# - INSTALL.md for installation help
+# - CHANGELOG.md for what's new
+# - GitHub Issues: https://github.com/xiaolai/tepub/issues
+
+# Happy translating! 📚🌍🎧

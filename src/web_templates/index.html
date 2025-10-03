@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TEPUB Web Export</title>
+    <link rel="stylesheet" href="assets/css/app.css" />
+    <script defer src="assets/js/app.js"></script>
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="title" id="book-title">TEPUB Export</div>
+        <div class="controls">
+          <label>
+            <input type="checkbox" id="toggle-original" checked /> 原文
+          </label>
+          <label>
+            <input type="checkbox" id="toggle-translation" checked /> 译文
+          </label>
+                  </div>
+      </header>
+      <aside class="sidebar">
+        <nav id="toc"></nav>
+      </aside>
+      <button id="prev-chapter" class="chapter-nav prev" aria-label="Previous chapter">&#8249;</button>
+      <main class="content" id="content"></main>
+      <button id="next-chapter" class="chapter-nav next" aria-label="Next chapter">&#8250;</button>
+    </div>
+    <script>
+      window.BOOK_DATA = {{BOOK_DATA}};
+    </script>
+  </body>
+</html>

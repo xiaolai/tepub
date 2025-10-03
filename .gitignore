@@ -1,0 +1,44 @@
+# Project-specific ignore patterns
+
+# Local configuration & documentation drafts
+config.yaml
+AGENTS.md
+development_plan.md
+
+# Sample and fixture data
+epubs/
+samples/
+
+# Misc build/output artifacts
+workspace/
+cache/
+.DS_Store
+
+# Python caches & environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+env/
+venv/
+# .python-version
+
+# Python build artifacts
+*.egg-info/
+dist/
+build/
+
+# Coverage
+.coverage
+coverage.xml
+
+.tmp/
+
+.claude/
+AGENT.md
+CLAUDE.md
+docs/
+
+.ruff_cache/
+.github/
+.tepub/
