@@ -223,21 +223,31 @@ class AudiobookRunner:
     def _segments_to_process(self) -> list[SegmentWork]:
         segments_doc = load_segments(self.settings.segments_file)
 
-        # Filter segments based on audiobook_files inclusion list
+        # Filter segments based on audiobook_files inclusion list or skip metadata
+        original_count = len(segments_doc.segments)
         if self.settings.audiobook_files is not None:
+            # Explicit inclusion list takes precedence
             allowed_files = set(self.settings.audiobook_files)
-            original_count = len(segments_doc.segments)
             segments_doc.segments = [
                 seg
                 for seg in segments_doc.segments
                 if seg.file_path.as_posix() in allowed_files
             ]
-            filtered_count = original_count - len(segments_doc.segments)
-            if filtered_count > 0:
-                console.print(
-                    f"[cyan]Filtered {filtered_count} segments from {original_count} "
-                    f"based on audiobook_files inclusion list[/cyan]"
-                )
+        else:
+            # No inclusion list: filter out segments with skip metadata
+            segments_doc.segments = [
+                seg
+                for seg in segments_doc.segments
+                if seg.skip_reason is None
+            ]
+
+        filtered_count = original_count - len(segments_doc.segments)
+        if filtered_count > 0:
+            filter_type = "inclusion list" if self.settings.audiobook_files is not None else "skip rules"
+            console.print(
+                f"[cyan]Filtered {filtered_count} segments from {original_count} "
+                f"based on {filter_type}[/cyan]"
+            )
 
         translation_state = self._load_translation_state()
         translation_skips = set()

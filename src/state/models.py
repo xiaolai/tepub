@@ -34,6 +34,8 @@ class Segment(BaseModel):
     extract_mode: ExtractMode
     source_content: str = Field(..., description="Content extracted pre-translation")
     metadata: SegmentMetadata
+    skip_reason: str | None = Field(None, description="Reason for skipping (e.g., 'cover', 'index')")
+    skip_source: str | None = Field(None, description="Source of skip decision (e.g., 'content', 'rule')")
 
 
 class TranslationRecord(BaseModel):

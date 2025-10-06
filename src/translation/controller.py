@@ -188,21 +188,31 @@ def run_translation(
             input_epub,
         )
 
-    # Filter segments based on translation_files inclusion list
+    # Filter segments based on translation_files inclusion list or skip metadata
+    original_count = len(segments_doc.segments)
     if settings.translation_files is not None:
+        # Explicit inclusion list takes precedence
         allowed_files = set(settings.translation_files)
-        original_count = len(segments_doc.segments)
         segments_doc.segments = [
             seg
             for seg in segments_doc.segments
             if seg.file_path.as_posix() in allowed_files
         ]
-        filtered_count = original_count - len(segments_doc.segments)
-        if filtered_count > 0:
-            console.print(
-                f"[cyan]Filtered {filtered_count} segments from {original_count} "
-                f"based on translation_files inclusion list[/cyan]"
-            )
+    else:
+        # No inclusion list: filter out segments with skip metadata
+        segments_doc.segments = [
+            seg
+            for seg in segments_doc.segments
+            if seg.skip_reason is None
+        ]
+
+    filtered_count = original_count - len(segments_doc.segments)
+    if filtered_count > 0:
+        filter_type = "inclusion list" if settings.translation_files is not None else "skip rules"
+        console.print(
+            f"[cyan]Filtered {filtered_count} segments from {original_count} "
+            f"based on {filter_type}[/cyan]"
+        )
 
     provider = create_provider(settings.primary_provider)
     state_doc = ensure_state(

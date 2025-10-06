@@ -76,7 +76,10 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
             if not document.spine_item.linear:
                 continue
             decision = skip_map.get(file_path)
+            skip_reason = None
+            skip_source = None
             if decision and decision.flagged:
+                # Track skipped files for reporting, but still extract segments
                 skipped_documents.append(
                     SkippedDocument(
                         file_path=file_path,
@@ -84,10 +87,14 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
                         source=decision.source,
                     )
                 )
-                continue
+                skip_reason = decision.reason
+                skip_source = decision.source
             for segment in iter_segments(
                 document.tree, file_path=file_path, spine_index=document.spine_item.index
             ):
+                # Tag segments with skip metadata if file is flagged
+                segment.skip_reason = skip_reason
+                segment.skip_source = skip_source
                 segments.append(segment)
                 progress.advance(task)
 
