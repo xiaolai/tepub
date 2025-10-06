@@ -37,7 +37,7 @@ def _write_cover_candidate(
     if not candidate:
         return None, None
     try:
-        item = get_item_by_href(reader.book, candidate.href)
+        item = get_item_by_href(reader.book, Path(candidate.href) if isinstance(candidate.href, str) else candidate.href)
     except KeyError:
         return None, None
     cover_dir = settings.work_dir / "audiobook" / "cover_candidates"

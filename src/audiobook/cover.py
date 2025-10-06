@@ -47,8 +47,8 @@ def find_spine_cover_candidate(reader: EpubReader) -> SpineCoverCandidate | None
             if not candidate_href_str:
                 continue
             try:
-                get_item_by_href(reader.book, candidate_href_str)
+                get_item_by_href(reader.book, Path(candidate_href_str))
             except KeyError:
                 continue
-            return SpineCoverCandidate(href=candidate_href_str, document_href=document.path)
+            return SpineCoverCandidate(href=Path(candidate_href_str), document_href=document.path)
     return None

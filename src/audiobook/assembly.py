@@ -562,9 +562,10 @@ def assemble_audiobook(
         return None
 
     # Use ffmpeg concat to avoid 4GB WAV limit and memory issues
-    audiobook_dir = output_root / "output"
+    audiobook_dir = output_root
     audiobook_dir.mkdir(parents=True, exist_ok=True)
-    final_name = f"{_slugify(book_title)}.m4a"
+    provider_suffix = "edgetts" if session.tts_provider == "edge" else "openaitts"
+    final_name = f"{_slugify(book_title)}@{provider_suffix}.m4a"
     workspace_path = audiobook_dir / final_name
 
     # Create concat file list for ffmpeg
@@ -694,7 +695,5 @@ def assemble_audiobook(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Chapter marker injection failed: %s", exc)
 
-    dest_path = input_epub.parent / final_name
-    shutil.move(workspace_path, dest_path)
-
-    return dest_path
+    # Keep audiobook in work_dir structure instead of moving to EPUB parent
+    return workspace_path
