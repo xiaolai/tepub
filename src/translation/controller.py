@@ -233,7 +233,8 @@ def run_translation(
     total = sum(
         1
         for seg in segments_doc.segments
-        if state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
+        if not state_doc.segments.get(seg.segment_id)
+        or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
     )
     if total == 0:
         console.print("[green]All segments already translated.[/green]")
@@ -277,7 +278,8 @@ def run_translation(
     pending_segments_list = [
         seg
         for seg in segments_doc.segments
-        if state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
+        if not state_doc.segments.get(seg.segment_id)
+        or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
     ]
 
     max_workers = settings.translation_workers
@@ -315,7 +317,8 @@ def run_translation(
                 pending_segments_list = [
                     seg
                     for seg in segments_doc.segments
-                    if state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
+                    if not state_doc.segments.get(seg.segment_id)
+                    or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
                 ]
 
                 if not pending_segments_list:
