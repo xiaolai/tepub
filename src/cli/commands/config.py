@@ -157,36 +157,6 @@ def validate(ctx: click.Context, input_epub: Path | None, use_global: bool, conf
             # If voice listing fails, add warning but don't fail validation
             console.print(f"[yellow]Warning: Could not validate voice: {voice_err}[/yellow]")
 
-    # Auto-fix: Replace narrator_name placeholders in opening/closing statements
-    auto_fixes = []
-    if "audiobook_voice" in yaml_data and yaml_data["audiobook_voice"]:
-        from audiobook.assembly import _extract_narrator_name
-
-        narrator_name = _extract_narrator_name(yaml_data["audiobook_voice"])
-
-        # Read file as text to preserve comments and formatting
-        original_text = config_path.read_text(encoding='utf-8')
-        modified_text = original_text
-
-        # Replace only "Narrated by {narrator_name}" and "Narrated by {{narrator_name}}"
-        # This ensures only the statement lines are affected
-        if "Narrated by {narrator_name}" in modified_text:
-            modified_text = modified_text.replace("Narrated by {narrator_name}", f"Narrated by {narrator_name}")
-            auto_fixes.append(f"Replaced 'Narrated by {{narrator_name}}' with 'Narrated by {narrator_name}'")
-
-        if "Narrated by {{narrator_name}}" in modified_text:
-            modified_text = modified_text.replace("Narrated by {{narrator_name}}", f"Narrated by {narrator_name}")
-            auto_fixes.append(f"Replaced 'Narrated by {{{{narrator_name}}}}' with 'Narrated by {narrator_name}'")
-
-        # Write back if changes were made
-        if modified_text != original_text:
-            config_path.write_text(modified_text, encoding='utf-8')
-
-        if auto_fixes:
-            for fix in auto_fixes:
-                console.print(f"[green]✓ Auto-fixed:[/green] {fix}")
-            console.print()
-
     # Build validation results tree
     tree = Tree("📝 Configuration Fields", guide_style="dim")
 
