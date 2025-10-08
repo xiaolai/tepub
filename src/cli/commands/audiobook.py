@@ -49,7 +49,8 @@ def _write_cover_candidate(
     return candidate_path, candidate
 
 
-@click.group(invoke_without_command=True, context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
+@click.group(invoke_without_command=True)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
 @click.option("--voice", default=None, help="Voice name (provider-specific, skip to choose interactively).")
 @click.option("--language", default=None, help="Override detected language (e.g. 'en').")
 @click.option("--rate", default=None, help="Optional speaking rate override for Edge TTS, e.g. '+5%'.")
@@ -86,6 +87,7 @@ def _write_cover_candidate(
 @handle_state_errors
 def audiobook(
     ctx: click.Context,
+    args: tuple[str, ...],
     voice: str | None,
     rate: str | None,
     volume: str | None,
@@ -116,16 +118,16 @@ def audiobook(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Get input_epub from remaining args
-    if not ctx.args:
+    # Get input_epub from args
+    if not args:
         raise click.UsageError(
             "Missing argument 'INPUT_EPUB'.\n\n"
             "Usage: tepub audiobook INPUT_EPUB [OPTIONS]\n"
             "   or: tepub audiobook COMMAND [ARGS]..."
         )
 
-    # Parse the first remaining argument as input_epub
-    input_epub_str = ctx.args[0]
+    # Parse the first argument as input_epub
+    input_epub_str = args[0]
     input_epub = Path(input_epub_str)
 
     if not input_epub.exists():
