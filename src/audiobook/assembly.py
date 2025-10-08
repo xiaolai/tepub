@@ -229,7 +229,15 @@ def _prepare_cover(
         return cover_path
 
 
-def _chapter_title(file_path: str, toc_map: dict[str, str], doc_titles: dict[str, str]) -> str:
+def _chapter_title(
+    file_path: str,
+    toc_map: dict[str, str],
+    doc_titles: dict[str, str],
+    custom_map: dict[str, str] | None = None,
+) -> str:
+    # Priority: custom > TOC > document title > filename
+    if custom_map and file_path in custom_map:
+        return custom_map[file_path]
     title = toc_map.get(file_path)
     if title:
         return title
@@ -317,6 +325,27 @@ def assemble_audiobook(
     book_title = _book_title(reader)
     authors = _book_authors(reader)
     author_str = ", ".join(authors) if authors else "Unknown"
+
+    # Check for custom chapter titles from chapters.yaml
+    custom_chapters_map: dict[str, str] = {}  # file_path -> custom_title
+    chapters_yaml_path = settings.work_dir / "chapters.yaml"
+    if chapters_yaml_path.exists():
+        try:
+            from .chapters import read_chapters_yaml
+
+            chapters, metadata = read_chapters_yaml(chapters_yaml_path)
+            console.print(f"[cyan]Loading custom chapter titles from chapters.yaml[/cyan]")
+
+            # Build map from segment files to custom titles
+            # Each chapter has a list of segment files
+            for chapter in chapters:
+                if chapter.segments:
+                    # All segments in this chapter get the same title
+                    for seg_file in chapter.segments:
+                        custom_chapters_map[seg_file] = chapter.title
+        except Exception as exc:
+            logger.warning(f"Failed to load chapters.yaml: {exc}")
+            console.print(f"[yellow]Warning: Could not load chapters.yaml: {exc}[/yellow]")
 
     # Generate opening and closing statement audio
     opening_audio_path: Path | None = None
@@ -428,7 +457,7 @@ def assemble_audiobook(
     # Check if chapter files already exist
     expected_chapters = []
     for index, (file_path, segments) in enumerate(sorted_chapters, start=1):
-        title = _chapter_title(file_path, toc_map, doc_titles)
+        title = _chapter_title(file_path, toc_map, doc_titles, custom_chapters_map)
         chapter_path = chapters_dir / f"{index:03d}-{_slugify(title)}.m4a"
         expected_chapters.append((title, chapter_path, file_path, segments))
 

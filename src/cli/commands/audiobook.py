@@ -49,8 +49,8 @@ def _write_cover_candidate(
     return candidate_path, candidate
 
 
-@click.command()
-@click.argument("input_epub", type=click.Path(exists=True, path_type=Path))
+@click.group(invoke_without_command=True)
+@click.argument("input_epub", type=click.Path(exists=True, path_type=Path), required=False)
 @click.option("--voice", default=None, help="Voice name (provider-specific, skip to choose interactively).")
 @click.option("--language", default=None, help="Override detected language (e.g. 'en').")
 @click.option("--rate", default=None, help="Optional speaking rate override for Edge TTS, e.g. '+5%'.")
@@ -87,7 +87,7 @@ def _write_cover_candidate(
 @handle_state_errors
 def audiobook(
     ctx: click.Context,
-    input_epub: Path,
+    input_epub: Path | None,
     voice: str | None,
     rate: str | None,
     volume: str | None,
@@ -103,7 +103,19 @@ def audiobook(
     Supports two TTS providers:
     - Edge TTS (default): Free, 57+ voices, no API key needed
     - OpenAI TTS: Paid (~$15/1M chars), 6 premium voices, requires OPENAI_API_KEY
+
+    Subcommands:
+    - export-chapters: Export chapter structure to YAML config
+    - update-chapters: Update audiobook with new chapter markers from YAML
     """
+
+    # If a subcommand was invoked, don't run the default audiobook generation
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # Require input_epub for default audiobook generation
+    if input_epub is None:
+        raise click.UsageError("Missing argument 'INPUT_EPUB'.")
 
     settings: AppSettings = ctx.obj["settings"]
     settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
@@ -342,3 +354,113 @@ def audiobook(
         tts_model=selected_model,
         tts_speed=selected_speed,
     )
+
+
+@audiobook.command(name="export-chapters")
+@click.argument("source", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Output YAML file path (default: chapters.yaml in work_dir)",
+)
+@click.pass_context
+def export_chapters(ctx: click.Context, source: Path, output: Path | None) -> None:
+    """Export chapter information to YAML config file.
+
+    SOURCE can be either:
+    - EPUB file (.epub): Extract chapter structure before generation (preview mode)
+    - M4A audiobook (.m4a): Extract chapter markers from existing audiobook
+
+    The exported YAML file can be edited and used with update-chapters command.
+    """
+    from audiobook.chapters import (
+        extract_chapters_from_epub,
+        extract_chapters_from_mp4,
+        write_chapters_yaml,
+    )
+
+    settings: AppSettings = ctx.obj["settings"]
+
+    # Determine source type
+    if source.suffix.lower() == ".epub":
+        # Preview mode: extract from EPUB
+        settings = prepare_settings_for_epub(ctx, settings, source, override=None)
+
+        # Validate segments file exists
+        from exceptions import StateFileNotFoundError
+
+        if not settings.segments_file.exists():
+            raise StateFileNotFoundError("segments", source)
+
+        console.print(f"[cyan]Extracting chapter structure from EPUB...[/cyan]")
+        chapters, metadata = extract_chapters_from_epub(source, settings)
+
+        # Default output to work_dir/chapters.yaml
+        if output is None:
+            output = settings.work_dir / "chapters.yaml"
+
+    elif source.suffix.lower() in {".m4a", ".mp4"}:
+        # Extract from audiobook
+        console.print(f"[cyan]Reading chapter markers from audiobook...[/cyan]")
+        chapters, metadata = extract_chapters_from_mp4(source)
+
+        # Default output to source directory
+        if output is None:
+            output = source.parent / "chapters.yaml"
+
+    else:
+        raise click.UsageError(
+            f"Unsupported file type: {source.suffix}. Expected .epub or .m4a"
+        )
+
+    # Write YAML
+    write_chapters_yaml(chapters, metadata, output)
+
+    console.print(f"\n[green]✓ Exported {len(chapters)} chapters to:[/green] {output}")
+    console.print(f"\n[cyan]Edit the file to customize chapter titles/timestamps, then use:[/cyan]")
+    if source.suffix.lower() == ".epub":
+        console.print(f"  tepub audiobook {source.name}")
+        console.print(f"[dim](Audiobook generation will use custom titles from chapters.yaml)[/dim]")
+    else:
+        console.print(f"  tepub audiobook update-chapters {source.name} chapters.yaml")
+
+
+@audiobook.command(name="update-chapters")
+@click.argument("audiobook_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("chapters_file", type=click.Path(exists=True, path_type=Path))
+@click.pass_context
+def update_chapters(ctx: click.Context, audiobook_file: Path, chapters_file: Path) -> None:
+    """Update M4A audiobook with chapter markers from YAML config.
+
+    AUDIOBOOK_FILE: Path to M4A audiobook file
+    CHAPTERS_FILE: Path to YAML config file with chapter information
+
+    This command updates the chapter markers in an existing audiobook file.
+    All chapters in the YAML must have timestamps.
+    """
+    from audiobook.chapters import read_chapters_yaml, update_mp4_chapters
+
+    # Validate audiobook file
+    if audiobook_file.suffix.lower() not in {".m4a", ".mp4"}:
+        raise click.UsageError(
+            f"Unsupported audiobook format: {audiobook_file.suffix}. Expected .m4a or .mp4"
+        )
+
+    # Read chapters from YAML
+    console.print(f"[cyan]Loading chapter configuration from:[/cyan] {chapters_file}")
+    chapters, metadata = read_chapters_yaml(chapters_file)
+
+    console.print(f"[cyan]Found {len(chapters)} chapters[/cyan]")
+
+    # Update audiobook
+    console.print(f"[cyan]Updating chapter markers in:[/cyan] {audiobook_file}")
+    update_mp4_chapters(audiobook_file, chapters)
+
+    console.print(f"\n[green]✓ Successfully updated {len(chapters)} chapter markers[/green]")
+    console.print(f"\n[dim]Chapters:[/dim]")
+    for i, ch in enumerate(chapters[:5], 1):  # Show first 5
+        start_time = f"{ch.start:.1f}s" if ch.start is not None else "N/A"
+        console.print(f"  {i}. {start_time:>8} - {ch.title}")
+    if len(chapters) > 5:
+        console.print(f"  ... and {len(chapters) - 5} more")

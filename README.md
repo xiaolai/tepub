@@ -24,7 +24,8 @@ TEPUB is a comprehensive toolkit for processing EPUB files. Translate books into
 - **Dual TTS providers**:
   - **Edge TTS** (Free): 57+ voices in multiple languages, no API key required
   - **OpenAI TTS** (Premium): 6 high-quality voices with superior naturalness
-- **Professional output**: M4B format with chapter markers and embedded cover art
+- **Professional output**: M4A format with chapter markers and embedded cover art
+- **Chapter management**: Export, edit, and update chapter titles and timestamps
 - **Flexible control**: Adjustable speed, voice selection, resume support
 - **Cost**: Free with Edge TTS, or ~$11-22 per 300-page book with OpenAI TTS
 
@@ -161,6 +162,20 @@ tepub audiobook book.epub --tts-provider openai --voice nova --tts-speed 1.2
 **Custom cover image:**
 ```bash
 tepub audiobook book.epub --cover-path ~/Pictures/mycover.jpg
+```
+
+**Chapter management:**
+```bash
+# Preview chapter structure before generating audiobook
+tepub audiobook export-chapters book.epub
+# Edit chapters.yaml to customize chapter titles
+tepub audiobook book.epub  # Uses custom titles from chapters.yaml
+
+# Extract chapters from existing audiobook
+tepub audiobook export-chapters audiobook.m4a
+
+# Update audiobook with edited chapter markers
+tepub audiobook update-chapters audiobook.m4a chapters.yaml
 ```
 
 ### Export
