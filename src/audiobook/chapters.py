@@ -134,8 +134,8 @@ def extract_chapters_from_mp4(mp4_path: Path) -> tuple[list[ChapterInfo], dict]:
 
     chapters = []
     for chapter in mp4.chapters:
-        # MP4Chapter.start is in milliseconds
-        start_seconds = chapter.start / 1000.0
+        # mutagen.mp4.Chapter.start is already in seconds (not milliseconds)
+        start_seconds = chapter.start
         chapters.append(ChapterInfo(title=chapter.title, start=start_seconds))
 
     # Get duration
