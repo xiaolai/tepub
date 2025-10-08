@@ -17,6 +17,51 @@ from state.store import load_segments
 from .mp4chapters import write_chapter_markers
 
 
+def _parse_timestamp(value: str | int | float) -> float:
+    """Parse timestamp to seconds.
+
+    Accepts:
+    - "1:23:45" or "01:23:45" -> 5025.0 seconds (h:mm:ss)
+    - "1:9:2" -> 4142.0 seconds (flexible, no zero-padding required)
+    - "23:45" -> 1425.0 seconds (mm:ss, assumes no hours)
+    - "45" -> 45.0 seconds (ss only)
+    - 5025.0 -> 5025.0 (numeric seconds, backward compat)
+
+    Returns:
+        float: Timestamp in seconds
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    parts = str(value).split(":")
+    if len(parts) == 3:  # h:mm:ss
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    elif len(parts) == 2:  # mm:ss
+        return int(parts[0]) * 60 + int(parts[1])
+    else:  # ss
+        return float(value)
+
+
+def _format_timestamp(seconds: float) -> str:
+    """Format seconds as h:mm:ss string with zero-padding.
+
+    Examples:
+    - 5025.0 -> "1:23:45"
+    - 1425.0 -> "0:23:45"
+    - 45.5 -> "0:00:45"
+
+    Args:
+        seconds: Timestamp in seconds
+
+    Returns:
+        str: Formatted timestamp as "h:mm:ss"
+    """
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
+
 class ChapterInfo:
     """Chapter information with optional timestamp."""
 
@@ -29,7 +74,7 @@ class ChapterInfo:
         """Convert to dictionary for YAML export."""
         result = {"title": self.title}
         if self.start is not None:
-            result["start"] = round(self.start, 3)
+            result["start"] = _format_timestamp(self.start)
         if self.segments:
             result["segments"] = self.segments
         return result
@@ -39,7 +84,7 @@ class ChapterInfo:
         """Create from dictionary loaded from YAML."""
         return ChapterInfo(
             title=data["title"],
-            start=data.get("start"),
+            start=_parse_timestamp(data["start"]) if "start" in data else None,
             segments=data.get("segments", []),
         )
 
@@ -188,7 +233,7 @@ def write_chapters_yaml(
         for ch in chapters:
             f.write(f'  - title: "{ch.title}"\n')
             if ch.start is not None:
-                f.write(f"    start: {ch.start}\n")
+                f.write(f'    start: "{_format_timestamp(ch.start)}"\n')
             if ch.segments:
                 f.write(f"    # Segments: {', '.join(ch.segments[:3])}")
                 if len(ch.segments) > 3:
