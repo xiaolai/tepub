@@ -49,8 +49,7 @@ def _write_cover_candidate(
     return candidate_path, candidate
 
 
-@click.group(invoke_without_command=True)
-@click.argument("input_epub", type=click.Path(exists=True, path_type=Path), required=False)
+@click.group(invoke_without_command=True, context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
 @click.option("--voice", default=None, help="Voice name (provider-specific, skip to choose interactively).")
 @click.option("--language", default=None, help="Override detected language (e.g. 'en').")
 @click.option("--rate", default=None, help="Optional speaking rate override for Edge TTS, e.g. '+5%'.")
@@ -87,7 +86,6 @@ def _write_cover_candidate(
 @handle_state_errors
 def audiobook(
     ctx: click.Context,
-    input_epub: Path | None,
     voice: str | None,
     rate: str | None,
     volume: str | None,
@@ -99,6 +97,11 @@ def audiobook(
     cover_only: bool,
 ) -> None:
     """Generate an audiobook using TTS (Text-to-Speech).
+
+    Usage:
+      tepub audiobook INPUT_EPUB [OPTIONS]
+      tepub audiobook export-chapters SOURCE [OPTIONS]
+      tepub audiobook update-chapters AUDIOBOOK CHAPTERS_YAML
 
     Supports two TTS providers:
     - Edge TTS (default): Free, 57+ voices, no API key needed
@@ -113,9 +116,20 @@ def audiobook(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Require input_epub for default audiobook generation
-    if input_epub is None:
-        raise click.UsageError("Missing argument 'INPUT_EPUB'.")
+    # Get input_epub from remaining args
+    if not ctx.args:
+        raise click.UsageError(
+            "Missing argument 'INPUT_EPUB'.\n\n"
+            "Usage: tepub audiobook INPUT_EPUB [OPTIONS]\n"
+            "   or: tepub audiobook COMMAND [ARGS]..."
+        )
+
+    # Parse the first remaining argument as input_epub
+    input_epub_str = ctx.args[0]
+    input_epub = Path(input_epub_str)
+
+    if not input_epub.exists():
+        raise click.UsageError(f"Path '{input_epub}' does not exist.")
 
     settings: AppSettings = ctx.obj["settings"]
     settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
