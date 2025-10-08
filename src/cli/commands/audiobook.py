@@ -25,6 +25,19 @@ from state.store import load_segments
 console = get_console()
 
 
+class HelpfulGroup(click.Group):
+    """Command group that shows help instead of error for invalid commands."""
+
+    def resolve_command(self, ctx, args):
+        try:
+            cmd_name, cmd, args = super().resolve_command(ctx, args)
+            return cmd_name, cmd, args
+        except click.UsageError:
+            # Show help and exit on command not found
+            click.echo(self.get_help(ctx))
+            ctx.exit(0)
+
+
 def _write_cover_candidate(
     settings: AppSettings,
     input_epub: Path,
@@ -49,8 +62,27 @@ def _write_cover_candidate(
     return candidate_path, candidate
 
 
-@click.group(invoke_without_command=True)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+@click.group(cls=HelpfulGroup, invoke_without_command=True)
+@click.pass_context
+def audiobook(ctx: click.Context) -> None:
+    """Audiobook generation and chapter management.
+
+    Supports two TTS providers:
+    - Edge TTS (default): Free, 57+ voices, no API key needed
+    - OpenAI TTS: Paid (~$15/1M chars), 6 premium voices, requires OPENAI_API_KEY
+
+    Subcommands:
+    - generate: Create audiobook from EPUB file
+    - export-chapters: Export chapter structure to YAML config
+    - update-chapters: Update audiobook with new chapter markers from YAML
+    """
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+        ctx.exit(0)
+
+
+@audiobook.command(name="generate")
+@click.argument("input_epub", type=click.Path(exists=True, path_type=Path))
 @click.option("--voice", default=None, help="Voice name (provider-specific, skip to choose interactively).")
 @click.option("--language", default=None, help="Override detected language (e.g. 'en').")
 @click.option("--rate", default=None, help="Optional speaking rate override for Edge TTS, e.g. '+5%'.")
@@ -85,9 +117,9 @@ def _write_cover_candidate(
 )
 @click.pass_context
 @handle_state_errors
-def audiobook(
+def generate(
     ctx: click.Context,
-    args: tuple[str, ...],
+    input_epub: Path,
     voice: str | None,
     rate: str | None,
     volume: str | None,
@@ -98,41 +130,15 @@ def audiobook(
     cover_path: Path | None,
     cover_only: bool,
 ) -> None:
-    """Generate an audiobook using TTS (Text-to-Speech).
+    """Generate an audiobook from EPUB file using TTS.
 
-    Usage:
-      tepub audiobook INPUT_EPUB [OPTIONS]
-      tepub audiobook export-chapters SOURCE [OPTIONS]
-      tepub audiobook update-chapters AUDIOBOOK CHAPTERS_YAML
+    INPUT_EPUB: Path to the EPUB file to convert to audiobook.
 
-    Supports two TTS providers:
-    - Edge TTS (default): Free, 57+ voices, no API key needed
-    - OpenAI TTS: Paid (~$15/1M chars), 6 premium voices, requires OPENAI_API_KEY
-
-    Subcommands:
-    - export-chapters: Export chapter structure to YAML config
-    - update-chapters: Update audiobook with new chapter markers from YAML
+    Examples:
+      tepub audiobook generate book.epub
+      tepub audiobook generate book.epub --tts-provider openai --voice nova
+      tepub audiobook generate book.epub --voice en-US-GuyNeural --rate '+10%'
     """
-
-    # If a subcommand was invoked, don't run the default audiobook generation
-    if ctx.invoked_subcommand is not None:
-        return
-
-    # Get input_epub from args
-    if not args:
-        raise click.UsageError(
-            "Missing argument 'INPUT_EPUB'.\n\n"
-            "Usage: tepub audiobook INPUT_EPUB [OPTIONS]\n"
-            "   or: tepub audiobook COMMAND [ARGS]..."
-        )
-
-    # Parse the first argument as input_epub
-    input_epub_str = args[0]
-    input_epub = Path(input_epub_str)
-
-    if not input_epub.exists():
-        raise click.UsageError(f"Path '{input_epub}' does not exist.")
-
     settings: AppSettings = ctx.obj["settings"]
     settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
 

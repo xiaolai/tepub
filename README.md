@@ -84,13 +84,13 @@ tepub export mybook.epub --epub
 **Create audiobook (Free Edge TTS):**
 ```bash
 tepub extract mybook.epub
-tepub audiobook mybook.epub
+tepub audiobook generate mybook.epub
 # Interactive voice selection will appear
 ```
 
 **Create audiobook (Premium OpenAI TTS):**
 ```bash
-tepub audiobook mybook.epub --tts-provider openai --voice nova
+tepub audiobook generate mybook.epub --tts-provider openai --voice nova
 # Requires OPENAI_API_KEY in environment
 ```
 
@@ -128,12 +128,12 @@ tepub export book.epub --epub --output-mode translated-only
 **Edge TTS (Free, 57+ voices):**
 ```bash
 # Interactive voice selection
-tepub audiobook book.epub
+tepub audiobook generate book.epub
 
 # Specify voice directly
-tepub audiobook book.epub --voice en-US-GuyNeural    # Male
-tepub audiobook book.epub --voice en-US-JennyNeural  # Female
-tepub audiobook book.epub --voice en-GB-RyanNeural   # British
+tepub audiobook generate book.epub --voice en-US-GuyNeural    # Male
+tepub audiobook generate book.epub --voice en-US-JennyNeural  # Female
+tepub audiobook generate book.epub --voice en-GB-RyanNeural   # British
 
 # See all voices
 edge-tts --list-voices
@@ -142,13 +142,13 @@ edge-tts --list-voices
 **OpenAI TTS (Premium, 6 voices):**
 ```bash
 # Standard quality (tts-1)
-tepub audiobook book.epub --tts-provider openai --voice nova
+tepub audiobook generate book.epub --tts-provider openai --voice nova
 
 # Higher quality (tts-1-hd)
-tepub audiobook book.epub --tts-provider openai --tts-model tts-1-hd --voice nova
+tepub audiobook generate book.epub --tts-provider openai --tts-model tts-1-hd --voice nova
 
 # Adjust speed
-tepub audiobook book.epub --tts-provider openai --voice nova --tts-speed 1.2
+tepub audiobook generate book.epub --tts-provider openai --voice nova --tts-speed 1.2
 
 # Available OpenAI voices:
 # - alloy: Neutral, balanced
@@ -161,7 +161,7 @@ tepub audiobook book.epub --tts-provider openai --voice nova --tts-speed 1.2
 
 **Custom cover image:**
 ```bash
-tepub audiobook book.epub --cover-path ~/Pictures/mycover.jpg
+tepub audiobook generate book.epub --cover-path ~/Pictures/mycover.jpg
 ```
 
 **Chapter management:**
@@ -169,7 +169,7 @@ tepub audiobook book.epub --cover-path ~/Pictures/mycover.jpg
 # Preview chapter structure before generating audiobook
 tepub audiobook export-chapters book.epub
 # Edit chapters.yaml to customize chapter titles
-tepub audiobook book.epub  # Uses custom titles from chapters.yaml
+tepub audiobook generate book.epub  # Uses custom titles from chapters.yaml
 
 # Extract chapters from existing audiobook
 tepub audiobook export-chapters audiobook.m4a
@@ -292,7 +292,7 @@ TEPUB automatically saves progress. To resume:
 ```bash
 # Just run the same command again
 tepub translate book.epub --to Spanish
-tepub audiobook book.epub
+tepub audiobook generate book.epub
 ```
 
 ### Parallel Processing
