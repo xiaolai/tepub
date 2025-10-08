@@ -45,6 +45,33 @@ def _slugify(value: str) -> str:
     return value or "audiobook"
 
 
+def _get_audio_duration(audio_path: Path) -> float:
+    """Get accurate audio duration in seconds using ffprobe.
+
+    Uses ffprobe instead of pydub's duration_seconds because pydub
+    underreports duration for M4A/AAC files (VBR encoding issue).
+
+    Args:
+        audio_path: Path to audio file (M4A, MP3, etc.)
+
+    Returns:
+        Duration in seconds as float
+    """
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(result.stdout.strip())
+
+
 def _extract_narrator_name(voice_id: str) -> str:
     """Extract friendly narrator name from voice ID.
 
@@ -468,8 +495,8 @@ def assemble_audiobook(
         # Load existing chapter files and calculate durations
         for title, chapter_path, _, _ in expected_chapters:
             try:
-                audio = AudioSegment.from_file(chapter_path)
-                chapter_audios.append((title, chapter_path, audio.duration_seconds))
+                duration = _get_audio_duration(chapter_path)
+                chapter_audios.append((title, chapter_path, duration))
             except Exception:
                 # If any file is invalid, we'll need to regenerate all
                 chapter_audios = []
@@ -575,10 +602,9 @@ def assemble_audiobook(
                     except Exception:
                         pass  # Silently ignore cover art failures
 
-                # Get actual duration from the created file (more accurate than sum of parts)
+                # Get actual duration from the created file (using ffprobe for accuracy)
                 try:
-                    actual_audio = AudioSegment.from_file(chapter_path)
-                    actual_duration = actual_audio.duration_seconds
+                    actual_duration = _get_audio_duration(chapter_path)
                 except Exception:
                     # Fallback: estimate based on file size (very rough)
                     actual_duration = 0.0
@@ -619,14 +645,10 @@ def assemble_audiobook(
             )
             f.write(f"file '{opening_silence_path.absolute()}'\n")
 
-            # Read actual durations from files (AAC encoding may cause slight differences)
+            # Read actual durations from files using ffprobe (accurate for M4A)
             try:
-                opening_audio = AudioSegment.from_file(opening_audio_path)
-                opening_duration_seconds = opening_audio.duration_seconds
-
-                # Read actual silence duration from exported file
-                actual_silence = AudioSegment.from_file(opening_silence_path)
-                actual_silence_duration = actual_silence.duration_seconds
+                opening_duration_seconds = _get_audio_duration(opening_audio_path)
+                actual_silence_duration = _get_audio_duration(opening_silence_path)
 
                 current_position_seconds += opening_duration_seconds + actual_silence_duration
             except Exception as exc:
