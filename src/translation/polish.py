@@ -24,8 +24,10 @@ def _replace_dash(text: str) -> str:
     def repl(match: re.Match[str]) -> str:
         before = match.group(1)
         after = match.group(2)
-        left_space = "" if before == "）" else " "
-        right_space = "" if after == "（" else " "
+        # No space between closing quotes/parens and ——
+        left_space = "" if before in ("）", "》") else " "
+        # No space between —— and opening quotes/parens
+        right_space = "" if after in ("（", "《") else " "
         return f"{before}{left_space}——{right_space}{after}"
 
     return re.sub(r"([^\s])--([^\s])", repl, text)
@@ -36,8 +38,10 @@ def _fix_emdash_spacing(text: str) -> str:
     def repl(match: re.Match[str]) -> str:
         before = match.group(1)
         after = match.group(2)
-        left_space = "" if before == "）" else " "
-        right_space = "" if after == "（" else " "
+        # No space between closing quotes/parens and ——
+        left_space = "" if before in ("）", "》") else " "
+        # No space between —— and opening quotes/parens
+        right_space = "" if after in ("（", "《") else " "
         return f"{before}{left_space}——{right_space}{after}"
 
     return re.sub(r"([^\s])\s*——\s*([^\s])", repl, text)
@@ -50,8 +54,20 @@ def _fix_quotes(text: str) -> str:
 
 
 def _space_between(text: str) -> str:
-    text = re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9]+)", r"\1 \2", text)
-    text = re.sub(r"([A-Za-z0-9]+)([\u4e00-\u9fff])", r"\1 \2", text)
+    """Add spaces between Chinese and English/numbers.
+
+    Rules:
+    - Add space between Chinese characters and English letters
+    - Add space between Chinese characters and numbers (with units like %, °C, etc.)
+    """
+    # Pattern for numbers with optional measurement units
+    # Supports: 5%, 25°C, 25°c, 45°, 3‰, 25℃, etc.
+    num_pattern = r"[A-Za-z0-9]+(?:[%‰℃℉]|°[CcFf]?)?"
+
+    # Chinese followed by alphanumeric (with optional unit)
+    text = re.sub(f"([\u4e00-\u9fff])({num_pattern})", r"\1 \2", text)
+    # Alphanumeric (with optional unit) followed by Chinese
+    text = re.sub(f"({num_pattern})([\u4e00-\u9fff])", r"\1 \2", text)
     return text
 
 
