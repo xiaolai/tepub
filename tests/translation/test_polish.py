@@ -49,15 +49,17 @@ def test_target_is_chinese():
 
 def test_polish_normalizes_ellipsis_in_chinese():
     """Test ellipsis normalization in Chinese text."""
-    assert polish_translation("文字 . . . 更多文字") == "文字 ... 更多文字"
-    assert polish_translation("开始 . . . . 结束") == "开始 ... 结束"
+    # cjk-text-formatter removes leading space before ellipsis for cleaner output
+    assert polish_translation("文字 . . . 更多文字") == "文字... 更多文字"
+    assert polish_translation("开始 . . . . 结束") == "开始... 结束"
     assert polish_translation("已经正确...的格式") == "已经正确... 的格式"
 
 
 def test_polish_normalizes_ellipsis_in_english():
     """Test ellipsis normalization in non-Chinese text."""
-    assert polish_translation("Text before . . . and after.") == "Text before ... and after."
-    assert polish_translation("Multiple . . . . dots here.") == "Multiple ... dots here."
+    # cjk-text-formatter removes leading space before ellipsis for cleaner output
+    assert polish_translation("Text before . . . and after.") == "Text before... and after."
+    assert polish_translation("Multiple . . . . dots here.") == "Multiple... dots here."
     assert polish_translation("Already correct... format.") == "Already correct... format."
 
 
@@ -94,6 +96,7 @@ def test_polish_handles_permille_spacing():
 def test_polish_handles_mixed_ellipsis_and_chinese_rules():
     """Test that ellipsis normalization works with other Chinese polishing rules."""
     # Ellipsis + spacing between Chinese and English
-    assert polish_translation("学习 . . . machine learning") == "学习 ... machine learning"
+    # cjk-text-formatter removes leading space before ellipsis for cleaner output
+    assert polish_translation("学习 . . . machine learning") == "学习... machine learning"
     # Ellipsis + dash formatting
-    assert polish_translation("文字 . . . 中文--英文") == "文字 ... 中文 —— 英文"
+    assert polish_translation("文字 . . . 中文--英文") == "文字... 中文 —— 英文"
