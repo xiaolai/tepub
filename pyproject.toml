@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "TEPUB - Tools for EPUB: A comprehensive toolkit for EPUB processing including translation, audiobook generation, and export"
 requires-python = ">=3.10"
 authors = [
-  { name = "Xiaolai Li", email = "xiaolai@xiaolai.li" },
+  { name = "Xiaolai Li", email = "xiaolaidev@gmail.com" },
 ]
 readme = "README.md"
 license = { text = "MIT" }
