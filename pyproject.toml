@@ -4,9 +4,27 @@ version = "0.2.0"
 description = "TEPUB - Tools for EPUB: A comprehensive toolkit for EPUB processing including translation, audiobook generation, and export"
 requires-python = ">=3.10"
 authors = [
-  { name = "Xiaolai" },
+  { name = "Xiaolai Li", email = "xiaolai@xiaolai.li" },
 ]
 readme = "README.md"
+license = { text = "MIT" }
+keywords = ["epub", "translation", "audiobook", "tts", "ebook", "nlp", "i18n"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Text Processing :: Markup :: XML",
+  "Topic :: Utilities",
+]
+
 dependencies = [
   "Pillow>=10.2",
   "cjk-text-formatter>=1.0.5",
@@ -24,6 +42,12 @@ dependencies = [
   "requests>=2.31",
   "rich>=13.7",
 ]
+
+[project.urls]
+Homepage = "https://github.com/xiaolai/tepub"
+Repository = "https://github.com/xiaolai/tepub"
+Issues = "https://github.com/xiaolai/tepub/issues"
+Changelog = "https://github.com/xiaolai/tepub/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
