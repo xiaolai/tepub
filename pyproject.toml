@@ -1,6 +1,6 @@
 [project]
 name = "tepub"
-version = "0.2.1"
+version = "0.2.2"
 description = "TEPUB - Tools for EPUB: A comprehensive toolkit for EPUB processing including translation, audiobook generation, and export"
 requires-python = ">=3.10"
 authors = [
@@ -62,6 +62,7 @@ tepub = "cli.main:app"
 [tool.setuptools]
 package-dir = {"" = "src"}
 include-package-data = true
+py-modules = ["exceptions", "console_singleton"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
