@@ -6,7 +6,7 @@ for use in TEPUB's translation pipeline.
 
 from __future__ import annotations
 
-from cjk_text_formatter.polish import contains_chinese, polish_text
+from cjk_text_formatter.polish import CHINESE_RE, polish_text
 
 from state.models import SegmentStatus, StateDocument
 
@@ -26,7 +26,7 @@ def target_is_chinese(language: str) -> bool:
     lower = language.lower()
     if "chinese" in lower:
         return True
-    return contains_chinese(language)
+    return bool(CHINESE_RE.search(language))
 
 
 def polish_state(state: StateDocument) -> StateDocument:

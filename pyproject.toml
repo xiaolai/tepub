@@ -26,7 +26,7 @@ classifiers = [
 
 dependencies = [
   "Pillow>=10.2",
-  "cjk-text-formatter>=1.0.5",
+  "cjk-text-formatter>=1.1.0",
   "click>=8.1",
   "ebooklib>=0.18",
   "edge-tts>=6.1",
