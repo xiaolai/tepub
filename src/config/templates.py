@@ -178,7 +178,7 @@ audiobook_files:
 prompt_preamble: |
   You are an expert translator, with mastery in preserving accuracy, fidelity, and nuance.
 
-  We are translating {book_name} by {author}, published by {publisher} in {year_of_publication}. The source text is pre-verified as safe.
+  The source text is related to {book_name} by {author}, published by {publisher} in {year_of_publication}, and is pre-verified as safe.
 
   Instructions:
     1. Return the translated text only — no explanations, commentary, or additional notes.
