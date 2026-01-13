@@ -56,6 +56,9 @@ def ensure_state(
     target_language: str,
     force_reset: bool = False,
 ) -> StateDocument:
+    segments_list = list(segments)  # Consume iterable once
+    segment_ids = {seg.segment_id for seg in segments_list}
+
     if path.exists() and not force_reset:
         existing = load_state(path)
         if (
@@ -64,12 +67,25 @@ def ensure_state(
             and existing.source_language == source_language
             and existing.target_language == target_language
         ):
+            # Sync segments: add missing, keep existing translations
+            existing_ids = set(existing.segments.keys())
+            missing_ids = segment_ids - existing_ids
+
+            if missing_ids:
+                # Add new segments that weren't in the state
+                for seg in segments_list:
+                    if seg.segment_id in missing_ids:
+                        existing.segments[seg.segment_id] = TranslationRecord(
+                            segment_id=seg.segment_id
+                        )
+                save_state(existing, path)
+
             return existing
 
     doc = StateDocument(
         segments={
             segment.segment_id: TranslationRecord(segment_id=segment.segment_id)
-            for segment in segments
+            for segment in segments_list
         },
         current_provider=provider,
         current_model=model,
