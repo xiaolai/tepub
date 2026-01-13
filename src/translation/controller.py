@@ -214,6 +214,21 @@ def run_translation(
             f"based on {filter_type}[/cyan]"
         )
 
+    # Early exit if all segments were filtered out
+    if len(segments_doc.segments) == 0:
+        if settings.translation_files is not None:
+            console.print(
+                "[yellow]No segments to translate. All segments were filtered out by the "
+                "translation_files inclusion list in config.yaml.[/yellow]"
+            )
+            console.print(
+                "[yellow]This may indicate a mismatch between config.yaml and segments.json. "
+                "Try deleting the work directory and re-running extraction.[/yellow]"
+            )
+        else:
+            console.print("[yellow]No segments to translate. All segments were skipped.[/yellow]")
+        return
+
     provider = create_provider(settings.primary_provider)
     state_doc = ensure_state(
         settings.state_file,
