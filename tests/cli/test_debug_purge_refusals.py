@@ -5,15 +5,15 @@ from click.testing import CliRunner
 from cli.main import app
 from config import AppSettings
 from state.models import (
+    ExtractMode,
     Segment,
     SegmentMetadata,
-    ExtractMode,
     SegmentsDocument,
+    SegmentStatus,
     StateDocument,
     TranslationRecord,
-    SegmentStatus,
 )
-from state.store import save_segments, save_state, load_state
+from state.store import load_state, save_segments, save_state
 
 
 def _build_segment(segment_id: str, content: str) -> Segment:
@@ -123,7 +123,7 @@ def test_update_state_atomic_persists_in_place_mutation(tmp_path):
     Comparing the returned document against the (already mutated) loaded document
     made every in-place updater look like a no-op, so nothing was written.
     """
-    from state.store import save_state, load_state, update_state_atomic
+    from state.store import load_state, save_state, update_state_atomic
 
     path = tmp_path / "state.json"
     save_state(

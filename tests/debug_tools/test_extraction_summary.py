@@ -6,7 +6,15 @@ from rich.console import Console
 
 from config import AppSettings
 from debug_tools.extraction_summary import print_extraction_summary
-from state.models import Segment, SegmentMetadata, SegmentsDocument, SkippedDocument, StateDocument, TranslationRecord, SegmentStatus
+from state.models import (
+    Segment,
+    SegmentMetadata,
+    SegmentsDocument,
+    SegmentStatus,
+    SkippedDocument,
+    StateDocument,
+    TranslationRecord,
+)
 from state.store import save_segments, save_state
 
 

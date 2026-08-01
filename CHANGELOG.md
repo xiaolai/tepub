@@ -21,7 +21,10 @@ These affect anyone who processes an EPUB from an untrusted source.
   copying manifest resources into the export directory.
 - **Stored XSS in the web export.** `<script>` elements and inline event handlers
   (`onerror`, `onclick`, …) were never removed from book content, and
-  `javascript:` URLs were explicitly preserved. Active content is now stripped.
+  `javascript:` URLs were explicitly preserved. Active content is now stripped,
+  including SVG/MathML foreign content: literal `xlink:href`, animation elements
+  that assign an href at runtime (`<animate>`, `<set>`), and URL-bearing
+  attributes in any namespace or prefix.
 - **Script breakout via book metadata.** Book data is embedded in a `<script>`
   element, but `<` was not escaped, so a title containing `</script>` closed the
   element and the remainder became live markup.

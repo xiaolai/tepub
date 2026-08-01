@@ -58,3 +58,32 @@ def test_book_data_cannot_break_out_of_script_element():
     assert "<" not in escaped
     # Still decodes to the original value.
     assert json.loads(escaped)["title"] == json.loads(payload)["title"]
+
+
+@pytest.mark.parametrize(
+    "markup,label",
+    [
+        ('<svg><a xlink:href="javascript:alert(1)">x</a></svg>', "svg literal xlink:href"),
+        ('<svg><animate attributeName="href" values="javascript:alert(1)"/></svg>', "svg animate"),
+        ('<svg><set attributeName="href" to="javascript:alert(1)"/></svg>', "svg set"),
+        ('<math><mtext><a xlink:href="javascript:alert(1)">x</a></mtext></math>', "mathml"),
+        ('<a XLINK:HREF="JaVaScRiPt:alert(1)">x</a>', "uppercase prefix and scheme"),
+        ('<object data="javascript:alert(1)"></object>', "object data"),
+        ('<img srcset="javascript:alert(1) 1x">', "srcset"),
+        ('<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe>', "iframe srcdoc"),
+        ('<embed src="javascript:alert(1)">', "embed"),
+        ('<body background="javascript:alert(1)">x</body>', "body background"),
+    ],
+)
+def test_foreign_content_and_namespaced_urls_are_neutralised(markup, label):
+    """Active content is not limited to <script> and plain href.
+
+    The first pass matched a fixed list of literal attribute names, so
+    `xlink:href` written verbatim on an SVG element survived, as did SVG
+    animation elements that set an href at runtime. Attributes are now matched by
+    local name across every namespace and prefix.
+    """
+    out = clean_html(f"<html><body>{markup}</body></html>")
+
+    assert "javascript:" not in out.lower(), label
+    assert "<script" not in out.lower(), label

@@ -64,21 +64,42 @@ def _is_dangerous_url(value: str) -> bool:
     return collapsed.startswith(_DANGEROUS_SCHEMES)
 
 
-#: Attributes that can carry a URL and therefore an executable scheme.
-_URL_ATTRS = ("href", "src", "action", "formaction", "{http://www.w3.org/1999/xlink}href")
+#: Local attribute names that can carry a URL. Matched by *local* name across
+#: every namespace and prefix: checking a fixed list of literal names missed
+#: `xlink:href` written as a literal attribute on SVG elements, which lxml keeps
+#: verbatim rather than expanding to the namespaced form.
+_URL_ATTR_LOCALNAMES = frozenset(
+    {
+        "href", "src", "srcset", "action", "formaction", "data", "poster",
+        "background", "longdesc", "usemap", "cite", "profile", "codebase",
+        # SVG animation targets: <animate values="javascript:…"> is live content.
+        "values", "from", "to", "by",
+    }
+)
+
+
+def _local_name(attr: str) -> str:
+    """Attribute name without a namespace URI or prefix."""
+    if attr.startswith("{"):
+        attr = attr.rsplit("}", 1)[-1]
+    if ":" in attr:
+        attr = attr.rsplit(":", 1)[-1]
+    return attr.lower()
 
 
 def _sanitise_urls(doc: html.HtmlElement) -> None:
-    """Strip URL attributes carrying an executable scheme.
+    """Strip attributes carrying an executable scheme, in any namespace.
 
-    This runs unconditionally. Link handling previously lived only in
-    _rewrite_links, which clean_html calls just when a relative_path is supplied,
-    so a javascript: URL survived untouched on the default path.
+    Runs unconditionally. Link handling previously lived only in _rewrite_links,
+    which clean_html calls just when a relative_path is supplied, so a
+    javascript: URL survived untouched on the default path.
     """
     for el in doc.iter():
         if not isinstance(el.tag, str):
             continue
-        for attr in _URL_ATTRS:
+        for attr in list(el.attrib):
+            if _local_name(attr) not in _URL_ATTR_LOCALNAMES:
+                continue
             value = el.get(attr)
             if value and _is_dangerous_url(value):
                 del el.attrib[attr]
@@ -178,7 +199,14 @@ REMOVABLE_ATTRS = {"style", "class", "lang", "xml:lang"}
 #: Elements dropped with their contents. The book is untrusted input and the
 #: export is opened in a browser, but none of these were removed, so a book
 #: containing <script>…</script> produced a page that executed it.
-UNSAFE_TAGS = ("script", "iframe", "object", "embed", "base", "noscript")
+UNSAFE_TAGS = (
+    "script", "iframe", "object", "embed", "base", "noscript",
+    "frame", "frameset", "applet", "meta", "link", "template", "portal",
+    # SVG/MathML foreign content can execute without a <script> element:
+    # <animate attributeName="href" values="javascript:…"> is live.
+    "animate", "animatemotion", "animatetransform", "set", "handler",
+    "foreignobject",
+)
 
 
 def _remove_tags(doc: html.HtmlElement) -> None:

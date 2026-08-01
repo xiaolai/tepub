@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from config import AppSettings
-from epub_io.reader import EpubReader, MAX_EPUB_SIZE
+from epub_io.reader import MAX_EPUB_SIZE, EpubReader
 
 
 def test_epub_reader_rejects_missing_file(tmp_path):

@@ -555,13 +555,26 @@ def assemble_audiobook(
         expected_chapters.append((title, chapter_path, file_path, segments))
 
     def _chapter_is_current(chapter_path: Path, segments: list[Segment]) -> bool:
-        """True when a cached chapter file is newer than every segment feeding it.
+        """True when a cached chapter is newer than, and built from, these segments.
 
         Existence alone is not enough: re-synthesising with a different voice,
         speed or source text rewrites the segment audio but leaves the chapter
         file in place, so the old audio was served indefinitely.
+
+        Timestamps alone are not enough either. If a chapter was built from
+        segments A+B and a later run includes only A, every remaining source file
+        can be older than the chapter, so the stale chapter — still containing B —
+        was reused. The composition is recorded alongside the audio and compared.
         """
         if not chapter_path.exists():
+            return False
+        manifest_path = chapter_path.with_suffix(chapter_path.suffix + ".segments")
+        expected = "\n".join(segment.segment_id for segment in segments)
+        try:
+            if manifest_path.read_text(encoding="utf-8") != expected:
+                return False
+        except OSError:
+            # No manifest: written by an older version, composition unknown.
             return False
         chapter_mtime = chapter_path.stat().st_mtime
         for segment in segments:
@@ -683,6 +696,11 @@ def assemble_audiobook(
 
                 # Clean up temp directory
                 shutil.rmtree(chapter_temp_dir, ignore_errors=True)
+                # Record which segments this chapter was built from, so a later
+                # run with a different segment set cannot reuse it.
+                chapter_path.with_suffix(chapter_path.suffix + ".segments").write_text(
+                    "\n".join(seg.segment_id for seg in segments), encoding="utf-8"
+                )
 
                 # Add cover art to chapter M4A file
                 if cover_data:

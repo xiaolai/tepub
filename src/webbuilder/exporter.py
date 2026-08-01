@@ -147,7 +147,11 @@ def export_web(
         else:
             doc_titles[path] = _document_title(document.tree) or path.stem
         documents[path.as_posix()] = content
-        dest = content_dir / path
+        # Documents come from the same untrusted manifest as static resources and
+        # need the same guard; only the static-resource path was validated, so a
+        # document named "../escape.xhtml" still wrote outside content_dir.
+        doc_member = safe_relative_member(path.as_posix(), reader.epub_path)
+        dest = content_dir / Path(*doc_member.parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
 
