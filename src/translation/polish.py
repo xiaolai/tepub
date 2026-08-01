@@ -23,8 +23,13 @@ def target_is_chinese(language: str) -> bool:
     Returns:
         True if language is Chinese, False otherwise
     """
-    lower = language.lower()
+    lower = language.strip().lower()
     if "chinese" in lower:
+        return True
+    # ISO codes were not recognised at all, so a config using `target_language:
+    # zh-CN` silently skipped Chinese typography formatting. Match the primary
+    # subtag so every zh-* variant (zh, zh-CN, zh-TW, zh-Hans, zh-Hant) counts.
+    if lower.replace("_", "-").split("-")[0] in {"zh", "cmn", "yue"}:
         return True
     return bool(CHINESE_RE.search(language))
 
@@ -79,17 +84,25 @@ def polish_if_chinese(
     if not target_is_chinese(target_language):
         return False
 
+    # Cheap pre-check so the "formatting…" message is only printed when there is
+    # work to do; the authoritative read happens under the lock below.
     try:
         state = load_fn(state_file_path)
     except FileNotFoundError:
         return False
 
-    polished = polish_state(state)
-    if polished.model_dump() == state.model_dump():
+    if polish_state(state).model_dump() == state.model_dump():
         return False
 
     prefix = f"{message_prefix} " if message_prefix else ""
     console_print(f"[cyan]{prefix}Formatting translated text for Chinese typography…[/cyan]")
-    save_fn(polished, state_file_path)
-    console_print("[green]Formatting complete.[/green]")
-    return True
+
+    # Re-read and write under the state-file lock. This was an unlocked
+    # load-modify-save, so a translation completing between the read above and
+    # the write below was overwritten by the stale snapshot.
+    from state.store import update_state_atomic
+
+    changed = update_state_atomic(state_file_path, polish_state)
+    if changed:
+        console_print("[green]Formatting complete.[/green]")
+    return changed
