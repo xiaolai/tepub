@@ -1,7 +1,7 @@
 from pathlib import Path
 
+from state.models import ExtractMode, Segment, SegmentMetadata
 from translation.prompt_builder import build_prompt, configure_prompt
-from state.models import Segment, SegmentMetadata, ExtractMode
 
 
 def _make_segment(text: str, mode: ExtractMode = ExtractMode.TEXT) -> Segment:

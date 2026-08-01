@@ -19,7 +19,7 @@ def test_write_updated_epub_updates_toc(monkeypatch, tmp_path):
         lambda b, href: html_item,
     )
 
-    updated_html = {Path("Text/ch1.xhtml"): "<h1 id='t'>Título</h1>".encode("utf-8")}
+    updated_html = {Path("Text/ch1.xhtml"): "<h1 id='t'>Título</h1>".encode()}
     toc_updates = {PurePosixPath("Text/ch1.xhtml"): {"t": "Título", None: "Título"}}
 
     output_path = tmp_path / "out.epub"
@@ -41,7 +41,7 @@ def test_write_updated_epub_injects_translated_only_css(monkeypatch, tmp_path):
         uid="style",
         file_name="Styles/style.css",
         media_type="text/css",
-        content="body { font-family: serif; }".encode("utf-8"),
+        content=b"body { font-family: serif; }",
     )
     book.add_item(html_item)
     book.add_item(css_item)
@@ -55,7 +55,7 @@ def test_write_updated_epub_injects_translated_only_css(monkeypatch, tmp_path):
         lambda b, href: html_item,
     )
 
-    updated_html = {Path("Text/ch1.xhtml"): "<p data-lang='translation'>你好</p>".encode("utf-8")}
+    updated_html = {Path("Text/ch1.xhtml"): "<p data-lang='translation'>你好</p>".encode()}
 
     output_path = tmp_path / "out.epub"
     writer.write_updated_epub(

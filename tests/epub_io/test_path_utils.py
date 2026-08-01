@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from epub_io.path_utils import normalize_epub_href
 
 

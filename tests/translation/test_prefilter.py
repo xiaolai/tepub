@@ -1,5 +1,6 @@
-from state.models import Segment, SegmentMetadata, ExtractMode
+from state.models import ExtractMode, Segment, SegmentMetadata
 from translation.prefilter import should_auto_copy
+
 
 def _segment(text: str) -> Segment:
     return Segment(

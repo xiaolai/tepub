@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from click.testing import CliRunner
 from importlib import import_module
 
-from config import build_workspace_name
+from click.testing import CliRunner
+
 from config import models as config_models
 
 

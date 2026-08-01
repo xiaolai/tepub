@@ -1,11 +1,10 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
 
-from config import AppSettings, ProviderConfig
-from state.models import ExtractMode, Segment, SegmentMetadata, SegmentStatus, SegmentsDocument
+from config import AppSettings
+from state.models import ExtractMode, Segment, SegmentMetadata, SegmentsDocument, SegmentStatus
 from state.store import load_state, save_segments
 from translation.controller import run_translation
 from translation.providers.base import ProviderFatalError

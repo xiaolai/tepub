@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-import pytest
-
 from epub_io.toc_utils import parse_toc_to_dict
 
 

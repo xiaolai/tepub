@@ -61,6 +61,13 @@ def extract_epub_structure(
             # Get list of all files in the EPUB
             file_list = epub_zip.namelist()
 
+            # Validate every member up front. Validating inside the write loop
+            # meant a malicious member partway through an archive was rejected
+            # only after everything before it had already been written to disk.
+            for candidate in file_list:
+                if not candidate.endswith("/"):
+                    _safe_relative_member(candidate, input_epub)
+
             # Flattening collapses distinct members onto one name; track what we
             # have written so a collision does not silently destroy the earlier file.
             used_names: dict[str, str] = {}

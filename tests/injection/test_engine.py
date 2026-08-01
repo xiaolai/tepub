@@ -67,8 +67,8 @@ def test_apply_translations_replaces_in_translated_only_mode():
 
 def test_group_translated_segments_excludes_auto_copied(tmp_path, monkeypatch):
     """Test that segments with provider_name=None (auto-copied) are excluded from injection."""
-    from state.store import save_segments, save_state
     from state.models import SegmentsDocument, StateDocument
+    from state.store import save_segments, save_state
 
     # Create test segments
     segments = [

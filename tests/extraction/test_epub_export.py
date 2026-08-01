@@ -315,3 +315,26 @@ class TestGetEpubMetadataFiles:
 
         assert 'container' in metadata
         assert 'opf' in metadata
+
+
+def test_nothing_is_written_when_a_later_member_is_unsafe(tmp_path):
+    """Every member is validated before any write.
+
+    Validation used to happen inside the write loop, so a malicious member
+    partway through an archive was rejected only after everything preceding it
+    had already been written to disk.
+    """
+    epub_path = tmp_path / "evil.epub"
+    with zipfile.ZipFile(epub_path, "w") as epub:
+        epub.writestr("good1.txt", "a")
+        epub.writestr("good2.txt", "b")
+        epub.writestr("../escape.txt", "pwned")
+
+    output_dir = tmp_path / "extracted"
+
+    with pytest.raises(UnsafeArchiveMemberError):
+        extract_epub_structure(epub_path, output_dir)
+
+    written = list(output_dir.rglob("*")) if output_dir.exists() else []
+    assert written == []
+    assert not (tmp_path / "escape.txt").exists()

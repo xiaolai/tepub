@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from exceptions import CorruptedStateError, StateFileNotFoundError, TepubError, WorkspaceNotFoundError
+from exceptions import (
+    CorruptedStateError,
+    StateFileNotFoundError,
+    TepubError,
+    WorkspaceNotFoundError,
+)
 
 
 class TestTepubError:
