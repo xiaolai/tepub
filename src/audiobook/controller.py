@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import signal
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,7 +9,7 @@ from pathlib import Path
 from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TaskID, TextColumn, TimeElapsedColumn
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from config import AppSettings
@@ -220,34 +219,42 @@ class AudiobookRunner:
             return load_translation_state(self.settings.state_file)
         return None
 
-    def _segments_to_process(self) -> list[SegmentWork]:
+    def _included_segments(self, *, announce: bool = False) -> list[Segment]:
+        """Segments this audiobook actually covers, after inclusion/skip filtering.
+
+        Single source of truth for "which segments belong to this audiobook".
+        Cover-only validation used to re-scan every stored segment instead, so
+        deliberately excluded segments were reported as missing audio and blocked
+        the cover rebuild.
+        """
         segments_doc = load_segments(self.settings.segments_file)
+        original_count = len(segments_doc.segments)
 
         # Filter segments based on audiobook_files inclusion list or skip metadata
-        original_count = len(segments_doc.segments)
         if self.settings.audiobook_files is not None:
             # Explicit inclusion list takes precedence
             allowed_files = set(self.settings.audiobook_files)
-            segments_doc.segments = [
-                seg
-                for seg in segments_doc.segments
-                if seg.file_path.as_posix() in allowed_files
+            segments = [
+                seg for seg in segments_doc.segments if seg.file_path.as_posix() in allowed_files
             ]
         else:
             # No inclusion list: filter out segments with skip metadata
-            segments_doc.segments = [
-                seg
-                for seg in segments_doc.segments
-                if seg.skip_reason is None
-            ]
+            segments = [seg for seg in segments_doc.segments if seg.skip_reason is None]
 
-        filtered_count = original_count - len(segments_doc.segments)
-        if filtered_count > 0:
-            filter_type = "inclusion list" if self.settings.audiobook_files is not None else "skip rules"
+        filtered_count = original_count - len(segments)
+        if announce and filtered_count > 0:
+            filter_type = (
+                "inclusion list" if self.settings.audiobook_files is not None else "skip rules"
+            )
             console.print(
                 f"[cyan]Filtered {filtered_count} segments from {original_count} "
                 f"based on {filter_type}[/cyan]"
             )
+        return segments
+
+    def _segments_to_process(self) -> list[SegmentWork]:
+        segments_doc = load_segments(self.settings.segments_file)
+        segments_doc.segments = self._included_segments(announce=True)
 
         translation_state = self._load_translation_state()
         translation_skips = set()
@@ -280,7 +287,7 @@ class AudiobookRunner:
                     last_error="empty or non-text content",
                 )
                 continue
-            sentences = split_sentences(text)
+            sentences = split_sentences(text, language=self.language)
             if not sentences:
                 mark_status(
                     self.state_path,
@@ -320,10 +327,9 @@ class AudiobookRunner:
                 save_state(state, self.state_path)
 
         if self.cover_only:
-            segments_doc = load_segments(self.settings.segments_file)
             audio_state = load_audio_state(self.state_path)
             missing: list[str] = []
-            for segment in segments_doc.segments:
+            for segment in self._included_segments():
                 seg_state = audio_state.segments.get(segment.segment_id)
                 if not seg_state or seg_state.status != AudioSegmentStatus.COMPLETED:
                     missing.append(segment.segment_id)
@@ -344,6 +350,7 @@ class AudiobookRunner:
                 session=state.session,
                 state_path=self.state_path,
                 output_root=self.output_root,
+                included_segment_ids={seg.segment_id for seg in self._included_segments()},
             )
             if final_path:
                 console.print(f"[green]Final audiobook written to {final_path}[/green]")
@@ -419,7 +426,6 @@ class AudiobookRunner:
             auto_refresh=False,
         )
         task_id = progress.add_task("Synthesis", total=total_segments, completed=completed_segments)
-        cooldown_task: TaskID | None = None
 
         def render_panel() -> Panel:
             return _build_audiobook_dashboard(
@@ -447,15 +453,44 @@ class AudiobookRunner:
                     pending_queue: list[str] = []
                     for seg_id in work_map:
                         seg_state = audio_state.segments.get(seg_id)
-                        if seg_state and seg_state.status in (
-                            AudioSegmentStatus.COMPLETED,
-                            AudioSegmentStatus.SKIPPED,
-                        ):
+                        if seg_state and seg_state.status == AudioSegmentStatus.SKIPPED:
                             continue
+                        if seg_state and seg_state.status == AudioSegmentStatus.COMPLETED:
+                            # Trusting the COMPLETED flag alone let a segment whose
+                            # audio file had been deleted or never written drop out
+                            # of the queue, so it was silently omitted from the book.
+                            if seg_state.audio_path and Path(seg_state.audio_path).exists():
+                                continue
                         pending_queue.append(seg_id)
 
                     if not pending_queue:
                         break
+
+                    # Recompute the dashboard counters from state rather than carrying
+                    # the previous pass's arithmetic forward. Failures decremented
+                    # pending and advanced progress, then reset_error_segments put those
+                    # segments back in the queue without undoing either — so a retried
+                    # pass drifted into negative pending counts and progress past total.
+                    completed_segments = sum(
+                        1
+                        for seg_id in work_map
+                        if (state_entry := audio_state.segments.get(seg_id)) is not None
+                        and state_entry.status == AudioSegmentStatus.COMPLETED
+                    )
+                    skipped_segments = sum(
+                        1
+                        for seg_id in work_map
+                        if (state_entry := audio_state.segments.get(seg_id)) is not None
+                        and state_entry.status == AudioSegmentStatus.SKIPPED
+                    )
+                    error_segments = sum(
+                        1
+                        for seg_id in work_map
+                        if (state_entry := audio_state.segments.get(seg_id)) is not None
+                        and state_entry.status == AudioSegmentStatus.ERROR
+                    )
+                    pending_segments = len(pending_queue)
+                    progress.update(task_id, completed=completed_segments)
 
                     pass_successes = 0
                     pass_failures: list[str] = []
@@ -491,6 +526,10 @@ class AudiobookRunner:
                             for future in as_completed(future_to_seg_id):
                                 active_workers -= 1
                                 seg_id = future_to_seg_id[future]
+                                if future.cancelled():
+                                    # Cancelled when cooldown began; the segment stays
+                                    # pending and is picked up by the next pass.
+                                    continue
                                 result = future.result()
 
                                 if result.error:
@@ -511,9 +550,17 @@ class AudiobookRunner:
                                     set_consecutive_failures(self.state_path, consecutive)
                                     if consecutive >= 3:
                                         in_cooldown = True
+                                        # Stop queued work before waiting. Every pending
+                                        # segment had already been submitted, so without
+                                        # this the workers kept calling the provider
+                                        # throughout the cooldown — exactly what the
+                                        # cooldown exists to prevent. Cancelled segments
+                                        # stay pending and the next pass retries them.
+                                        for queued in future_to_seg_id:
+                                            if not queued.done():
+                                                queued.cancel()
                                         cooldown_until = datetime.utcnow() + timedelta(minutes=30)
                                         set_cooldown(self.state_path, cooldown_until)
-                                        duration = 30 * 60
                                         remaining = (cooldown_until - datetime.utcnow()).total_seconds()
                                         while remaining > 0:
                                             mins = int(remaining // 60)
@@ -593,6 +640,7 @@ class AudiobookRunner:
                 session=state.session,
                 state_path=self.state_path,
                 output_root=self.output_root,
+                included_segment_ids={seg.segment_id for seg in self._included_segments()},
             )
             if final_path:
                 console.print(f"[green]Final audiobook written to {final_path}[/green]")

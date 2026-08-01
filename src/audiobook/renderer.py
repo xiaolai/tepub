@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 import tempfile
@@ -9,8 +10,7 @@ from pathlib import Path
 os.environ.setdefault("PYDUB_SIMPLE_AUDIOOP", "1")
 from pydub import AudioSegment
 
-from .preprocess import segment_to_text
-from .tts import EdgeTTSEngine, OpenAITTSEngine, TTSEngine
+from .tts import OpenAITTSEngine, TTSEngine
 
 
 class SegmentRenderer:
@@ -35,7 +35,11 @@ class SegmentRenderer:
         if not sentences:
             raise ValueError("No sentences to render")
         output_dir.mkdir(parents=True, exist_ok=True)
-        segment_seed = hash(segment_id) & 0xFFFFFFFF
+        # hash() on str is salted per process (PYTHONHASHSEED), so identical input
+        # produced different pause timing on every run. Derive a stable seed instead.
+        segment_seed = int.from_bytes(
+            hashlib.sha256(segment_id.encode()).digest()[:4], "big"
+        )
         rng = random.Random(segment_seed)
 
         audio_parts: list[AudioSegment] = []

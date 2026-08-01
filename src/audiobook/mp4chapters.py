@@ -8,12 +8,24 @@ from pathlib import Path
 from mutagen._util import insert_bytes, resize_bytes
 from mutagen.mp4 import MP4, Atom, Atoms, MP4Chapters, MP4Tags
 
+from console_singleton import get_console
+
+console = get_console()
+
 ChapterTuple = tuple[float, str]
 
 
 def _build_chpl_payload(chapters: Sequence[ChapterTuple], timescale: int) -> bytes:
     if timescale <= 0:
         timescale = 1000
+
+    # The chpl format stores the chapter count in a single byte. Without this check
+    # bytearray.append() raised a bare ValueError from deep inside the packer.
+    if len(chapters) > 255:
+        raise ValueError(
+            f"chpl chapter atom supports at most 255 chapters, got {len(chapters)}. "
+            "Reduce the chapter count or disable chpl chapter markers."
+        )
 
     body = bytearray()
     body.append(len(chapters))
@@ -22,7 +34,11 @@ def _build_chpl_payload(chapters: Sequence[ChapterTuple], timescale: int) -> byt
         safe_title = (title or "").strip()
         if not safe_title:
             safe_title = "Chapter"
+        # Titles are length-prefixed with one byte, so cap at 255 bytes. Slicing
+        # encoded UTF-8 can cut a multibyte character in half and yield invalid
+        # metadata, so drop any partial trailing sequence after truncating.
         encoded = safe_title.encode("utf-8")[:255]
+        encoded = encoded.decode("utf-8", errors="ignore").encode("utf-8")
         start = int(round(seconds * timescale * 10000))
         body.extend(struct.pack(">Q", start))
         body.append(len(encoded))
@@ -132,9 +148,15 @@ def write_chapter_markers(mp4_path: Path, markers: Sequence[tuple[int, str]]) ->
         else:
             _replace_existing_chpl(helper, fh, atoms, chpl_atom, path)
 
-    # Optional load to ensure chapters read back; ignore failures silently
+    # Verify the chapters we just wrote can actually be parsed back. This used to
+    # swallow every exception, so a file with unreadable chapter metadata was
+    # reported as a success.
     try:
         mp4 = MP4(mp4_path)
         _ = mp4.chapters
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - surfaced, not swallowed
+        console.print(
+            f"[yellow]Warning: chapter metadata written to {mp4_path.name} could not be "
+            f"read back ({exc}). The audiobook is usable but chapter markers may not "
+            f"appear in players.[/yellow]"
+        )
