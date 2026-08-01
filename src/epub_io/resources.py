@@ -58,10 +58,6 @@ def iter_spine_items(book: epub.EpubBook) -> Iterable[SpineItem]:
         )
 
 
-def get_html_items(book: epub.EpubBook) -> list[epub.EpubHtml]:
-    return [item for item in book.get_items() if item.get_type() == epub.ITEM_DOCUMENT]
-
-
 def get_item_by_href(book: epub.EpubBook, href: Path):
     # ebooklib stores file_name using forward slashes
     target = href.as_posix()

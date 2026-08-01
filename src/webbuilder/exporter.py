@@ -140,11 +140,10 @@ def export_web(
             content = clean_html(document.raw_html, relative_path=path)
         ensure_parseable(content)
         if mode == "translated_only":
-            doc_titles[path] = (
-                _document_title(lxml_html.fromstring(content)) or path.stem
-                if "lxml_html" in globals()
-                else _document_title(document.tree) or path.stem
-            )
+            # lxml_html is imported unconditionally, so the old `in globals()`
+            # guard was always true and its else branch unreachable. Titles come
+            # from the *cleaned* content here so they reflect the translation.
+            doc_titles[path] = _document_title(lxml_html.fromstring(content)) or path.stem
         else:
             doc_titles[path] = _document_title(document.tree) or path.stem
         documents[path.as_posix()] = content
