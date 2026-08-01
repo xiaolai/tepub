@@ -136,21 +136,34 @@ def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
     Returns:
         True if valid artifacts exist, False otherwise
     """
+    return describe_pipeline_artifacts(settings, input_epub)[0]
+
+
+def describe_pipeline_artifacts(
+    settings: AppSettings, input_epub: Path
+) -> tuple[bool, str]:
+    """Report whether existing artifacts are reusable, and why not when they aren't.
+
+    The boolean-only check collapsed missing, unreadable, wrong-EPUB and
+    incomplete artifacts into a single False, so the pipeline silently re-ran a
+    full extraction with no indication of which condition applied.
+    """
     segments_path = settings.segments_file
     state_path = settings.state_file
 
-    if not segments_path.exists() or not state_path.exists():
-        return False
+    if not segments_path.exists():
+        return False, f"no segments file at {segments_path}"
+    if not state_path.exists():
+        return False, f"no translation state at {state_path}"
 
     try:
         segments_doc = load_segments(segments_path)
         state_doc = load_state(state_path)
-    except (OSError, ValueError, TypeError, KeyError):
-        # Unreadable or malformed artifacts mean "not usable", which is what this
-        # predicate reports. A bare `except Exception` also swallowed programming
-        # defects and permission errors, silently triggering a full re-extraction
-        # instead of surfacing the real problem.
-        return False
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        # A bare `except Exception` also swallowed programming defects and
+        # permission errors, silently triggering a full re-extraction instead of
+        # surfacing the real problem.
+        return False, f"artifacts could not be read ({exc})"
 
     # Validate EPUB path matches
     try:
@@ -159,11 +172,11 @@ def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
         saved_epub_path = Path(str(segments_doc.epub_path))
 
     try:
-        if saved_epub_path.resolve() != input_epub.resolve():
-            return False
-    except Exception:
-        if saved_epub_path != input_epub:
-            return False
+        mismatched = saved_epub_path.resolve() != input_epub.resolve()
+    except OSError:
+        mismatched = saved_epub_path != input_epub
+    if mismatched:
+        return False, f"artifacts belong to a different EPUB ({saved_epub_path})"
 
     # Validate segments match state.
     # Requiring *every* extracted segment id to appear in state was too strict:
@@ -173,9 +186,9 @@ def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
     # no overlap at all still catches genuinely mismatched files.
     segment_ids = {segment.segment_id for segment in segments_doc.segments}
     if not segment_ids:
-        return False
+        return False, "segments file contains no segments"
 
     if not segment_ids & state_doc.segments.keys():
-        return False
+        return False, "segments and translation state share no segment ids"
 
-    return True
+    return True, "reusable"

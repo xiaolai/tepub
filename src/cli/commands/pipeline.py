@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 
 from cli.commands.export import _run_exports
-from cli.core import check_pipeline_artifacts, prepare_settings_for_epub, resolve_export_flags
+from cli.core import describe_pipeline_artifacts, prepare_settings_for_epub, resolve_export_flags
 from config import AppSettings
 from console_singleton import get_console
 from extraction.pipeline import run_extraction
@@ -60,11 +60,16 @@ def pipeline_command(
         settings = settings.model_copy(update={"output_mode": output_mode.replace("-", "_")})
         ctx.obj["settings"] = settings
 
-    if check_pipeline_artifacts(settings, input_epub):
+    reusable, reason = describe_pipeline_artifacts(settings, input_epub)
+    if reusable:
         console.print(
             f"[cyan]Resuming with existing extraction at {settings.segments_file}; using state {settings.state_file}[/cyan]"
         )
     else:
+        # Say why we are re-extracting. Every failure mode used to collapse into a
+        # silent full re-run, which looked identical whether the workspace was
+        # merely absent or belonged to a different book entirely.
+        console.print(f"[yellow]Re-running extraction: {reason}.[/yellow]")
         run_extraction(settings=settings, input_epub=input_epub)
 
     source_pref = source_language or settings.source_language
