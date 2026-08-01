@@ -33,8 +33,13 @@ def _is_image_item(item) -> bool:
     return False
 
 
-def _is_potential_cover(file_path: Path, is_first_spine_image: bool) -> bool:
-    """Determine if an image is likely a cover candidate."""
+def _is_potential_cover(file_path: Path, is_first_manifest_image: bool) -> bool:
+    """Determine if an image is likely a cover candidate.
+
+    Note: the positional heuristic is based on manifest order, not spine order —
+    the spine is never inspected here. Manifest order usually puts the cover
+    first, but it is a weaker signal than the filename patterns above it.
+    """
     name_lower = file_path.name.lower()
 
     # Check filename patterns
@@ -43,8 +48,8 @@ def _is_potential_cover(file_path: Path, is_first_spine_image: bool) -> bool:
     if "title" in name_lower:
         return True
 
-    # First image in spine is often the cover
-    if is_first_spine_image:
+    # The first image in manifest order is often the cover
+    if is_first_manifest_image:
         return True
 
     return False
@@ -70,7 +75,11 @@ def extract_images(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     extracted_images: list[ImageInfo] = []
-    seen_first_spine_image = False
+    seen_first_manifest_image = False
+    # Names claimed during *this* run. Previously the loop tested output_path.exists(),
+    # so a rerun saw every prior output as a duplicate and emitted image_1.jpg,
+    # image_2.jpg, … growing without bound and leaving stale files behind.
+    used_names: set[str] = set()
 
     # Extract all image items from EPUB
     for item in reader.book.get_items():
@@ -81,37 +90,41 @@ def extract_images(
 
         # Generate output filename (preserve original name, handle duplicates)
         output_filename = epub_path.name
+
+        # Disambiguate only against names already written in this run, so output is
+        # deterministic across runs and managed files are overwritten in place.
+        if output_filename in used_names:
+            counter = 1
+            while output_filename in used_names:
+                counter += 1
+                output_filename = f"{epub_path.stem}_{counter}{epub_path.suffix}"
+        used_names.add(output_filename)
         output_path = output_dir / output_filename
 
-        # Handle duplicate filenames by adding a counter
-        counter = 1
-        while output_path.exists():
-            stem = epub_path.stem
-            suffix = epub_path.suffix
-            output_filename = f"{stem}_{counter}{suffix}"
-            output_path = output_dir / output_filename
-            counter += 1
-
-        # Write image file
+        # Read the item. A single unreadable manifest entry is recoverable —
+        # skip it and carry on.
         try:
             content = item.get_content()
-            output_path.write_bytes(content)
-
-            # Check if this could be a cover
-            is_cover_candidate = _is_potential_cover(epub_path, not seen_first_spine_image)
-            if not seen_first_spine_image:
-                seen_first_spine_image = True
-
-            extracted_images.append(
-                ImageInfo(
-                    epub_path=epub_path,
-                    extracted_path=output_path,
-                    is_cover_candidate=is_cover_candidate,
-                )
-            )
         except Exception as e:
-            console.print(f"[yellow]Warning: Failed to extract image {epub_path}: {e}[/yellow]")
+            console.print(f"[yellow]Warning: Failed to read image {epub_path}: {e}[/yellow]")
+            used_names.discard(output_filename)
             continue
+
+        # Write failures are NOT recoverable: swallowing them produced an export
+        # that reported success while silently missing images.
+        output_path.write_bytes(content)
+
+        # Check if this could be a cover
+        is_cover_candidate = _is_potential_cover(epub_path, not seen_first_manifest_image)
+        seen_first_manifest_image = True
+
+        extracted_images.append(
+            ImageInfo(
+                epub_path=epub_path,
+                extracted_path=output_path,
+                is_cover_candidate=is_cover_candidate,
+            )
+        )
 
     return extracted_images
 

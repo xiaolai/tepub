@@ -232,3 +232,29 @@ def test_segment_to_text_skips_table_and_figure():
 
     assert segment_to_text(table_segment, reader=mock_reader) is None
     assert segment_to_text(figure_segment, reader=mock_reader) is None
+
+
+class TestNoterefDetection:
+    """A superscript link is only a note reference when it actually looks like one."""
+
+    import pytest
+
+    @pytest.mark.parametrize(
+        "markup,expected,label",
+        [
+            ('<a href="#fn1"><sup>1</sup></a>', True, "in-page fragment"),
+            ("<a><sup>1</sup></a>", True, "bare marker, no href"),
+            ('<a href="notes.xhtml#n1"><sup>1</sup></a>', True, "cross-file note"),
+            ('<a class="footnote" href="x"><sup>1</sup></a>', True, "class hint"),
+            ('<a href="https://example.com"><sup>2</sup></a>', False, "external link"),
+            ('<a href="formula.xhtml"><sup>2</sup></a>', False, "linked formula"),
+        ],
+    )
+    def test_noteref_classification(self, markup, expected, label):
+        from lxml import html as lxml_html
+
+        from audiobook.preprocess import _is_noteref
+
+        link = lxml_html.fromstring(f"<p>{markup}</p>").xpath(".//a")[0]
+
+        assert _is_noteref(link) is expected, label

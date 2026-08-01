@@ -2,8 +2,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from epub_io.path_utils import normalize_epub_href
 from audiobook.assembly import _prepare_cover
+from epub_io.path_utils import normalize_epub_href
 
 
 def test_normalize_relative_image_path():

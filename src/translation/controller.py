@@ -14,6 +14,7 @@ from rich.table import Table
 
 from config import AppSettings
 from console_singleton import get_console
+from exceptions import ArtifactMismatchError
 from logging_utils.logger import get_logger
 from state.models import SegmentStatus
 from state.store import (
@@ -22,12 +23,11 @@ from state.store import (
     load_state,
     mark_status,
     reset_error_segments,
-    save_state,
     set_consecutive_failures,
     set_cooldown,
 )
 from translation.languages import describe_language
-from translation.polish import polish_if_chinese, polish_translation, target_is_chinese
+from translation.polish import polish_translation
 from translation.providers import ProviderError, ProviderFatalError, create_provider
 
 from .prefilter import should_auto_copy
@@ -146,6 +146,11 @@ def _translate_segment(
 
     # Perform translation
     try:
+        # Enforce the provider's declared capabilities before spending a call.
+        ensure_supported = getattr(provider, "ensure_segment_supported", None)
+        if ensure_supported is not None:
+            ensure_supported(segment)
+
         translation_text = provider.translate(
             segment,
             source_language=source_language,
@@ -159,7 +164,15 @@ def _translate_segment(
             provider_name=provider.name,
             model_name=provider.model,
         )
-    except (ProviderError, ProviderFatalError) as exc:
+    except ProviderFatalError as exc:
+        # Kept distinct from ProviderError so the run loop can abort. Folding the
+        # two together meant a fatal condition — a rejected API key, say — was
+        # retried once per segment against every remaining segment.
+        return TranslationResult(
+            segment_id=segment.segment_id,
+            error=exc,
+        )
+    except ProviderError as exc:
         return TranslationResult(
             segment_id=segment.segment_id,
             error=exc,
@@ -181,12 +194,17 @@ def run_translation(
     settings.ensure_directories()
 
     segments_doc = load_segments(settings.segments_file)
-    if segments_doc.epub_path != input_epub:
-        logger.warning(
-            "Segments file was generated for %s but %s was provided.",
-            segments_doc.epub_path,
-            input_epub,
-        )
+    # Compare resolved paths: the raw comparison reported a mismatch for a mere
+    # relative-vs-absolute difference, which is presumably why this was only a
+    # warning. A genuine mismatch means the segment ids and xpaths describe a
+    # different book, so translating them corrupts the output — fail instead.
+    recorded_epub = Path(str(segments_doc.epub_path))
+    try:
+        mismatched = recorded_epub.resolve() != input_epub.resolve()
+    except OSError:
+        mismatched = recorded_epub != input_epub
+    if mismatched:
+        raise ArtifactMismatchError(input_epub, recorded_epub)
 
     # Filter segments based on translation_files inclusion list or skip metadata
     original_count = len(segments_doc.segments)
@@ -286,7 +304,6 @@ def run_translation(
             if file_completed[path] >= total_required
         )
 
-    preview_text = "waiting…"
 
     progress = Progress(
         TextColumn("[bold blue]{task.description}"),
@@ -351,9 +368,14 @@ def run_translation(
 
                 pass_successes = 0
                 pass_failures: list[str] = []
+                fatal_error: Exception | None = None
 
                 # Use parallel translation with ThreadPoolExecutor
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Not a `with` block: its __exit__ calls shutdown(wait=True), which
+                # negated the wait=False fast path on KeyboardInterrupt below.
+                executor = ThreadPoolExecutor(max_workers=max_workers)
+                interrupted = False
+                try:
                     # Submit all pending segments
                     future_to_segment = {}
                     for segment in pending_segments_list:
@@ -372,6 +394,9 @@ def run_translation(
                         for future in as_completed(future_to_segment):
                             active_workers -= 1
                             segment = future_to_segment[future]
+                            if future.cancelled():
+                                # Cancelled when cooldown began; stays pending.
+                                continue
                             result = future.result()
 
                             # Update state based on result
@@ -399,6 +424,24 @@ def run_translation(
                                     SegmentStatus.ERROR,
                                     error_message=str(result.error),
                                 )
+                                if isinstance(result.error, ProviderFatalError):
+                                    # Fatal means the whole run cannot succeed — a
+                                    # rejected key or unusable model. Stop scheduling
+                                    # instead of repeating it against every remaining
+                                    # segment. The run still returns normally so
+                                    # completed work stays saved and resumable.
+                                    fatal_error = result.error
+                                    for queued in future_to_segment:
+                                        if not queued.done():
+                                            queued.cancel()
+                                    console.print(
+                                        f"[red]Fatal provider error: {result.error}[/red]"
+                                    )
+                                    console.print(
+                                        "[yellow]Stopping run; completed translations are "
+                                        "saved and the run can be resumed.[/yellow]"
+                                    )
+                                    break
                                 error_msg = _truncate_text(str(result.error))
                                 preview_lines[preview_index] = f"[red]{error_msg}[/red]"
                                 pass_failures.append(result.segment_id)
@@ -410,9 +453,16 @@ def run_translation(
 
                                 if consecutive >= 3:
                                     in_cooldown = True
+                                    # Every pending segment was already submitted, so
+                                    # without cancelling, workers kept calling the
+                                    # provider throughout the cooldown — exactly what
+                                    # the cooldown exists to prevent. Cancelled
+                                    # segments stay pending for the next pass.
+                                    for queued in future_to_segment:
+                                        if not queued.done():
+                                            queued.cancel()
                                     cooldown_until = datetime.utcnow() + timedelta(minutes=30)
                                     set_cooldown(settings.state_file, cooldown_until)
-                                    duration = 30 * 60
                                     remaining = (cooldown_until - datetime.utcnow()).total_seconds()
 
                                     while remaining > 0:
@@ -454,9 +504,17 @@ def run_translation(
                             live.update(Group(render_panel(), progress))
 
                     except KeyboardInterrupt:
+                        interrupted = True
                         console.print("\n[yellow]Interrupted by user. Canceling pending translations...[/yellow]")
                         executor.shutdown(wait=False, cancel_futures=True)
                         raise
+                finally:
+                    if not interrupted:
+                        executor.shutdown(wait=True)
+
+                if fatal_error is not None:
+                    # Retrying cannot help: the provider itself is unusable.
+                    break
 
                 # After each pass, check if we should retry failed segments
                 if pass_failures:

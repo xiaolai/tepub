@@ -26,19 +26,35 @@ def parse_toc_to_dict(reader: EpubReader) -> dict[str, str]:
     """
     mapping: dict[str, str] = {}
 
+    def _record(node) -> None:
+        href = (node.href or "").split("#", 1)[0]  # Remove fragment
+        if not href:
+            # Structural sections carry no target; keying them under "" put a
+            # bogus entry in the mapping that later lookups could match.
+            return
+        title = node.title or ""
+        if not title:
+            # An entry with no title still registers its document, matching the
+            # previous behaviour, but must not clear a title already recorded.
+            mapping.setdefault(href, "")
+            return
+        # Several fragment-level entries can point at one document. Plain
+        # assignment let the last one win, so a document's title became whichever
+        # sub-section appeared last. The first entry introduces the document.
+        if not mapping.get(href):
+            mapping[href] = title
+
     def recurse(entries):
         """Recursively traverse TOC entries."""
         for item in entries:
             # Handle direct Link objects
             if hasattr(item, "href") and hasattr(item, "title"):
-                href = item.href.split("#", 1)[0]  # Remove fragment
-                mapping[href] = item.title or mapping.get(href, "")
+                _record(item)
             # Handle nested tuple/list structure (older EpubPy format)
             elif isinstance(item, (list, tuple)) and item:
                 head = item[0]
                 if hasattr(head, "href") and hasattr(head, "title"):
-                    href = head.href.split("#", 1)[0]
-                    mapping[href] = head.title or mapping.get(href, "")
+                    _record(head)
                 # Recurse into children if they exist
                 if len(item) > 1:
                     recurse(item[1])

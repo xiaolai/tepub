@@ -44,3 +44,28 @@ def test_write_chapter_markers_roundtrip(tmp_path):
     assert mp4.chapters[1].title == "Middle"
     assert mp4.chapters[0].start == pytest.approx(0.0, abs=0.01)
     assert mp4.chapters[1].start == pytest.approx(0.5, abs=0.01)
+
+
+def test_chpl_rejects_more_than_255_chapters():
+    """The chpl count field is one byte; 256+ used to raise a bare ValueError."""
+    import pytest
+
+    from audiobook.mp4chapters import _build_chpl_payload
+
+    with pytest.raises(ValueError, match="at most 255 chapters"):
+        _build_chpl_payload([(float(i), f"Ch {i}") for i in range(256)], 1000)
+
+
+def test_chpl_title_truncation_keeps_valid_utf8():
+    """Byte-slicing a multibyte title at 255 could split a codepoint."""
+    from audiobook.mp4chapters import _build_chpl_payload
+
+    # One ASCII char shifts the boundary into the middle of a 3-byte character.
+    title = "X" + "章" * 200
+    body = _build_chpl_payload([(0.0, title)], 1000)[8:]
+
+    length = body[9]
+    encoded = bytes(body[10 : 10 + length])
+
+    assert length <= 255
+    encoded.decode("utf-8")  # must not raise

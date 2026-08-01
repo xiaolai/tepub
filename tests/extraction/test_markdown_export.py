@@ -1,18 +1,17 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from ebooklib import epub
 
-from extraction.markdown_export import (
-    _sanitize_filename,
-    _html_to_markdown,
-    export_to_markdown,
-    export_combined_markdown,
-)
+from epub_io.path_utils import normalize_epub_href
 from epub_io.reader import EpubReader
 from epub_io.toc_utils import parse_toc_to_dict
-from epub_io.path_utils import normalize_epub_href
+from extraction.markdown_export import (
+    _html_to_markdown,
+    _sanitize_filename,
+    export_combined_markdown,
+    export_to_markdown,
+)
 from state.models import ExtractMode, Segment, SegmentMetadata, SegmentsDocument
 from state.store import save_segments
 

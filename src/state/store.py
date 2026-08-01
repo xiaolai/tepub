@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
-from .base import load_generic_state, save_generic_state
+from .base import load_generic_state, save_generic_state, state_file_lock
 from .models import (
     ResumeInfo,
     Segment,
@@ -21,7 +21,13 @@ _locks_lock = threading.Lock()
 
 
 def _get_lock(path: Path) -> threading.Lock:
-    """Get or create a lock for a specific state file path."""
+    """Get or create an in-process lock for a specific state file path.
+
+    This serialises threads only. Cross-process safety comes from
+    state.base.state_file_lock, which the transactional helpers below combine
+    with this one; the in-memory lock alone left concurrent tepub processes free
+    to interleave read-modify-write cycles.
+    """
     path_str = str(path.resolve())
     with _locks_lock:
         if path_str not in _state_file_locks:
@@ -150,22 +156,26 @@ def iter_segments_by_status(state: StateDocument, status: SegmentStatus) -> Iter
             yield segment_id
 
 
+def _set_state_field(state_path: Path, field: str, value) -> None:
+    """Assign one top-level state field under both locks.
+
+    set_consecutive_failures and set_cooldown were byte-identical apart from the
+    field they assigned.
+    """
+    with _get_lock(state_path), state_file_lock(state_path):
+        state = load_generic_state(state_path, StateDocument)
+        setattr(state, field, value)
+        save_generic_state(state, state_path)
+
+
 def set_consecutive_failures(state_path: Path, count: int) -> None:
     """Set the consecutive failures counter in the state file."""
-    lock = _get_lock(state_path)
-    with lock:
-        state = load_generic_state(state_path, StateDocument)
-        state.consecutive_failures = count
-        save_generic_state(state, state_path)
+    _set_state_field(state_path, "consecutive_failures", count)
 
 
 def set_cooldown(state_path: Path, until: datetime | None) -> None:
     """Set the cooldown expiration timestamp in the state file."""
-    lock = _get_lock(state_path)
-    with lock:
-        state = load_generic_state(state_path, StateDocument)
-        state.cooldown_until = until
-        save_generic_state(state, state_path)
+    _set_state_field(state_path, "cooldown_until", until)
 
 
 def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None) -> list[str]:
@@ -178,12 +188,13 @@ def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None)
     Returns:
         List of segment IDs that were reset
     """
-    lock = _get_lock(state_path)
-    with lock:
+    with _get_lock(state_path), state_file_lock(state_path):
         state = load_generic_state(state_path, StateDocument)
         changed = False
         reset_ids: list[str] = []
-        target_ids = set(segment_ids) if segment_ids else None
+        # `if segment_ids` treats an explicit empty list as "no filter", so
+        # reset_error_segments(path, []) reset *every* errored segment.
+        target_ids = None if segment_ids is None else set(segment_ids)
 
         for seg_id, record in state.segments.items():
             if target_ids is not None and seg_id not in target_ids:
@@ -198,3 +209,29 @@ def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None)
             save_generic_state(state, state_path)
 
         return reset_ids
+
+
+def update_state_atomic(state_path: Path, updater) -> bool:
+    """Run ``updater(state)`` under the state-file lock and persist any change.
+
+    Commands that did load_state -> modify -> save_state left a window in which a
+    concurrent translate run could write between the read and the write, and its
+    updates were then overwritten wholesale. ``updater`` receives the freshly
+    loaded document and returns the document to save, or None to make no change.
+
+    Returns True when the file was rewritten.
+    """
+    lock = _get_lock(state_path)
+    with lock:
+        state = load_generic_state(state_path, StateDocument)
+        # Snapshot before calling the updater: an updater that mutates the document
+        # in place and returns it would otherwise be compared against itself, so
+        # the change would always look like a no-op and never be persisted.
+        before = state.model_dump()
+        updated = updater(state)
+        if updated is None:
+            return False
+        if updated.model_dump() == before:
+            return False
+        save_generic_state(updated, state_path)
+        return True

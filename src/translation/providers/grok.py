@@ -3,13 +3,12 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import requests
-
 from config import ProviderConfig
 from state.models import Segment
 from translation import prompt_builder
 
 from .base import BaseProvider, ProviderFatalError, ensure_translation_available
+from .http import post_json
 
 
 class GrokProvider(BaseProvider):
@@ -48,18 +47,14 @@ class GrokProvider(BaseProvider):
         }
         headers.update(self.config.extra_headers)
 
-        try:
-            response = requests.post(
-                self.config.base_url,
-                json=payload,
-                headers=headers,
-                timeout=120,
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network dependent
-            raise ProviderFatalError(f"Grok request failed: {exc}") from exc
+        data: Any = post_json(
+            "Grok",
+            self.config.base_url,
+            headers=headers,
+            json_payload=payload,
+            timeout=120,
+        )
 
-        data: Any = response.json()
         output = None
         if isinstance(data, dict):
             choices = data.get("choices")
