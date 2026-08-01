@@ -431,4 +431,3 @@ def split_sentences(text: str, language: str | None = None) -> list[str]:
         return [normalized] if normalized else []
 
     return cleaned
-
