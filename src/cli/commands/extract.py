@@ -116,7 +116,9 @@ def extract(
         from extraction.markdown_export import export_combined_markdown, export_to_markdown
     except ImportError as exc:
         console.print(f"[red]Markdown export unavailable: {exc}[/red]")
-        console.print("[yellow]Reinstall tepub to repair the environment: pip install -e .[/yellow]")
+        console.print(
+            "[yellow]Reinstall tepub to repair the environment: pip install -e .[/yellow]"
+        )
         raise SystemExit(1) from exc
 
     created_files = export_to_markdown(settings, input_epub, markdown_dir, image_mapping)

@@ -9,9 +9,7 @@ def _clone_element(element: html.HtmlElement) -> html.HtmlElement:
     # with_tail=False: the tail belongs to the parent, not the element. Serialising
     # it made non-whitespace tail text part of the clone (and could break
     # fragment_fromstring, which rejects trailing content).
-    return html.fragment_fromstring(
-        html.tostring(element, encoding="unicode", with_tail=False)
-    )
+    return html.fragment_fromstring(html.tostring(element, encoding="unicode", with_tail=False))
 
 
 def prepare_original(element: html.HtmlElement) -> None:

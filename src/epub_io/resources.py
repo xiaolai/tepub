@@ -45,7 +45,8 @@ def iter_spine_items(book: epub.EpubBook) -> Iterable[SpineItem]:
             # that looked complete while missing content.
             logger.warning(
                 "Spine entry %r has no matching manifest item; that document will "
-                "be missing from the output.", idref
+                "be missing from the output.",
+                idref,
             )
             continue
         href = Path(item.file_name)

@@ -37,9 +37,7 @@ class SegmentRenderer:
         output_dir.mkdir(parents=True, exist_ok=True)
         # hash() on str is salted per process (PYTHONHASHSEED), so identical input
         # produced different pause timing on every run. Derive a stable seed instead.
-        segment_seed = int.from_bytes(
-            hashlib.sha256(segment_id.encode()).digest()[:4], "big"
-        )
+        segment_seed = int.from_bytes(hashlib.sha256(segment_id.encode()).digest()[:4], "big")
         rng = random.Random(segment_seed)
 
         audio_parts: list[AudioSegment] = []

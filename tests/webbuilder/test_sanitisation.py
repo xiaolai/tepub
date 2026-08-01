@@ -15,13 +15,13 @@ from webbuilder.dom import clean_html
     "markup,forbidden",
     [
         ("<script>alert(1)</script>", "alert(1)"),
-        ("<img src=x onerror=\"alert(1)\">", "onerror"),
-        ("<p onclick=\"alert(1)\">hi</p>", "onclick"),
-        ("<a href=\"javascript:alert(1)\">x</a>", "javascript:"),
-        ("<a href=\"JaVaScRiPt:alert(1)\">x</a>", "avascript:"),
-        ("<iframe src=\"//evil\"></iframe>", "<iframe"),
-        ("<object data=\"//evil\"></object>", "<object"),
-        ("<form action=\"javascript:alert(1)\"></form>", "javascript:"),
+        ('<img src=x onerror="alert(1)">', "onerror"),
+        ('<p onclick="alert(1)">hi</p>', "onclick"),
+        ('<a href="javascript:alert(1)">x</a>', "javascript:"),
+        ('<a href="JaVaScRiPt:alert(1)">x</a>', "avascript:"),
+        ('<iframe src="//evil"></iframe>', "<iframe"),
+        ('<object data="//evil"></object>', "<object"),
+        ('<form action="javascript:alert(1)"></form>', "javascript:"),
     ],
 )
 def test_dangerous_markup_is_removed(markup, forbidden, relative_path):
@@ -37,7 +37,7 @@ def test_dangerous_markup_is_removed(markup, forbidden, relative_path):
 
 def test_legitimate_content_survives():
     out = clean_html(
-        '<html><body><p>Real text.</p>'
+        "<html><body><p>Real text.</p>"
         '<a href="https://example.com">link</a>'
         '<img src="pic.png"></body></html>'
     )
