@@ -34,6 +34,8 @@ class BaseProvider(abc.ABC):
 
 
 def ensure_translation_available(text: str | None) -> str:
-    if not text:
+    # `not text` accepts a whitespace-only response, which was then stored as a
+    # completed translation and silently emptied that segment in the output.
+    if text is None or not text.strip():
         raise ProviderError("Provider returned empty translation")
     return text
