@@ -17,6 +17,23 @@ class BookData:
     documents: dict[str, str] | None = None
 
 
+def _escape_for_script_element(payload: str) -> str:
+    """Escape JSON so book content cannot terminate its enclosing <script>.
+
+    json.dumps does not escape "<", so a title or TOC entry containing
+    "</script>" closed the element and everything after it became live markup —
+    stored XSS sourced from the book. U+2028/U+2029 are also escaped: they are
+    valid in JSON but are line terminators in JavaScript.
+    """
+    return (
+        payload.replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def _read_template(name: str) -> str:
     template_path = resources.files(TEMPLATE_PACKAGE) / name
     return template_path.read_text(encoding="utf-8")
@@ -47,5 +64,7 @@ def render_index(output_root: Path, data: BookData) -> None:
         },
         ensure_ascii=False,
     )
-    contents = index_template.replace("{{BOOK_DATA}}", book_data_json)
+    contents = index_template.replace(
+        "{{BOOK_DATA}}", _escape_for_script_element(book_data_json)
+    )
     (output_root / "index.html").write_text(contents, encoding="utf-8")

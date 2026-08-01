@@ -7,6 +7,7 @@ from ebooklib import ITEM_DOCUMENT, epub
 from lxml import html as lxml_html
 
 from config import AppSettings
+from epub_io.path_utils import safe_relative_member
 from epub_io.reader import EpubReader
 from epub_io.resources import iter_spine_items
 from injection.engine import apply_translations
@@ -89,7 +90,11 @@ def _copy_static_resources(reader: EpubReader, content_dir: Path) -> None:
         # Skip HTML documents; they are handled separately
         if item.get_type() == ITEM_DOCUMENT:
             continue
-        dest = content_dir / Path(item.file_name)
+        # Manifest names are book-controlled. Joining them unchecked let a
+        # crafted EPUB write outside content_dir — pathlib discards the base
+        # entirely for an absolute name, and ".." walks upward.
+        member = safe_relative_member(item.file_name, reader.epub_path)
+        dest = content_dir / Path(*member.parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(item.get_content())
 

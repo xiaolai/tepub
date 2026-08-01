@@ -5,28 +5,12 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from exceptions import UnsafeArchiveMemberError
+from epub_io.path_utils import safe_relative_member
 
 
 def _safe_relative_member(internal_path: str, epub_path: Path) -> PurePosixPath:
-    """Validate an archive member name and return it as a safe relative path.
-
-    ZIP member names come from the archive, not from us. ``output_dir / name``
-    silently discards ``output_dir`` when ``name`` is absolute, and ``..``
-    components walk out of it, so both are rejected before anything is written.
-    """
-    normalized = internal_path.replace("\\", "/")
-    member = PurePosixPath(normalized)
-
-    if member.is_absolute() or normalized.startswith("/"):
-        raise UnsafeArchiveMemberError(internal_path, epub_path)
-    # A Windows drive letter ("C:foo") is not absolute to PurePosixPath.
-    if len(normalized) >= 2 and normalized[1] == ":":
-        raise UnsafeArchiveMemberError(internal_path, epub_path)
-    if ".." in member.parts:
-        raise UnsafeArchiveMemberError(internal_path, epub_path)
-
-    return member
+    """Validate an archive member name (see epub_io.path_utils.safe_relative_member)."""
+    return safe_relative_member(internal_path, epub_path)
 
 
 def extract_epub_structure(
