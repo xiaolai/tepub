@@ -182,6 +182,12 @@ def apply_translations(
         )
         failed_segments.extend(failures)
         if updated:
+            # Restore head/body structure for *this* document before serialising.
+            # This ran once after the loop using the final loop variable, so it
+            # applied to a single document — and to a tree that had already been
+            # serialised, making it a no-op for the output. It also raised
+            # NameError when every document was missing and the loop never ran.
+            _restore_document_structure(document, document.raw_html)
             html_bytes = etree.tostring(document.tree, encoding="utf-8", method="html")
             updated_html[file_path] = html_bytes
 
@@ -194,8 +200,6 @@ def apply_translations(
         console.print(
             f"[yellow]Encountered {len(failed_segments)} segment insertion failures; see logs for details.[/yellow]"
         )
-
-    _restore_document_structure(document, document.raw_html)
 
     if effective_mode != "translated_only":
         title_updates.clear()

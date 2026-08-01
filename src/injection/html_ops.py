@@ -6,7 +6,10 @@ from state.models import ExtractMode, Segment
 
 
 def _clone_element(element: html.HtmlElement) -> html.HtmlElement:
-    return html.fragment_fromstring(html.tostring(element, encoding="unicode"))
+    # with_tail=False: the tail belongs to the parent, not the element. Serialising
+    # it made non-whitespace tail text part of the clone (and could break
+    # fragment_fromstring, which rejects trailing content).
+    return html.fragment_fromstring(html.tostring(element, encoding="unicode", with_tail=False))
 
 
 def prepare_original(element: html.HtmlElement) -> None:
@@ -25,7 +28,11 @@ def _set_html_content(element: html.HtmlElement, markup: str) -> None:
     Clears element and populates with parsed HTML fragments.
     Properly handles the fragment_fromstring wrapper to avoid tag leaks.
     """
+    # clear() also drops every attribute, which erased the data-lang marker that
+    # distinguishes the translated node from the original in bilingual output.
+    preserved_attrs = dict(element.attrib)
     element.clear()
+    element.attrib.update(preserved_attrs)
     if not markup:
         return
 

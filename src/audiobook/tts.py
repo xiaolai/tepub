@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import edge_tts
+
+from .async_utils import run_coroutine
 
 try:
     from openai import OpenAI
@@ -46,7 +47,7 @@ class EdgeTTSEngine(TTSEngine):
         await communicator.save(str(output_path))
 
     def synthesize(self, text: str, output_path: Path) -> None:
-        asyncio.run(self._synthesize_async(text, output_path))
+        run_coroutine(self._synthesize_async(text, output_path))
 
 
 class OpenAITTSEngine(TTSEngine):
@@ -72,7 +73,13 @@ class OpenAITTSEngine(TTSEngine):
 
         self.voice = voice
         self.model = model
-        self.speed = max(0.25, min(4.0, speed))  # Clamp to valid range
+        # Silently clamping hid bad CLI/caller input: a requested speed of 10 became
+        # 4.0 with no indication the request was ignored.
+        if not 0.25 <= speed <= 4.0:
+            raise ValueError(
+                f"OpenAI TTS speed must be between 0.25 and 4.0, got {speed}."
+            )
+        self.speed = speed
 
         # Use provided API key or fall back to environment variable
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")

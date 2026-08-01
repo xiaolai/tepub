@@ -249,3 +249,94 @@ def test_iter_segments_handles_complex_markup():
 
     assert namespaced_para.extract_mode == ExtractMode.TEXT
     assert namespaced_para.source_content == "Namespaced case paragraph."
+
+
+def test_segment_ids_do_not_collide_across_directories():
+    """Colliding ids are resolved after extraction, not by changing the id scheme.
+
+    Rewriting _build_segment_id outright would re-key every existing workspace
+    and strand completed translations and synthesised audio, so only the segments
+    that genuinely collide are given new ids.
+    """
+    from extraction.segments import resolve_segment_id_collisions
+
+    markup = "<html><body><p>Same text.</p></body></html>"
+    a = list(iter_segments(html.fromstring(markup), Path("OEBPS/a/ch1.xhtml"), spine_index=0))
+    b = list(iter_segments(html.fromstring(markup), Path("OEBPS/b/ch1.xhtml"), spine_index=1))
+
+    # The legacy id scheme collides; that is what is being resolved.
+    assert a[0].segment_id == b[0].segment_id
+
+    resolved, rekeyed = resolve_segment_id_collisions(a + b)
+
+    ids = [segment.segment_id for segment in resolved]
+    assert len(set(ids)) == len(ids)
+    assert len(rekeyed) == 1
+
+
+def test_non_colliding_segment_ids_are_left_alone():
+    """A healthy workspace must still match after re-extraction."""
+    from extraction.segments import resolve_segment_id_collisions
+
+    markup = "<html><body><p>Text.</p></body></html>"
+    segments = list(iter_segments(html.fromstring(markup), Path("OEBPS/only.xhtml"), spine_index=0))
+    original = [segment.segment_id for segment in segments]
+
+    resolved, rekeyed = resolve_segment_id_collisions(segments)
+
+    assert [segment.segment_id for segment in resolved] == original
+    assert rekeyed == []
+
+
+def test_simple_elements_inside_atomic_are_not_extracted_twice():
+    """A <p> inside an atomic <table> is carried by the table's HTML segment."""
+    markup = """
+    <html><body>
+    <table><tr><td><p>Cell paragraph.</p></td></tr></table>
+    </body></html>
+    """
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    assert len(segments) == 1
+    assert segments[0].extract_mode == ExtractMode.HTML
+    assert "Cell paragraph." in segments[0].source_content
+
+
+def test_order_in_file_is_contiguous_from_one():
+    """Skipped/empty elements must not consume order numbers."""
+    markup = """
+    <html><body>
+    <p>   </p>
+    <p>First real.</p>
+    <p></p>
+    <p>Second real.</p>
+    </body></html>
+    """
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    orders = [s.metadata.order_in_file for s in segments]
+    assert orders == list(range(1, len(segments) + 1))
+    assert orders[0] == 1
+
+
+def test_comment_inside_atomic_element_does_not_abort_extraction():
+    """Non-element children (comments) must serialize, not raise TypeError."""
+    markup = "<html><body><ul><li>Item<!-- note -->tail</li></ul></body></html>"
+
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    assert len(segments) == 1
+    assert "Item" in segments[0].source_content
+
+
+def test_tail_text_after_nested_same_tag_is_preserved():
+    """Text following a nested same-tag element counts as the wrapper's own text."""
+    markup = """
+    <html><body>
+    <blockquote><blockquote>Inner</blockquote> outer tail text</blockquote>
+    </body></html>
+    """
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    contents = " ".join(s.source_content for s in segments)
+    assert "outer tail text" in contents

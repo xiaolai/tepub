@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,12 @@ class ProviderConfig(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    max_tokens: int = Field(
+        default=8192,
+        gt=0,
+        description="Maximum tokens in a single translation response. A long segment "
+        "that exceeds this is reported as an error rather than silently truncated.",
+    )
 
     @field_validator("name")
     @classmethod
@@ -41,15 +48,24 @@ class SkipRule(BaseModel):
         return value.strip().lower()
 
 
-DEFAULT_ROOT_DIR = Path.cwd() / ".tepub"
+def _default_root_dir() -> Path:
+    """Resolve the default workspace root at call time.
+
+    This was computed once at import, so any settings constructed after a working
+    directory change still pointed at the original directory.
+    """
+    return Path.cwd() / ".tepub"
+
+
+DEFAULT_ROOT_DIR = _default_root_dir()
 _WORD_SPLIT_PATTERN = re.compile(r"[\s_-]+")
 _NON_SLUG_CHARS = re.compile(r"[^a-z0-9]+")
 _WORKSPACE_HASH_LENGTH = 8
 
 
 class AppSettings(BaseModel):
-    work_root: Path = Field(default_factory=lambda: DEFAULT_ROOT_DIR)
-    work_dir: Path = Field(default_factory=lambda: DEFAULT_ROOT_DIR)
+    work_root: Path = Field(default_factory=_default_root_dir)
+    work_dir: Path = Field(default_factory=_default_root_dir)
 
     source_language: str = Field(default="auto")
     target_language: str = Field(default="Simplified Chinese")
@@ -103,7 +119,15 @@ class AppSettings(BaseModel):
             "glossary",
         ]
     )
-    back_matter_threshold: float = 0.7  # Only trigger in last 30% of TOC
+    back_matter_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        # Interpreted as a fraction of the TOC. It previously accepted negatives,
+        # values above one, NaN and infinity, each of which silently disabled or
+        # inverted back-matter detection instead of being rejected.
+        description="Only trigger back-matter skipping in the last (1 - threshold) of the TOC",
+    )
 
     prompt_preamble: str | None = None
     output_mode: str = Field(default="bilingual")
@@ -131,6 +155,14 @@ class AppSettings(BaseModel):
     state_file: Path = Field(default_factory=lambda: Path("state.json"))
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("back_matter_threshold")
+    @classmethod
+    def _reject_non_finite_threshold(cls, value: float) -> float:
+        # ge/le comparisons are all False for NaN, so it slips past the bounds.
+        if not math.isfinite(value):
+            raise ValueError("back_matter_threshold must be a finite number between 0 and 1")
+        return value
 
     @field_validator("output_mode")
     @classmethod
@@ -177,8 +209,17 @@ class AppSettings(BaseModel):
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
     def model_copy(self, *, update: dict[str, Any] | None = None, deep: bool = False) -> AppSettings:  # type: ignore[override]
+        if not update:
+            return super().model_copy(deep=deep)
+
         old_work_dir = self.work_dir
-        copied: AppSettings = super().model_copy(update=update, deep=deep)
+        # Pydantic's model_copy assigns updates without running validators or
+        # model_post_init, so invalid worker counts, unknown output modes, strings
+        # in Path fields and dicts in ProviderConfig fields were accepted here and
+        # only crashed later in whichever consumer used them. Rebuilding through
+        # model_validate applies the same checks a fresh construction would.
+        merged = {**self.model_dump(), **update}
+        copied: AppSettings = type(self).model_validate(merged)
         new_work_dir = copied.work_dir
 
         overridden: set[str] = set(update.keys()) if update else set()

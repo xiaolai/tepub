@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from config.models import AppSettings
+from logging_utils.logger import get_logger
 
 try:
     import yaml
@@ -24,6 +25,9 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return data
 
 
+logger = get_logger(__name__)
+
+
 def _parse_yaml_file(path: Path) -> dict[str, Any]:
     """Parse YAML file into dictionary."""
     if not path.exists():
@@ -34,17 +38,15 @@ def _parse_yaml_file(path: Path) -> dict[str, Any]:
     if yaml:
         loaded = yaml.safe_load(text)
         return loaded or {}
-    # Minimal fallback parser: only supports top-level "key: value" pairs
-    result: dict[str, Any] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        result[key.strip()] = value.strip().strip('"').strip("'")
-    return result
+    # No usable fallback: the previous one handled only top-level "key: value"
+    # pairs, so it silently misparsed the nested providers block, lists, and the
+    # `prompt_preamble: |` block scalar that the generated per-book config always
+    # contains — producing a config that looked valid and was not. PyYAML is now
+    # a declared dependency, so reaching here means a broken environment.
+    raise RuntimeError(
+        f"Cannot parse {path}: PyYAML is not installed. "
+        "Reinstall tepub to repair the environment: pip install -e ."
+    )
 
 
 def _prepare_provider_credentials(settings: AppSettings) -> AppSettings:
@@ -140,7 +142,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         from translation.prompt_builder import configure_prompt
 
         configure_prompt(configured.prompt_preamble)
-    except Exception:  # pragma: no cover - prompt builder optional during tooling
+    except ImportError:
+        # Narrowed from `except Exception`, which also swallowed genuine errors
+        # raised while configuring the prompt and left translation running on a
+        # stale prompt with no indication.
+        logger.warning("Prompt builder unavailable; using the default prompt.")
         pass
     return configured
 

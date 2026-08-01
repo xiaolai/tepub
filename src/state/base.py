@@ -7,7 +7,11 @@ shared across different state management systems in the application.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TypeVar
 
@@ -23,6 +27,45 @@ except ImportError:
 
 # Generic type variable for state documents
 TDocument = TypeVar("TDocument", bound=BaseModel)
+
+
+# Locks are keyed to a sidecar file next to the target, not to the temporary file.
+# The previous code locked the shared ".tmp" path, released the lock, and only
+# then replaced the target — so two writers could lock different inodes, clobber
+# each other's temporary file, or move a half-written file into place.
+_HELD_LOCKS = threading.local()
+
+
+def _lock_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".lock")
+
+
+@contextmanager
+def state_file_lock(path: Path):
+    """Hold an exclusive cross-process lock for ``path``.
+
+    Re-entrant within a thread so a locked transaction can call the ordinary
+    save helpers without deadlocking on itself.
+    """
+    held = getattr(_HELD_LOCKS, "paths", None)
+    if held is None:
+        held = set()
+        _HELD_LOCKS.paths = held
+
+    key = str(path.resolve())
+    if key in held or not HAS_PORTALOCKER:
+        # Already held by this thread, or no cross-process locking available.
+        yield
+        return
+
+    lock_file = _lock_path(path)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    held.add(key)
+    try:
+        with portalocker.Lock(lock_file, "a", timeout=30):
+            yield
+    finally:
+        held.discard(key)
 
 
 def atomic_write(path: Path, payload: dict) -> None:
@@ -43,18 +86,26 @@ def atomic_write(path: Path, payload: dict) -> None:
     Example:
         >>> atomic_write(Path("state.json"), {"key": "value"})
     """
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
     content = json.dumps(payload, indent=2, ensure_ascii=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    if HAS_PORTALOCKER:
-        # Use file locking for concurrent write protection
-        with portalocker.Lock(tmp_path, "w", encoding="utf-8", timeout=30) as f:
-            f.write(content)
-    else:
-        # Fallback without locking (better than nothing)
-        tmp_path.write_text(content, encoding="utf-8")
-
-    tmp_path.replace(path)
+    with state_file_lock(path):
+        # A unique temporary file per writer: the shared ".tmp" name meant
+        # concurrent writers overwrote each other's pending content.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp"
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # Replacement happens while the lock is still held.
+            os.replace(tmp_path, path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
 
 def load_generic_state(path: Path, model_class: type[TDocument]) -> TDocument:
@@ -127,10 +178,13 @@ def update_state_item(
         ...     increment_counter
         ... )
     """
-    state = load_generic_state(state_path, model_class)
-    updated_state = updater(state)
-    save_generic_state(updated_state, state_path)
-    return updated_state
+    # The whole read-modify-write runs under one lock. Without it, concurrent
+    # updates read the same state and the later save discarded the earlier one.
+    with state_file_lock(state_path):
+        state = load_generic_state(state_path, model_class)
+        updated_state = updater(state)
+        save_generic_state(updated_state, state_path)
+        return updated_state
 
 
 def safe_load_state(

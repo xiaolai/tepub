@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from rich.prompt import Confirm
@@ -35,10 +37,27 @@ def _normalize_text(value: str) -> str:
     return " ".join(value.lower().split())
 
 
+@lru_cache(maxsize=512)
+def _keyword_pattern(keyword: str) -> re.Pattern[str] | None:
+    """Word-boundary matcher for an ASCII keyword, or None for scripts without them."""
+    if not keyword.isascii():
+        # CJK and similar scripts have no word boundaries; substring is the only
+        # workable test there.
+        return None
+    return re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)")
+
+
 def _match_keyword(text: str, keywords: Iterable[str]) -> str | None:
     normalized = _normalize_text(text)
     for keyword in keywords:
-        if keyword in normalized:
+        # Raw substring matching made "cover" match "discover", "index" match
+        # "indexation" and "notes" match "footnotes", so ordinary chapters were
+        # skipped from translation.
+        pattern = _keyword_pattern(keyword)
+        if pattern is not None:
+            if pattern.search(normalized):
+                return keyword
+        elif keyword in normalized:
             return keyword
     return None
 

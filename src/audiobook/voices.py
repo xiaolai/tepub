@@ -1,33 +1,36 @@
 from __future__ import annotations
 
-import asyncio
 from functools import lru_cache
 
 import edge_tts
 
+from .async_utils import run_coroutine
+
 
 @lru_cache(maxsize=1)
 def _all_edge_voices() -> list[dict]:
-    return asyncio.run(edge_tts.list_voices())
+    return run_coroutine(edge_tts.list_voices())
 
 
 def list_edge_voices_for_language(language_code: str | None) -> list[dict]:
     """List Edge TTS voices for a specific language.
 
+    Returns only voices matching the language — possibly an empty list. It used to
+    fall back to *every* voice when nothing matched, which silently handed callers
+    a voice in an unrelated language; callers already handle the empty case by
+    choosing an explicit default and saying so.
+
     Args:
         language_code: Language code prefix (e.g., "en", "zh")
 
     Returns:
-        List of voice dictionaries with metadata
+        List of voice dictionaries with metadata, empty if none match
     """
     voices = _all_edge_voices()
     if not language_code:
         return voices
     prefix = language_code.lower()
-    filtered = [voice for voice in voices if voice.get("Locale", "").lower().startswith(prefix)]
-    if filtered:
-        return filtered
-    return voices
+    return [voice for voice in voices if voice.get("Locale", "").lower().startswith(prefix)]
 
 
 def list_openai_voices() -> list[dict]:
@@ -101,14 +104,6 @@ def list_voices_for_provider(
     else:
         raise ValueError(f"Unknown TTS provider: {provider}")
 
-
-# Backward compatibility
-def list_voices_for_language(language_code: str | None) -> list[dict]:
-    """Legacy function for Edge TTS voice listing.
-
-    Deprecated: Use list_voices_for_provider("edge", language_code) instead.
-    """
-    return list_edge_voices_for_language(language_code)
 
 
 def format_voice_entry(voice: dict, provider: str = "edge") -> str:

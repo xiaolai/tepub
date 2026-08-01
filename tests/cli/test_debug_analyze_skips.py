@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+from importlib import import_module
 
 from click.testing import CliRunner
-
-from importlib import import_module
 
 
 def _load_app():

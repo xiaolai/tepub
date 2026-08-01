@@ -4,6 +4,85 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.2.4] - 2026-08-02
+
+Remediation of a 236-finding code audit. All 44 high-severity findings closed.
+
+### 🔒 Security
+
+These affect anyone who processes an EPUB from an untrusted source.
+
+- **Path traversal on EPUB extraction.** Archive member names were joined
+  directly onto the output directory. An absolute member name discards the base
+  path entirely, and `..` components walk out of it, so a crafted EPUB could
+  write anywhere the process had permission. Member names are now validated
+  before anything is written (`UnsafeArchiveMemberError`).
+- **Path traversal in the web exporter.** The same class of bug, unguarded, when
+  copying manifest resources into the export directory.
+- **Stored XSS in the web export.** `<script>` elements and inline event handlers
+  (`onerror`, `onclick`, …) were never removed from book content, and
+  `javascript:` URLs were explicitly preserved. Active content is now stripped,
+  including SVG/MathML foreign content: literal `xlink:href`, animation elements
+  that assign an href at runtime (`<animate>`, `<set>`), and URL-bearing
+  attributes in any namespace or prefix.
+- **Script breakout via book metadata.** Book data is embedded in a `<script>`
+  element, but `<` was not escaped, so a title containing `</script>` closed the
+  element and the remainder became live markup.
+- **Sanitisation was conditional.** URL cleaning ran only when an optional
+  argument was supplied, so the default code path sanitised nothing.
+
+### 🐛 Data-loss fixes
+
+- **`tepub extract` destroyed translations.** Re-running extraction wrote a fresh
+  all-pending state, discarding every completed translation. It now merges.
+- **Concurrent writes could clobber each other.** `atomic_write` locked a shared
+  temporary path and replaced the target after releasing the lock. Three
+  commands (`format`, `debug purge-refusals`, pre-injection polish) also did
+  unlocked read-modify-write cycles that overwrote concurrent progress.
+- **Segment id collisions.** Two files with the same basename in different
+  directories produced identical segment ids, so one segment's state silently
+  overwrote the other's. Only genuinely colliding segments are re-keyed, so
+  existing workspaces keep working and no completed work is lost.
+
+### 🔧 Correctness
+
+- Chapter YAML could never round-trip: segment lists were written as a truncated
+  comment, and unescaped titles produced invalid YAML.
+- Chapter audio was reused based on file existence alone, serving stale audio
+  after a voice, speed or text change. Changing any audio-affecting setting now
+  invalidates completed segments.
+- Audiobook synthesis crashed on a clean install (NLTK 3.9 moved the Punkt data).
+- CJK text was tokenised with the English sentence splitter and came back as one
+  unbroken sentence.
+- `--work-dir` was silently ignored; `--quiet` had no effect on most output;
+  `--verbose` was reset by the next logger created.
+- Skip keywords matched as substrings, so "cover" matched "Discovering" and
+  ordinary chapters were excluded from translation.
+- A provider apology alone counted as a refusal, resetting good translations.
+- `{language_instruction}`, documented as a prompt placeholder, raised KeyError.
+- Traditional Chinese was silently translated as Simplified by DeepL.
+- Anthropic responses longer than the token limit were silently truncated.
+- A single 429 rate-limit response was treated as fatal instead of retried.
+
+### 📦 Packaging
+
+- **`html2text` and `PyYAML` are now declared dependencies.** Both were imported
+  but never listed, so `tepub extract` and config parsing failed on a clean
+  install. **No action needed on upgrade** — pip installs them.
+- Optional provider extras added: `pip install tepub[anthropic]`,
+  `tepub[gemini]`, `tepub[all-providers]`.
+- Test coverage measured only six of eleven packages; now measures all of `src`.
+
+### ⚠️ Notes
+
+- No migration is required and no re-extraction is forced.
+- Providers that cannot preserve HTML now fail loudly rather than silently
+  mangling markup.
+- `config validate` now reports unrecognised keys and actually validates
+  per-book configs (it previously reported success regardless).
+
+---
+
 ## [0.2.0] - 2025-01-XX
 
 ### 🎉 Major New Features

@@ -1,4 +1,4 @@
-from translation.languages import normalize_language, describe_language
+from translation.languages import describe_language, normalize_language
 
 
 def test_normalize_language_accepts_codes_and_names() -> None:

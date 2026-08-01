@@ -12,7 +12,7 @@ from config import ProviderConfig
 from state.models import Segment
 from translation import prompt_builder
 
-from .base import BaseProvider, ProviderFatalError, ensure_translation_available
+from .base import BaseProvider, ProviderError, ProviderFatalError, ensure_translation_available
 
 
 class AnthropicProvider(BaseProvider):
@@ -39,7 +39,7 @@ class AnthropicProvider(BaseProvider):
         try:
             response = self._client.messages.create(
                 model=self.config.model,
-                max_tokens=4096,
+                max_tokens=self.config.max_tokens,
                 system="You are a precise literary translator.",
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -48,6 +48,15 @@ class AnthropicProvider(BaseProvider):
 
         if not response.content:
             raise ProviderFatalError("Anthropic response missing content")
+
+        # A truncated response used to be stored as a complete translation, losing
+        # the tail of any segment longer than the limit with no indication.
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            raise ProviderError(
+                f"Translation for segment {segment.segment_id} was truncated at "
+                f"{self.config.max_tokens} tokens. Raise `max_tokens` for this "
+                f"provider in config.yaml."
+            )
 
         text = response.content[0].text
         return ensure_translation_available(text)

@@ -1,6 +1,6 @@
 [project]
 name = "tepub"
-version = "0.2.3"
+version = "0.2.4"
 description = "TEPUB - Tools for EPUB: A comprehensive toolkit for EPUB processing including translation, audiobook generation, and export"
 requires-python = ">=3.10"
 authors = [
@@ -26,9 +26,11 @@ classifiers = [
 
 dependencies = [
   "Pillow>=10.2",
+  "PyYAML>=6.0",
   "cjk-text-formatter>=1.1.0",
   "click>=8.1",
   "ebooklib>=0.18",
+  "html2text>=2020.1.16",
   "edge-tts>=6.1",
   "langdetect>=1.0.9",
   "lxml>=5.0",
@@ -55,6 +57,15 @@ dev = [
   "ruff>=0.5",
   "black>=24.4",
 ]
+# Optional translation providers. Their imports are guarded, so tepub works
+# without them, but the packages were undeclared entirely — leaving no supported
+# way to install a provider the code ships support for.
+anthropic = ["anthropic>=0.40"]
+gemini = ["google-genai>=1.0"]
+all-providers = [
+  "anthropic>=0.40",
+  "google-genai>=1.0",
+]
 
 [project.scripts]
 tepub = "cli.main:app"
@@ -76,7 +87,7 @@ requires = ["setuptools>=61,<69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-addopts = "--cov=cli --cov=epub_io --cov=extraction --cov=translation --cov=injection --cov=state --cov-report=xml"
+addopts = "--cov=src --cov-report=xml"
 testpaths = ["tests"]
 pythonpath = ["src"]
 

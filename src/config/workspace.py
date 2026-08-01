@@ -4,7 +4,7 @@ import hashlib
 import unicodedata
 from pathlib import Path
 
-from config.models import AppSettings, _NON_SLUG_CHARS, _WORD_SPLIT_PATTERN, _WORKSPACE_HASH_LENGTH
+from config.models import _NON_SLUG_CHARS, _WORD_SPLIT_PATTERN, _WORKSPACE_HASH_LENGTH, AppSettings
 from exceptions import StateFileNotFoundError, WorkspaceNotFoundError
 
 
@@ -32,6 +32,14 @@ def with_book_workspace(settings: AppSettings, input_epub: Path) -> AppSettings:
         book_payload = _parse_yaml_file(book_config)
         if book_payload and isinstance(book_payload, dict):
             new_settings = new_settings.model_copy(update=book_payload)
+            # The prompt builder holds global state configured from the *global*
+            # config at load time. Without reconfiguring here, a per-book
+            # prompt_preamble was stored on the settings object and then ignored,
+            # and translation kept using the global prompt.
+            if "prompt_preamble" in book_payload:
+                from translation.prompt_builder import configure_prompt
+
+                configure_prompt(new_settings.prompt_preamble)
 
     return new_settings
 
@@ -51,6 +59,24 @@ def with_override_root(settings: AppSettings, base_path: Path, input_epub: Path)
     # Otherwise use it as root and create book-specific subdir
     work_dir = base_path / build_workspace_name(input_epub)
     return settings.model_copy(update={"work_root": base_path, "work_dir": work_dir})
+
+
+def _assert_segments_match_epub(segments_doc, input_epub: Path) -> None:
+    """Fail when segments.json was generated from a different EPUB.
+
+    Existence and schema checks alone let a workspace built for one book be used
+    for another: segment ids and xpaths then refer to the wrong document, and
+    translation/export silently produced corrupted output.
+    """
+    from exceptions import ArtifactMismatchError
+
+    recorded = Path(str(segments_doc.epub_path))
+    try:
+        same = recorded.resolve() == input_epub.resolve()
+    except OSError:
+        same = recorded == input_epub
+    if not same:
+        raise ArtifactMismatchError(input_epub, recorded)
 
 
 def validate_for_export(settings: AppSettings, input_epub: Path) -> None:
@@ -78,8 +104,9 @@ def validate_for_export(settings: AppSettings, input_epub: Path) -> None:
         raise StateFileNotFoundError("translation", input_epub)
 
     # Validate that files can actually be loaded (not corrupted)
-    safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
     safe_load_state(settings.state_file, StateDocument, "translation")
+    _assert_segments_match_epub(segments_doc, input_epub)
 
 
 def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
@@ -104,7 +131,8 @@ def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
         raise StateFileNotFoundError("segments", input_epub)
 
     # Validate that segments file can actually be loaded (not corrupted)
-    safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    _assert_segments_match_epub(segments_doc, input_epub)
 
 
 def build_workspace_name(input_epub: Path) -> str:

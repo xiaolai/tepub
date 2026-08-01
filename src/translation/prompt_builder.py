@@ -58,11 +58,15 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
 
     # Use custom prompt if configured, otherwise use default
     if _PROMPT_PREAMBLE:
+        # {language_instruction} is documented as an available placeholder in both
+        # README.md and config.example.yaml, but was never passed here, so any
+        # custom prompt_preamble using it failed with KeyError.
         intro = dedent(
             _PROMPT_PREAMBLE.format(
                 source_language=display_source,
                 target_language=display_target,
                 mode_instruction=mode_instruction,
+                language_instruction=language_instruction,
             )
         ).strip()
     else:

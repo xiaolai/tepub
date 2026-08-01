@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ebooklib import ITEM_DOCUMENT, epub
 from lxml import html as lxml_html
 
 from config import AppSettings
+from epub_io.path_utils import safe_relative_member
 from epub_io.reader import EpubReader
 from epub_io.resources import iter_spine_items
 from injection.engine import apply_translations
@@ -89,7 +90,11 @@ def _copy_static_resources(reader: EpubReader, content_dir: Path) -> None:
         # Skip HTML documents; they are handled separately
         if item.get_type() == ITEM_DOCUMENT:
             continue
-        dest = content_dir / Path(item.file_name)
+        # Manifest names are book-controlled. Joining them unchecked let a
+        # crafted EPUB write outside content_dir — pathlib discards the base
+        # entirely for an absolute name, and ".." walks upward.
+        member = safe_relative_member(item.file_name, reader.epub_path)
+        dest = content_dir / Path(*member.parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(item.get_content())
 
@@ -104,21 +109,28 @@ def export_web(
     output_root = (
         Path(output_dir) if output_dir else _default_output_dir(input_epub, settings.work_dir)
     )
+
+    mode_value = output_mode or getattr(settings, "output_mode", "bilingual")
+    mode = mode_value.replace("-", "_").lower() if isinstance(mode_value, str) else "bilingual"
+    if mode not in {"bilingual", "translated_only"}:
+        mode = "bilingual"
+
+    # Read the EPUB and apply translations *before* touching the existing export.
+    # The previous output used to be deleted first, so an unreadable EPUB or a
+    # failure during translation left the user with no export at all.
+    reader = EpubReader(input_epub, settings)
+    # mode was not forwarded, so an explicit output_mode differing from the
+    # configured one was ignored for the injection step.
+    updated_html, title_updates = apply_translations(settings, input_epub, mode=mode)
+
     if output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
     copy_static_assets(output_root)
 
-    reader = EpubReader(input_epub, settings)
-    updated_html, title_updates = apply_translations(settings, input_epub)
-
     doc_titles: dict[Path, str] = {}
     documents: dict[str, str] = {}
-    mode_value = output_mode or getattr(settings, "output_mode", "bilingual")
-    mode = mode_value.replace("-", "_").lower() if isinstance(mode_value, str) else "bilingual"
-    if mode not in {"bilingual", "translated_only"}:
-        mode = "bilingual"
     content_dir = output_root / "content"
     for document in reader.iter_documents():
         path = document.path
@@ -128,15 +140,18 @@ def export_web(
             content = clean_html(document.raw_html, relative_path=path)
         ensure_parseable(content)
         if mode == "translated_only":
-            doc_titles[path] = (
-                _document_title(lxml_html.fromstring(content)) or path.stem
-                if "lxml_html" in globals()
-                else _document_title(document.tree) or path.stem
-            )
+            # lxml_html is imported unconditionally, so the old `in globals()`
+            # guard was always true and its else branch unreachable. Titles come
+            # from the *cleaned* content here so they reflect the translation.
+            doc_titles[path] = _document_title(lxml_html.fromstring(content)) or path.stem
         else:
             doc_titles[path] = _document_title(document.tree) or path.stem
         documents[path.as_posix()] = content
-        dest = content_dir / path
+        # Documents come from the same untrusted manifest as static resources and
+        # need the same guard; only the static-resource path was validated, so a
+        # document named "../escape.xhtml" still wrote outside content_dir.
+        doc_member = safe_relative_member(path.as_posix(), reader.epub_path)
+        dest = content_dir / Path(*doc_member.parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
 
@@ -144,6 +159,18 @@ def export_web(
 
     spine = _build_spine(reader, doc_titles)
     toc = _parse_toc(reader.book.toc) if reader.book.toc else []
+    # title_updates was computed and then discarded, so translated-only exports
+    # kept the original TOC labels beside translated content.
+    if title_updates:
+        for entry in toc:
+            href = str(entry.get("href", ""))
+            path_part, _, fragment = href.partition("#")
+            updates = title_updates.get(PurePosixPath(path_part))
+            if not updates:
+                continue
+            translated = updates.get(fragment or None) or updates.get(None)
+            if translated:
+                entry["title"] = translated
     if not toc:
         toc = [{"title": entry["title"], "href": entry["href"], "level": 0} for entry in spine]
 
