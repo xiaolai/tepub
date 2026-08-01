@@ -4,9 +4,13 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
-## [0.2.4] - 2026-08-02
+## [0.3.0] - 2026-08-02
 
 Remediation of a 236-finding code audit. All 44 high-severity findings closed.
+
+Released as a minor version rather than a patch to signal the breadth of change
+(83 files) and the two newly-required dependencies. **No migration is needed and
+no re-extraction is forced** — existing workspaces continue to work.
 
 ### 🔒 Security
 
