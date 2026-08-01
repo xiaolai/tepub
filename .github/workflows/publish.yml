@@ -1,0 +1,85 @@
+name: Publish to PyPI
+
+# Trusted Publishing (OIDC): PyPI verifies this workflow's identity directly, so
+# no API token is stored in the repository or in GitHub secrets. Configure the
+# publisher once at https://pypi.org/manage/project/tepub/settings/publishing/
+#   owner: xiaolai   repository: tepub
+#   workflow: publish.yml   environment: pypi
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or ref to publish (e.g. v0.3.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test before publishing
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest --no-cov -q
+      - name: Lint
+        run: ruff check src
+
+  build:
+    name: Build distributions
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+      - name: Verify the wheel installs and the CLI starts
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/tepub --help > /dev/null
+          /tmp/smoke/bin/python -c "import importlib.metadata as m; print(m.version('tepub'))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment gives you an approval gate and scopes the OIDC claim.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/tepub
+    permissions:
+      id-token: write   # required for Trusted Publishing; nothing else is needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
