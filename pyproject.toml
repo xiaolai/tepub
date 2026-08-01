@@ -1,6 +1,6 @@
 [project]
 name = "tepub"
-version = "0.3.0"
+version = "0.3.1"
 description = "TEPUB - Tools for EPUB: A comprehensive toolkit for EPUB processing including translation, audiobook generation, and export"
 requires-python = ">=3.10"
 authors = [
@@ -40,6 +40,10 @@ dependencies = [
   "portalocker>=3.0",
   "pydantic>=2.6",
   "pydub>=0.25",
+  # pydub imports the stdlib `audioop`, which PEP 594 removed in Python 3.13.
+  # Without this backport tepub cannot even be imported there, and nothing in
+  # requires-python prevented the install.
+  "audioop-lts>=0.2; python_version >= '3.13'",
   "requests>=2.31",
   "rich>=13.7",
 ]
