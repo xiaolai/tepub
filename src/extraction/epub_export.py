@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from console_singleton import get_console
+from exceptions import UnsafeArchiveMemberError
 
-console = get_console()
+
+def _safe_relative_member(internal_path: str, epub_path: Path) -> PurePosixPath:
+    """Validate an archive member name and return it as a safe relative path.
+
+    ZIP member names come from the archive, not from us. ``output_dir / name``
+    silently discards ``output_dir`` when ``name`` is absolute, and ``..``
+    components walk out of it, so both are rejected before anything is written.
+    """
+    normalized = internal_path.replace("\\", "/")
+    member = PurePosixPath(normalized)
+
+    if member.is_absolute() or normalized.startswith("/"):
+        raise UnsafeArchiveMemberError(internal_path, epub_path)
+    # A Windows drive letter ("C:foo") is not absolute to PurePosixPath.
+    if len(normalized) >= 2 and normalized[1] == ":":
+        raise UnsafeArchiveMemberError(internal_path, epub_path)
+    if ".." in member.parts:
+        raise UnsafeArchiveMemberError(internal_path, epub_path)
+
+    return member
 
 
 def extract_epub_structure(
@@ -58,18 +77,34 @@ def extract_epub_structure(
             # Get list of all files in the EPUB
             file_list = epub_zip.namelist()
 
+            # Flattening collapses distinct members onto one name; track what we
+            # have written so a collision does not silently destroy the earlier file.
+            used_names: dict[str, str] = {}
+
             for internal_path in file_list:
                 # Skip directories (they end with /)
                 if internal_path.endswith("/"):
                     continue
 
+                member = _safe_relative_member(internal_path, input_epub)
+
                 # Determine output path
                 if preserve_structure:
                     # Preserve full directory structure
-                    output_path = output_dir / internal_path
+                    output_path = output_dir / Path(*member.parts)
                 else:
                     # Flatten to single directory
-                    filename = Path(internal_path).name
+                    filename = member.name
+                    if filename in used_names:
+                        # Disambiguate deterministically instead of overwriting.
+                        stem, dot, suffix = filename.partition(".")
+                        counter = 1
+                        candidate = filename
+                        while candidate in used_names:
+                            counter += 1
+                            candidate = f"{stem}-{counter}{dot}{suffix}"
+                        filename = candidate
+                    used_names[filename] = internal_path
                     output_path = output_dir / filename
 
                 # Create parent directories if needed
@@ -110,16 +145,27 @@ def get_epub_metadata_files(mapping: dict[str, Path]) -> dict[str, Path]:
     """
     result: dict[str, Path] = {}
 
-    for internal_path, extracted_path in mapping.items():
-        internal_lower = internal_path.lower()
+    # An EPUB may legitimately carry several .opf/.ncx files. Iterating the mapping
+    # and overwriting made the winner depend on dict order; pick deterministically
+    # instead — shallowest path first, then alphabetically.
+    def _rank(internal_path: str) -> tuple[int, str]:
+        normalized = internal_path.replace("\\", "/")
+        return (normalized.count("/"), normalized.lower())
 
-        if internal_path == "mimetype":
-            result["mimetype"] = extracted_path
-        elif "container.xml" in internal_lower:
-            result["container"] = extracted_path
-        elif internal_lower.endswith(".opf"):
-            result["opf"] = extracted_path
-        elif internal_lower.endswith(".ncx"):
-            result["ncx"] = extracted_path
+    for internal_path in sorted(mapping, key=_rank):
+        extracted_path = mapping[internal_path]
+        normalized = internal_path.replace("\\", "/").lower()
+        basename = normalized.rsplit("/", 1)[-1]
+
+        if normalized == "mimetype":
+            result.setdefault("mimetype", extracted_path)
+        elif basename == "container.xml":
+            # Match the basename, not a substring: "OEBPS/not-a-container.xml.html"
+            # previously matched and could shadow the real META-INF/container.xml.
+            result.setdefault("container", extracted_path)
+        elif basename.endswith(".opf"):
+            result.setdefault("opf", extracted_path)
+        elif basename.endswith(".ncx"):
+            result.setdefault("ncx", extracted_path)
 
     return result
