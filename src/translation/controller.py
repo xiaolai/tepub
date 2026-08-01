@@ -146,6 +146,11 @@ def _translate_segment(
 
     # Perform translation
     try:
+        # Enforce the provider's declared capabilities before spending a call.
+        ensure_supported = getattr(provider, "ensure_segment_supported", None)
+        if ensure_supported is not None:
+            ensure_supported(segment)
+
         translation_text = provider.translate(
             segment,
             source_language=source_language,
