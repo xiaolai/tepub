@@ -19,8 +19,17 @@ MEDIA_ATTRS: list[tuple[str, Sequence[str]]] = [
 ]
 
 
+#: Schemes that must be left untouched rather than rewritten to a content path.
+_EXTERNAL_PREFIXES = (
+    "data:", "http:", "https:", "//", "#", "mailto:", "tel:", "ftp:", "file:", "blob:",
+)
+
+
 def _is_external_url(value: str) -> bool:
-    return value.startswith(("data:", "http:", "https:", "//", "#"))
+    # URL schemes are case-insensitive; the check was case-sensitive and covered
+    # only four prefixes, so "HTTPS://…" and mailto:/tel: links were treated as
+    # relative and rewritten into a broken content/ path.
+    return value.strip().lower().startswith(_EXTERNAL_PREFIXES)
 
 
 def _prefix_content_path(relative_to: Path, url: str) -> str:
@@ -90,6 +99,36 @@ def _rewrite_links(doc: html.HtmlElement, relative_path: Path) -> None:
             el.set("href", resolved)
 
 
+def _split_srcset(value: str) -> list[str]:
+    """Split a srcset on candidate boundaries, not on every comma.
+
+    A data: URL's payload may itself contain commas, so a plain split(",")
+    shredded such entries into fragments. Commas inside a data: URL are only
+    separators once whitespace follows them.
+    """
+    candidates: list[str] = []
+    current: list[str] = []
+    in_data_url = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if not in_data_url and "".join(current).strip().lower().endswith("data:") is False:
+            # Detect entry into a data: URL by looking at the token so far.
+            token = "".join(current).lstrip()
+            if token.lower().startswith("data:"):
+                in_data_url = True
+        if char == "," and (not in_data_url or value[index + 1 : index + 2].isspace()):
+            candidates.append("".join(current))
+            current = []
+            in_data_url = False
+        else:
+            current.append(char)
+        index += 1
+    if current:
+        candidates.append("".join(current))
+    return candidates
+
+
 def _rewrite_media_urls(doc: html.HtmlElement, relative_path: Path) -> None:
     for tag, attrs in MEDIA_ATTRS:
         for el in doc.xpath(f".//{tag}"):
@@ -107,7 +146,7 @@ def _rewrite_media_urls(doc: html.HtmlElement, relative_path: Path) -> None:
                     continue
                 if attr == "srcset":
                     parts: list[str] = []
-                    for candidate in value.split(","):
+                    for candidate in _split_srcset(value):
                         candidate = candidate.strip()
                         if not candidate:
                             continue

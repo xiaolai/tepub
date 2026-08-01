@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ebooklib import ITEM_DOCUMENT, epub
 from lxml import html as lxml_html
@@ -109,21 +109,28 @@ def export_web(
     output_root = (
         Path(output_dir) if output_dir else _default_output_dir(input_epub, settings.work_dir)
     )
+
+    mode_value = output_mode or getattr(settings, "output_mode", "bilingual")
+    mode = mode_value.replace("-", "_").lower() if isinstance(mode_value, str) else "bilingual"
+    if mode not in {"bilingual", "translated_only"}:
+        mode = "bilingual"
+
+    # Read the EPUB and apply translations *before* touching the existing export.
+    # The previous output used to be deleted first, so an unreadable EPUB or a
+    # failure during translation left the user with no export at all.
+    reader = EpubReader(input_epub, settings)
+    # mode was not forwarded, so an explicit output_mode differing from the
+    # configured one was ignored for the injection step.
+    updated_html, title_updates = apply_translations(settings, input_epub, mode=mode)
+
     if output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
     copy_static_assets(output_root)
 
-    reader = EpubReader(input_epub, settings)
-    updated_html, title_updates = apply_translations(settings, input_epub)
-
     doc_titles: dict[Path, str] = {}
     documents: dict[str, str] = {}
-    mode_value = output_mode or getattr(settings, "output_mode", "bilingual")
-    mode = mode_value.replace("-", "_").lower() if isinstance(mode_value, str) else "bilingual"
-    if mode not in {"bilingual", "translated_only"}:
-        mode = "bilingual"
     content_dir = output_root / "content"
     for document in reader.iter_documents():
         path = document.path
@@ -149,6 +156,18 @@ def export_web(
 
     spine = _build_spine(reader, doc_titles)
     toc = _parse_toc(reader.book.toc) if reader.book.toc else []
+    # title_updates was computed and then discarded, so translated-only exports
+    # kept the original TOC labels beside translated content.
+    if title_updates:
+        for entry in toc:
+            href = str(entry.get("href", ""))
+            path_part, _, fragment = href.partition("#")
+            updates = title_updates.get(PurePosixPath(path_part))
+            if not updates:
+                continue
+            translated = updates.get(fragment or None) or updates.get(None)
+            if translated:
+                entry["title"] = translated
     if not toc:
         toc = [{"title": entry["title"], "href": entry["href"], "level": 0} for entry in spine]
 
