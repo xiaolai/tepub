@@ -53,6 +53,24 @@ def with_override_root(settings: AppSettings, base_path: Path, input_epub: Path)
     return settings.model_copy(update={"work_root": base_path, "work_dir": work_dir})
 
 
+def _assert_segments_match_epub(segments_doc, input_epub: Path) -> None:
+    """Fail when segments.json was generated from a different EPUB.
+
+    Existence and schema checks alone let a workspace built for one book be used
+    for another: segment ids and xpaths then refer to the wrong document, and
+    translation/export silently produced corrupted output.
+    """
+    from exceptions import ArtifactMismatchError
+
+    recorded = Path(str(segments_doc.epub_path))
+    try:
+        same = recorded.resolve() == input_epub.resolve()
+    except OSError:
+        same = recorded == input_epub
+    if not same:
+        raise ArtifactMismatchError(input_epub, recorded)
+
+
 def validate_for_export(settings: AppSettings, input_epub: Path) -> None:
     """Validate that all required files exist for export operations.
 
@@ -78,8 +96,9 @@ def validate_for_export(settings: AppSettings, input_epub: Path) -> None:
         raise StateFileNotFoundError("translation", input_epub)
 
     # Validate that files can actually be loaded (not corrupted)
-    safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
     safe_load_state(settings.state_file, StateDocument, "translation")
+    _assert_segments_match_epub(segments_doc, input_epub)
 
 
 def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
@@ -104,7 +123,8 @@ def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
         raise StateFileNotFoundError("segments", input_epub)
 
     # Validate that segments file can actually be loaded (not corrupted)
-    safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    _assert_segments_match_epub(segments_doc, input_epub)
 
 
 def build_workspace_name(input_epub: Path) -> str:

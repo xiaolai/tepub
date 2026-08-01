@@ -36,9 +36,9 @@ def create_book_config_template(
     # Generate US English voice list
     voice_lines = []
     try:
-        from audiobook.voices import list_voices_for_language
+        from audiobook.voices import list_voices_for_provider
 
-        us_voices = list_voices_for_language("en-US")
+        us_voices = list_voices_for_provider("edge", "en-US")
         us_voices = sorted(us_voices, key=lambda v: v.get("ShortName", ""))
         for voice in us_voices:
             name = voice.get("ShortName", "")

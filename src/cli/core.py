@@ -145,7 +145,11 @@ def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
     try:
         segments_doc = load_segments(segments_path)
         state_doc = load_state(state_path)
-    except Exception:
+    except (OSError, ValueError, TypeError, KeyError):
+        # Unreadable or malformed artifacts mean "not usable", which is what this
+        # predicate reports. A bare `except Exception` also swallowed programming
+        # defects and permission errors, silently triggering a full re-extraction
+        # instead of surfacing the real problem.
         return False
 
     # Validate EPUB path matches
@@ -161,12 +165,17 @@ def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
         if saved_epub_path != input_epub:
             return False
 
-    # Validate segments match state
+    # Validate segments match state.
+    # Requiring *every* extracted segment id to appear in state was too strict:
+    # translation filtering and skip rules legitimately leave some segments out,
+    # so valid workspaces were reported invalid and re-extracted. A shared subset
+    # is enough to prove the two artifacts came from the same extraction, while
+    # no overlap at all still catches genuinely mismatched files.
     segment_ids = {segment.segment_id for segment in segments_doc.segments}
     if not segment_ids:
         return False
 
-    if not segment_ids.issubset(state_doc.segments.keys()):
+    if not segment_ids & state_doc.segments.keys():
         return False
 
     return True

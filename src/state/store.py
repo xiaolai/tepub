@@ -198,3 +198,25 @@ def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None)
             save_generic_state(state, state_path)
 
         return reset_ids
+
+
+def update_state_atomic(state_path: Path, updater) -> bool:
+    """Run ``updater(state)`` under the state-file lock and persist any change.
+
+    Commands that did load_state -> modify -> save_state left a window in which a
+    concurrent translate run could write between the read and the write, and its
+    updates were then overwritten wholesale. ``updater`` receives the freshly
+    loaded document and returns the document to save, or None to make no change.
+
+    Returns True when the file was rewritten.
+    """
+    lock = _get_lock(state_path)
+    with lock:
+        state = load_generic_state(state_path, StateDocument)
+        updated = updater(state)
+        if updated is None:
+            return False
+        if updated.model_dump() == state.model_dump():
+            return False
+        save_generic_state(updated, state_path)
+        return True

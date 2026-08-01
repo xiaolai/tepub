@@ -10,7 +10,6 @@ from console_singleton import get_console
 from debug_tools.extraction_summary import print_extraction_summary
 from extraction.epub_export import extract_epub_structure, get_epub_metadata_files
 from extraction.image_export import extract_images, get_image_mapping
-from extraction.markdown_export import export_combined_markdown, export_to_markdown
 from extraction.pipeline import run_extraction
 from state.store import load_segments
 
@@ -96,6 +95,16 @@ def extract(
                 console.print(f"  - {img.extracted_path.name}")
 
     # Export markdown files with image references
+    # Imported lazily: markdown_export pulls in html2text, which is not a declared
+    # dependency. Importing it at module scope made *every* `tepub extract` run
+    # fail at CLI startup on a clean install, not just markdown export.
+    try:
+        from extraction.markdown_export import export_combined_markdown, export_to_markdown
+    except ImportError as exc:
+        console.print(f"[red]Markdown export unavailable: {exc}[/red]")
+        console.print("[yellow]Install the optional dependency with: pip install html2text[/yellow]")
+        raise SystemExit(1) from exc
+
     created_files = export_to_markdown(settings, input_epub, markdown_dir, image_mapping)
     console.print(f"[green]Exported {len(created_files)} markdown files to {markdown_dir}[/green]")
 
