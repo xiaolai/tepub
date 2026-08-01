@@ -67,3 +67,28 @@ def normalize_epub_href(document_path: Path, raw_href: str) -> str | None:
         return None
 
     return normalized.as_posix()
+
+
+def safe_relative_member(internal_path: str, source: Path) -> PurePosixPath:
+    """Validate an EPUB-internal path and return it as a safe relative path.
+
+    Manifest and archive member names come from the book, not from us.
+    ``target_dir / name`` silently discards ``target_dir`` when ``name`` is
+    absolute, and ``..`` components walk out of it, so both are rejected before
+    anything is written. Shared by raw archive extraction and the web exporter,
+    which had independent (and in one case absent) handling.
+    """
+    from exceptions import UnsafeArchiveMemberError
+
+    normalized = internal_path.replace("\\", "/")
+    member = PurePosixPath(normalized)
+
+    if member.is_absolute() or normalized.startswith("/"):
+        raise UnsafeArchiveMemberError(internal_path, source)
+    # A Windows drive letter ("C:foo") is not absolute to PurePosixPath.
+    if len(normalized) >= 2 and normalized[1] == ":":
+        raise UnsafeArchiveMemberError(internal_path, source)
+    if ".." in member.parts:
+        raise UnsafeArchiveMemberError(internal_path, source)
+
+    return member
