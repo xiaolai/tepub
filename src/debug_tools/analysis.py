@@ -52,7 +52,8 @@ def analyze_library(
     books_with_skips = 0
     errors: list[tuple[Path, str]] = []
 
-    with Progress() as progress:
+    # Progress built its own Console, so --quiet did not suppress it.
+    with Progress(console=console) as progress:
         task = progress.add_task("Analyzing", total=len(epubs))
         for epub_path in epubs:
             try:

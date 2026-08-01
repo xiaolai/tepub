@@ -41,6 +41,11 @@ def test_analyze_library_summarises_results(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(analysis, "analyze_skip_candidates", _fake_analysis)
 
     class DummyProgress:
+        # Accepts the kwargs the real Progress does (notably console=), so the
+        # stub does not constrain how production code constructs it.
+        def __init__(self, *_args, **_kwargs):
+            pass
+
         def __enter__(self):
             return self
 
