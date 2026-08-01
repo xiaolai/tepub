@@ -115,3 +115,30 @@ def test_purge_refusals_dry_run(monkeypatch, tmp_path):
     assert result.exit_code == 0
     state = load_state(settings.state_file)
     assert state.segments["seg-1"].status == SegmentStatus.COMPLETED
+
+
+def test_update_state_atomic_persists_in_place_mutation(tmp_path):
+    """An updater that mutates in place and returns the same object must persist.
+
+    Comparing the returned document against the (already mutated) loaded document
+    made every in-place updater look like a no-op, so nothing was written.
+    """
+    from state.store import save_state, load_state, update_state_atomic
+
+    path = tmp_path / "state.json"
+    save_state(
+        StateDocument(
+            segments={"a": TranslationRecord(segment_id="a", status=SegmentStatus.COMPLETED)}
+        ),
+        path,
+    )
+
+    def mutate_in_place(doc):
+        doc.segments["a"].status = SegmentStatus.PENDING
+        return doc
+
+    assert update_state_atomic(path, mutate_in_place) is True
+    assert load_state(path).segments["a"].status == SegmentStatus.PENDING
+
+    # A genuine no-op must still report False and not rewrite the file.
+    assert update_state_atomic(path, lambda doc: doc) is False

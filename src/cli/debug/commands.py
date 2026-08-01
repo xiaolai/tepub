@@ -9,8 +9,9 @@ import click
 from cli.core import prepare_settings_for_epub
 from config import AppSettings
 from console_singleton import get_console
+from exceptions import CorruptedStateError
 from state.models import SegmentStatus, TranslationRecord
-from state.store import load_state, save_state
+from state.store import load_state, update_state_atomic
 from translation.refusal_filter import looks_like_refusal
 
 console = get_console()
@@ -48,26 +49,21 @@ def purge_refusals(ctx: click.Context, dry_run: bool) -> None:
         state = load_state(settings.state_file)
     except FileNotFoundError:
         console.print("[red]State file not found. Run extract/translate first.[/red]")
-        return
+        # A missing state file is a failure; returning 0 made scripts treat it as
+        # a successful purge.
+        raise SystemExit(1) from None
+    except (ValueError, TypeError, KeyError, CorruptedStateError) as exc:
+        console.print(f"[red]State file at {settings.state_file} is unreadable: {exc}[/red]")
+        raise SystemExit(1) from exc
 
-    matches: list[str] = []
+    def _refusal_matches(doc) -> list[str]:
+        return [
+            segment_id
+            for segment_id, record in doc.segments.items()
+            if record.translation and looks_like_refusal(record.translation)
+        ]
 
-    for segment_id, record in state.segments.items():
-        if record.translation and looks_like_refusal(record.translation):
-            matches.append(segment_id)
-            if dry_run:
-                continue
-            payload = record.model_dump()
-            payload.update(
-                {
-                    "translation": None,
-                    "status": SegmentStatus.PENDING,
-                    "provider_name": None,
-                    "model_name": None,
-                    "error_message": None,
-                }
-            )
-            state.segments[segment_id] = TranslationRecord.model_validate(payload)
+    matches = _refusal_matches(state)
 
     if not matches:
         console.print("[green]No refusal-like translations found.[/green]")
@@ -79,7 +75,25 @@ def purge_refusals(ctx: click.Context, dry_run: bool) -> None:
             console.print(f" - {segment_id}")
         return
 
-    save_state(state, settings.state_file)
+    def _purge(doc):
+        for segment_id in _refusal_matches(doc):
+            payload = doc.segments[segment_id].model_dump()
+            payload.update(
+                {
+                    "translation": None,
+                    "status": SegmentStatus.PENDING,
+                    "provider_name": None,
+                    "model_name": None,
+                    "error_message": None,
+                }
+            )
+            doc.segments[segment_id] = TranslationRecord.model_validate(payload)
+        return doc
+
+    # Re-read and write under the state-file lock. This was an unlocked
+    # load-modify-save, so a concurrent translate run's completed work was
+    # overwritten by the stale snapshot read at the top of the command.
+    update_state_atomic(settings.state_file, _purge)
     console.print(
         f"[green]Reset {len(matches)} segments to pending; rerun translate to retry them.[/green]"
     )
