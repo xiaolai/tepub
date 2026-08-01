@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 # Optional import: delay until used to avoid hard dependency in test env
@@ -22,15 +23,23 @@ class GeminiProvider(BaseProvider):
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
         self._client = None
+        # One provider instance is shared by every translation worker, so the
+        # unsynchronised lazy init could construct several clients concurrently.
+        self._client_lock = threading.Lock()
 
     def _client_instance(self) -> genai.Client:
-        if self._client is None:
-            if genai is None:
-                raise ProviderFatalError("google-genai package not installed")
-            api_key = self.config.api_key or os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise ProviderFatalError("GEMINI_API_KEY missing; cannot call Gemini provider")
-            self._client = genai.Client(api_key=api_key)
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is None:
+                if genai is None:
+                    raise ProviderFatalError("google-genai package not installed")
+                api_key = self.config.api_key or os.getenv("GEMINI_API_KEY")
+                if not api_key:
+                    raise ProviderFatalError(
+                        "GEMINI_API_KEY missing; cannot call Gemini provider"
+                    )
+                self._client = genai.Client(api_key=api_key)
         return self._client
 
     def translate(

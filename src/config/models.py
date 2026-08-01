@@ -24,6 +24,12 @@ class ProviderConfig(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    max_tokens: int = Field(
+        default=8192,
+        gt=0,
+        description="Maximum tokens in a single translation response. A long segment "
+        "that exceeds this is reported as an error rather than silently truncated.",
+    )
 
     @field_validator("name")
     @classmethod
