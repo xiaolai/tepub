@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from config.models import AppSettings
+from logging_utils.logger import get_logger
 
 try:
     import yaml
@@ -22,6 +23,9 @@ def _parse_env_file(path: Path) -> dict[str, str]:
         key, _, value = line.partition("=")
         data[key.strip()] = value.strip().strip("'").strip('"')
     return data
+
+
+logger = get_logger(__name__)
 
 
 def _parse_yaml_file(path: Path) -> dict[str, Any]:
@@ -138,7 +142,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         from translation.prompt_builder import configure_prompt
 
         configure_prompt(configured.prompt_preamble)
-    except Exception:  # pragma: no cover - prompt builder optional during tooling
+    except ImportError:
+        # Narrowed from `except Exception`, which also swallowed genuine errors
+        # raised while configuring the prompt and left translation running on a
+        # stale prompt with no indication.
+        logger.warning("Prompt builder unavailable; using the default prompt.")
         pass
     return configured
 
