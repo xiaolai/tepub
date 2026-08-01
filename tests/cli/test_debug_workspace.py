@@ -43,9 +43,12 @@ def test_debug_workspace_respects_cli_override(monkeypatch, tmp_path) -> None:
     runner = CliRunner()
     result = runner.invoke(_load_app(), ["--work-dir", str(override_root), "debug", "workspace", str(epub_path)])
 
-    # When --work-dir is provided, with_book_workspace() is not used
-    # Instead, the workspace is derived from EPUB filename in parent directory
-    expected_workspace = epub_path.stem  # "Another"
-
+    # --work-dir must place the workspace under the given root. This previously
+    # asserted the workspace appeared next to the EPUB instead, which is what the
+    # flag being ignored looks like: the override was recorded only on `settings`,
+    # and derive_book_workspace() ignores settings.work_dir entirely, returning
+    # `<epub parent>/<epub stem>`.
     assert result.exit_code == 0
-    assert expected_workspace in result.output
+    assert str(override_root) in result.output
+    # Workspace dir is named from the EPUB, slugified with a path digest.
+    assert epub_path.stem.lower() in result.output

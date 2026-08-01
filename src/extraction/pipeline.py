@@ -10,54 +10,12 @@ from console_singleton import get_console
 from epub_io.reader import EpubReader
 from epub_io.resources import extract_metadata
 from epub_io.selector import build_skip_map
-from state.models import Segment, SegmentsDocument, SkippedDocument, build_default_state
-from state.store import ensure_state, load_state, save_segments, save_state
+from state.models import Segment, SegmentsDocument, SkippedDocument
+from state.store import ensure_state, save_segments
 
 console = get_console()
 
 from .segments import iter_segments
-
-
-def _audit_extraction(settings: AppSettings, input_epub: Path, segments: list[Segment]) -> None:
-    console.print("[cyan]Let me double-check the extraction output…[/cyan]")
-
-    total_segments = len(segments)
-    unique_ids = {seg.segment_id for seg in segments}
-    if len(unique_ids) != total_segments:
-        console.print(
-            f"[yellow]Warning: Found duplicate segment IDs. Total {total_segments}, unique {len(unique_ids)}.[/yellow]"
-        )
-
-    state = load_state(settings.state_file)
-    missing = [seg.segment_id for seg in segments if seg.segment_id not in state.segments]
-    extra = [seg_id for seg_id in state.segments if seg_id not in unique_ids]
-
-    if missing or extra:
-        console.print(
-            "[yellow]Some segment statuses are out of sync; mending those omissions or errors…[/yellow]"
-        )
-        ensure_state(
-            settings.state_file,
-            segments,
-            provider=settings.primary_provider.name,
-            model=settings.primary_provider.model,
-            source_language=state.source_language,
-            target_language=state.target_language,
-            force_reset=True,
-        )
-        state = load_state(settings.state_file)
-        missing = [seg.segment_id for seg in segments if seg.segment_id not in state.segments]
-        extra = [seg_id for seg_id in state.segments if seg_id not in unique_ids]
-        if not missing and not extra:
-            console.print("[green]Audit mended the state file successfully.[/green]")
-        else:
-            console.print(
-                "[red]Audit still found mismatches after repair. Consider re-running extraction.[/red]"
-            )
-
-    console.print(
-        f"[cyan]Segments total: {total_segments}; unique IDs: {len(unique_ids)}; state entries: {len(state.segments)}.[/cyan]"
-    )
 
 
 def run_extraction(settings: AppSettings, input_epub: Path) -> None:
@@ -118,9 +76,15 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
 
     state_path = settings.state_file
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_doc = build_default_state(
+    # ensure_state merges: existing translations are kept and only newly extracted
+    # segments are added. Writing build_default_state() unconditionally meant
+    # re-running `tepub extract` on a partially translated book silently discarded
+    # every completed translation.
+    ensure_state(
+        state_path,
         segments,
         provider=settings.primary_provider.name,
         model=settings.primary_provider.model,
+        source_language=settings.source_language,
+        target_language=settings.target_language,
     )
-    save_state(state_doc, state_path)

@@ -67,6 +67,12 @@ def app(
     settings = prepare_initial_settings(config_file, work_dir, verbose)
     ctx.ensure_object(dict)
     ctx.obj["settings"] = settings
+    if work_dir:
+        # Record the override in the context too. prepare_settings_for_epub reads
+        # it from here; storing it only on `settings` meant the per-book workspace
+        # later overwrote work_dir and the --work-dir flag was silently ignored.
+        ctx.obj["work_dir_override_path"] = work_dir
+        ctx.obj["work_dir_overridden"] = True
 
 
 # Register all commands
