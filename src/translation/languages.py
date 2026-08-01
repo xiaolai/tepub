@@ -8,13 +8,23 @@ _LANGUAGE_MAP = {
     "eng": ("en", "English"),
     "english": ("en", "English"),
     "zh": ("zh", "Chinese"),
+    "chinese": ("zh", "Chinese"),
     "cn": ("zh-CN", "Simplified Chinese"),
     "zh-cn": ("zh-CN", "Simplified Chinese"),
     "zh_cn": ("zh-CN", "Simplified Chinese"),
+    "zh-hans": ("zh-CN", "Simplified Chinese"),
+    "zh_hans": ("zh-CN", "Simplified Chinese"),
     "simplified": ("zh-CN", "Simplified Chinese"),
     "simplified chinese": ("zh-CN", "Simplified Chinese"),
+    # The canonical codes this table *emits* must also be accepted as input.
+    # zh-tw was missing, so normalize_language("zh-TW") fell through to the
+    # identity fallback and described the target as "zh-TW" rather than
+    # "Traditional Chinese" — and that display name goes into the prompt.
+    "zh-tw": ("zh-TW", "Traditional Chinese"),
     "zh-hant": ("zh-TW", "Traditional Chinese"),
+    "zh_hant": ("zh-TW", "Traditional Chinese"),
     "zh_tw": ("zh-TW", "Traditional Chinese"),
+    "tw": ("zh-TW", "Traditional Chinese"),
     "traditional": ("zh-TW", "Traditional Chinese"),
     "traditional chinese": ("zh-TW", "Traditional Chinese"),
     "es": ("es", "Spanish"),

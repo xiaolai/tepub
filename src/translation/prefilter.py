@@ -7,7 +7,10 @@ from state.models import Segment
 _PUNCT_ONLY = re.compile(r"^[\s…—–―·•\*\&\^%$#@!~`´°¤§±×÷⇒→←↑↓│¦∗⊗∘\[\]{}()<>\\/\\|\\-]+$")
 _NUMERIC_ONLY = re.compile(r"^[\s\d.,:;()\-–—〜~]+$")
 _PAGE_MARKER = re.compile(r"^(page|p\.?|pp\.?)[\s\divxlc]+$", re.IGNORECASE)
-_ISBN = re.compile(r"^isbn\b", re.IGNORECASE)
+# Match an ISBN *line*, not any prose that happens to start with the word.
+# `^isbn\b` auto-copied translatable sentences such as "ISBN numbers are
+# assigned by the national agency…", leaving them untranslated.
+_ISBN = re.compile(r"^isbn[\s:\-–—]*[\d\-–—\sxX]{8,}$", re.IGNORECASE)
 
 
 def _is_letter(char: str) -> bool:

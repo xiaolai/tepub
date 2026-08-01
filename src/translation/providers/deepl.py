@@ -6,14 +6,14 @@ from typing import Any
 import requests
 
 from config import ProviderConfig
-from state.models import Segment
+from state.models import ExtractMode, Segment
 from translation.languages import describe_language
 
 from .base import BaseProvider, ProviderError, ProviderFatalError, ensure_translation_available
 
 
 class DeepLProvider(BaseProvider):
-    supports_html = False
+    supports_html = True
 
     DEFAULT_BASE_URL = "https://api.deepl.com/v2/translate"
 
@@ -47,6 +47,11 @@ class DeepLProvider(BaseProvider):
             "text": segment.source_content,
             "target_lang": target,
         }
+        # HTML segments were posted as plain text, so DeepL translated the markup
+        # itself and the tags came back mangled. tag_handling tells DeepL to
+        # preserve them, which is what makes supports_html True below.
+        if segment.extract_mode == ExtractMode.HTML:
+            data["tag_handling"] = "html"
         source = _deepl_lang_code(source_language)
         if source and source.lower() != "auto":
             data["source_lang"] = source
