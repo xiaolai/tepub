@@ -55,13 +55,19 @@ def _rewrite_toc_titles(
 ) -> None:
     def recurse(entries):
         for entry in entries:
-            if isinstance(entry, epub.Link):
-                path, fragment = _split_href(entry.href)
-                title = _lookup_title(toc_updates, path, fragment)
-                if title:
-                    entry.title = title
-            elif isinstance(entry, (list, tuple)):
+            if isinstance(entry, (list, tuple)):
                 recurse(entry)
+                continue
+            # Only epub.Link was handled, so epub.Section entries — which also
+            # carry href and title — kept their original headings in
+            # translated-only output.
+            href = getattr(entry, "href", None)
+            if href is None or not hasattr(entry, "title"):
+                continue
+            path, fragment = _split_href(href)
+            title = _lookup_title(toc_updates, path, fragment)
+            if title:
+                entry.title = title
 
     recurse(book.toc)
 
