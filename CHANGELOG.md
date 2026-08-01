@@ -4,6 +4,25 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.3.1] - 2026-08-02
+
+### 🐛 Fixed
+
+- **tepub could not run on Python 3.13.** PEP 594 removed `audioop` from the
+  standard library in 3.13, and `pydub` imports it, so `import cli.main` failed
+  outright — the CLI would not start. `requires-python` had no upper bound, so
+  installers were free to pick 3.13 and produce a broken install. The maintained
+  `audioop-lts` backport is now required on 3.13 and above.
+
+  This affected 0.3.0 on Python 3.13 only; 3.10-3.12 were unaffected.
+
+### 🔧 Internal
+
+- CI now tests Python 3.13 alongside 3.10-3.12. The matrix stopping at 3.12 is
+  why this reached PyPI.
+
+---
+
 ## [0.3.0] - 2026-08-02
 
 Remediation of a 236-finding code audit. All 44 high-severity findings closed.
