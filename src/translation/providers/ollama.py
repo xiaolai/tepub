@@ -26,14 +26,24 @@ class OllamaProvider(BaseProvider):
             "prompt": build_prompt(segment, source_language, target_language),
             "stream": False,
         }
-        response = requests.post(
-            self.config.base_url,
-            data=json.dumps(payload),
-            timeout=120,
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            response = requests.post(
+                self.config.base_url,
+                data=json.dumps(payload),
+                timeout=120,
+                headers={"Content-Type": "application/json"},
+            )
+        except requests.exceptions.RequestException as exc:
+            # Network failures were unhandled and escaped as raw requests
+            # exceptions, bypassing the controller's provider-error accounting.
+            raise ProviderError(f"Ollama request failed: {exc}") from exc
+
         if response.status_code >= 400:
             raise ProviderError(f"Ollama error {response.status_code}: {response.text}")
-        body: Any = response.json()
+
+        try:
+            body: Any = response.json()
+        except ValueError as exc:
+            raise ProviderError(f"Ollama returned a non-JSON response: {exc}") from exc
         text = body.get("response") if isinstance(body, dict) else None
         return ensure_translation_available(text)

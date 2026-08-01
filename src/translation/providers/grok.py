@@ -9,7 +9,7 @@ from config import ProviderConfig
 from state.models import Segment
 from translation import prompt_builder
 
-from .base import BaseProvider, ProviderFatalError, ensure_translation_available
+from .base import BaseProvider, ProviderError, ProviderFatalError, ensure_translation_available
 
 
 class GrokProvider(BaseProvider):
@@ -59,7 +59,13 @@ class GrokProvider(BaseProvider):
         except requests.exceptions.RequestException as exc:  # pragma: no cover - network dependent
             raise ProviderFatalError(f"Grok request failed: {exc}") from exc
 
-        data: Any = response.json()
+        try:
+            data: Any = response.json()
+        except ValueError as exc:
+            # Decoding sat outside the guarded request block, so a malformed but
+            # successful response escaped as a raw JSONDecodeError.
+            raise ProviderError(f"Grok returned a non-JSON response: {exc}") from exc
+
         output = None
         if isinstance(data, dict):
             choices = data.get("choices")
