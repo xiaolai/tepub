@@ -213,10 +213,14 @@ def update_state_atomic(state_path: Path, updater) -> bool:
     lock = _get_lock(state_path)
     with lock:
         state = load_generic_state(state_path, StateDocument)
+        # Snapshot before calling the updater: an updater that mutates the document
+        # in place and returns it would otherwise be compared against itself, so
+        # the change would always look like a no-op and never be persisted.
+        before = state.model_dump()
         updated = updater(state)
         if updated is None:
             return False
-        if updated.model_dump() == state.model_dump():
+        if updated.model_dump() == before:
             return False
         save_generic_state(updated, state_path)
         return True
