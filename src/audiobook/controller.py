@@ -70,7 +70,7 @@ def _build_audiobook_dashboard(
     if max_workers > 1:
         stats.add_row("workers", f"active {active_workers}/{max_workers}")
     else:
-        stats.add_row("workers", f"single worker")
+        stats.add_row("workers", "single worker")
 
     # Always show cooldown row (fixed height)
     if in_cooldown:
@@ -120,7 +120,7 @@ class SynthesisResult:
 
 
 def _synthesize_segment(
-    work: "SegmentWork",
+    work: SegmentWork,
     renderer: SegmentRenderer,
     output_dir: Path,
     max_attempts: int = 3,
@@ -309,6 +309,8 @@ class AudiobookRunner:
             tts_provider=self.tts_provider,
             tts_model=self.tts_model,
             tts_speed=self.tts_speed,
+            rate=self.rate,
+            volume=self.volume,
         )
 
         if self.cover_path is None and state.session.cover_path:
