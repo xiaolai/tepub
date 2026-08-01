@@ -468,6 +468,39 @@ def _concat_entry(path: Path) -> str:
     return f"file '{escaped}'\n"
 
 
+def chapter_is_current(chapter_path: Path, segments: list[Segment], audio_state) -> bool:
+    """True when a cached chapter is newer than, and built from, these segments.
+
+    Existence alone is not enough: re-synthesising with a different voice,
+    speed or source text rewrites the segment audio but leaves the chapter
+    file in place, so the old audio was served indefinitely.
+
+    Timestamps alone are not enough either. If a chapter was built from
+    segments A+B and a later run includes only A, every remaining source file
+    can be older than the chapter, so the stale chapter — still containing B —
+    was reused. The composition is recorded alongside the audio and compared.
+    """
+    if not chapter_path.exists():
+        return False
+    manifest_path = chapter_path.with_suffix(chapter_path.suffix + ".segments")
+    expected = "\n".join(segment.segment_id for segment in segments)
+    try:
+        if manifest_path.read_text(encoding="utf-8") != expected:
+            return False
+    except OSError:
+        # No manifest: written by an older version, composition unknown.
+        return False
+    chapter_mtime = chapter_path.stat().st_mtime
+    for segment in segments:
+        seg_state = audio_state.segments.get(segment.segment_id)
+        if not seg_state or not seg_state.audio_path:
+            continue
+        source = Path(seg_state.audio_path)
+        if source.exists() and source.stat().st_mtime > chapter_mtime:
+            return False
+    return True
+
+
 def assemble_audiobook(
     settings: AppSettings,
     input_epub: Path,
@@ -555,36 +588,7 @@ def assemble_audiobook(
         expected_chapters.append((title, chapter_path, file_path, segments))
 
     def _chapter_is_current(chapter_path: Path, segments: list[Segment]) -> bool:
-        """True when a cached chapter is newer than, and built from, these segments.
-
-        Existence alone is not enough: re-synthesising with a different voice,
-        speed or source text rewrites the segment audio but leaves the chapter
-        file in place, so the old audio was served indefinitely.
-
-        Timestamps alone are not enough either. If a chapter was built from
-        segments A+B and a later run includes only A, every remaining source file
-        can be older than the chapter, so the stale chapter — still containing B —
-        was reused. The composition is recorded alongside the audio and compared.
-        """
-        if not chapter_path.exists():
-            return False
-        manifest_path = chapter_path.with_suffix(chapter_path.suffix + ".segments")
-        expected = "\n".join(segment.segment_id for segment in segments)
-        try:
-            if manifest_path.read_text(encoding="utf-8") != expected:
-                return False
-        except OSError:
-            # No manifest: written by an older version, composition unknown.
-            return False
-        chapter_mtime = chapter_path.stat().st_mtime
-        for segment in segments:
-            seg_state = audio_state.segments.get(segment.segment_id)
-            if not seg_state or not seg_state.audio_path:
-                continue
-            source = Path(seg_state.audio_path)
-            if source.exists() and source.stat().st_mtime > chapter_mtime:
-                return False
-        return True
+        return chapter_is_current(chapter_path, segments, audio_state)
 
     all_chapters_exist = all(
         _chapter_is_current(path, segments) for _, path, _, segments in expected_chapters
