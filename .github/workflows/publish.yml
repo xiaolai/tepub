@@ -31,6 +31,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # tepub shells out to ffmpeg for audio assembly, and one test exercises a
+      # real mp4 round-trip. Without it that test skips and the audiobook path
+      # goes unverified.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Install with dev extras
         run: |
           python -m pip install --upgrade pip

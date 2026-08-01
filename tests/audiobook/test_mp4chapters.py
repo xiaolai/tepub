@@ -34,7 +34,11 @@ def test_write_chapter_markers_roundtrip(tmp_path):
     try:
         audio.export(output, format="mp4")
     except CouldntEncodeError:
-        pytest.skip("ffmpeg not available for mp4 export")
+        pytest.skip("ffmpeg present but could not encode mp4")
+    except (FileNotFoundError, OSError):
+        # pydub shells out to ffmpeg; when the binary is missing entirely,
+        # subprocess raises before pydub can wrap it as CouldntEncodeError.
+        pytest.skip("ffmpeg not installed")
 
     write_chapter_markers(output, [(0, "Intro"), (500, "Middle")])
 
