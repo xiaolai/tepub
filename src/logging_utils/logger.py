@@ -25,5 +25,10 @@ def configure_logging(level: int = logging.INFO) -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
-    configure_logging()
+    # Only bootstrap if logging was never configured. Calling configure_logging()
+    # unconditionally passed the default INFO level, so any get_logger() after
+    # `--verbose` reset the root logger and handler back to INFO and silently
+    # turned debug logging off.
+    if _RICH_HANDLER is None:
+        configure_logging()
     return logging.getLogger(name)
