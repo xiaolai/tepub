@@ -171,9 +171,9 @@ audiobook_files:
 # You can customize it before running translation.
 #
 # Available runtime placeholders (filled automatically during translation):
-#   {{{{source_language}}}}  - Source language name (e.g., "English")
-#   {{{{target_language}}}}  - Target language name (e.g., "Simplified Chinese")
-#   {{{{mode_instruction}}}} - Auto-generated instruction based on content type
+#   {{source_language}}  - Source language name (e.g., "English")
+#   {{target_language}}  - Target language name (e.g., "Simplified Chinese")
+#   {{mode_instruction}} - Auto-generated instruction based on content type
 #
 prompt_preamble: |
   You are an expert translator, with mastery in preserving accuracy, fidelity, and nuance.
@@ -184,7 +184,7 @@ prompt_preamble: |
     1. Return the translated text only — no explanations, commentary, or additional notes.
     2. If the source contains HTML tags, preserve them and adapt the translation to fit naturally within those tags.
     3. Ensure that all returned HTML is valid and properly formatted.
-    4. Translate faithfully from {{{{source_language}}}} into {{{{target_language}}}} while maintaining the style and tone of the original.
+    4. Translate faithfully from {{source_language}} into {{target_language}} while maintaining the style and tone of the original.
 
 # --- Alternative Prompt Styles (uncomment to replace the above) ---
 #
@@ -192,21 +192,21 @@ prompt_preamble: |
 # prompt_preamble: |
 #   You are a scholarly translator specializing in academic texts.
 #   Translating {book_name} by {author} ({publisher}, {year_of_publication}).
-#   Translate {{{{source_language}}}} academic content into {{{{target_language}}}}.
-#   {{{{mode_instruction}}}}
+#   Translate {{source_language}} academic content into {{target_language}}.
+#   {{mode_instruction}}
 #   Preserve technical terminology, citations, and formal tone.
 #
 # Casual/Popular:
 # prompt_preamble: |
-#   You are translating {book_name} by {author}, a popular {{{{source_language}}}} book.
-#   {{{{mode_instruction}}}}
-#   Use natural, conversational {{{{target_language}}}} while maintaining accuracy.
+#   You are translating {book_name} by {author}, a popular {{source_language}} book.
+#   {{mode_instruction}}
+#   Use natural, conversational {{target_language}} while maintaining accuracy.
 #
 # Technical Documentation:
 # prompt_preamble: |
-#   You are translating technical documentation from {{{{source_language}}}} to {{{{target_language}}}}.
+#   You are translating technical documentation from {{source_language}} to {{target_language}}.
 #   Document: {book_name} ({publisher}, {year_of_publication}).
-#   {{{{mode_instruction}}}}
+#   {{mode_instruction}}
 #   Preserve all technical terms, code snippets, and command-line examples.
 #   Keep variable names, function names, and API references unchanged.
 

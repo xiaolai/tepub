@@ -4,9 +4,12 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from console_singleton import get_console
 from state.base import load_generic_state, save_generic_state
 
 from .models import AudioSegmentState, AudioSegmentStatus, AudioSessionConfig, AudioStateDocument
+
+console = get_console()
 
 # Thread-safe state file operations
 _state_file_locks: dict[str, threading.Lock] = {}
@@ -53,6 +56,25 @@ def save_state(state: AudioStateDocument, path: Path) -> None:
         save_generic_state(state, path)
 
 
+#: Session settings that change the rendered audio. A change to any of them makes
+#: previously synthesised segments stale. cover_path is deliberately excluded: it
+#: affects only the container artwork, not the audio.
+_AUDIO_AFFECTING_FIELDS = ("voice", "language", "tts_provider", "tts_model", "tts_speed",
+                           "rate", "volume")
+
+
+def _invalidate_completed_segments(state: AudioStateDocument) -> int:
+    """Reset completed segments so they are re-synthesised. Returns the count."""
+    reset = 0
+    for segment in state.segments.values():
+        if segment.status == AudioSegmentStatus.COMPLETED:
+            segment.status = AudioSegmentStatus.PENDING
+            segment.audio_path = None
+            segment.duration_seconds = None
+            reset += 1
+    return reset
+
+
 def ensure_state(
     path: Path,
     output_dir: Path,
@@ -62,10 +84,14 @@ def ensure_state(
     tts_provider: str = "edge",
     tts_model: str | None = None,
     tts_speed: float = 1.0,
+    rate: str | None = None,
+    volume: str | None = None,
 ) -> AudioStateDocument:
     if path.exists():
         state = load_state(path)
         changed = False
+        # Snapshot before mutation so an audio-affecting change can be detected.
+        before = {f: getattr(state.session, f, None) for f in _AUDIO_AFFECTING_FIELDS}
         if language and state.session.language != language:
             state.session.language = language
             changed = True
@@ -84,6 +110,26 @@ def ensure_state(
         if state.session.tts_speed != tts_speed:
             state.session.tts_speed = tts_speed
             changed = True
+        if rate is not None and state.session.rate != rate:
+            state.session.rate = rate
+            changed = True
+        if volume is not None and state.session.volume != volume:
+            state.session.volume = volume
+            changed = True
+
+        # Session metadata used to be updated while every completed segment stayed
+        # reusable, so switching voice, model, speed or language silently produced
+        # a book made of the *previous* settings' audio.
+        after = {f: getattr(state.session, f, None) for f in _AUDIO_AFFECTING_FIELDS}
+        if before != after:
+            reset = _invalidate_completed_segments(state)
+            if reset:
+                changed = True
+                console.print(
+                    f"[yellow]Audio settings changed; re-synthesising {reset} "
+                    f"previously completed segments.[/yellow]"
+                )
+
         if changed:
             save_state(state, path)
         return state

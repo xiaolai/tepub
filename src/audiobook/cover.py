@@ -5,9 +5,9 @@ from pathlib import Path
 
 from lxml import etree
 
+from epub_io.path_utils import normalize_epub_href
 from epub_io.reader import EpubReader
 from epub_io.resources import get_item_by_href
-from epub_io.path_utils import normalize_epub_href
 
 
 @dataclass

@@ -35,6 +35,10 @@ class AudioSessionConfig(BaseModel):
     tts_provider: str = "edge"
     tts_model: str | None = None  # For OpenAI: tts-1 or tts-1-hd
     tts_speed: float = 1.0  # For OpenAI: 0.25-4.0
+    # Edge TTS prosody. These affect the rendered audio but were not persisted at
+    # all, so changing them left every completed segment reusable.
+    rate: str | None = None
+    volume: str | None = None
 
 
 class AudioStateDocument(BaseModel):

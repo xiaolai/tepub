@@ -183,8 +183,17 @@ class AppSettings(BaseModel):
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
     def model_copy(self, *, update: dict[str, Any] | None = None, deep: bool = False) -> AppSettings:  # type: ignore[override]
+        if not update:
+            return super().model_copy(deep=deep)
+
         old_work_dir = self.work_dir
-        copied: AppSettings = super().model_copy(update=update, deep=deep)
+        # Pydantic's model_copy assigns updates without running validators or
+        # model_post_init, so invalid worker counts, unknown output modes, strings
+        # in Path fields and dicts in ProviderConfig fields were accepted here and
+        # only crashed later in whichever consumer used them. Rebuilding through
+        # model_validate applies the same checks a fresh construction would.
+        merged = {**self.model_dump(), **update}
+        copied: AppSettings = type(self).model_validate(merged)
         new_work_dir = copied.work_dir
 
         overridden: set[str] = set(update.keys()) if update else set()

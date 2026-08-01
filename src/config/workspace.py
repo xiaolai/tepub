@@ -4,7 +4,7 @@ import hashlib
 import unicodedata
 from pathlib import Path
 
-from config.models import AppSettings, _NON_SLUG_CHARS, _WORD_SPLIT_PATTERN, _WORKSPACE_HASH_LENGTH
+from config.models import _NON_SLUG_CHARS, _WORD_SPLIT_PATTERN, _WORKSPACE_HASH_LENGTH, AppSettings
 from exceptions import StateFileNotFoundError, WorkspaceNotFoundError
 
 
@@ -32,6 +32,14 @@ def with_book_workspace(settings: AppSettings, input_epub: Path) -> AppSettings:
         book_payload = _parse_yaml_file(book_config)
         if book_payload and isinstance(book_payload, dict):
             new_settings = new_settings.model_copy(update=book_payload)
+            # The prompt builder holds global state configured from the *global*
+            # config at load time. Without reconfiguring here, a per-book
+            # prompt_preamble was stored on the settings object and then ignored,
+            # and translation kept using the global prompt.
+            if "prompt_preamble" in book_payload:
+                from translation.prompt_builder import configure_prompt
+
+                configure_prompt(new_settings.prompt_preamble)
 
     return new_settings
 

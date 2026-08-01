@@ -34,17 +34,15 @@ def _parse_yaml_file(path: Path) -> dict[str, Any]:
     if yaml:
         loaded = yaml.safe_load(text)
         return loaded or {}
-    # Minimal fallback parser: only supports top-level "key: value" pairs
-    result: dict[str, Any] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        result[key.strip()] = value.strip().strip('"').strip("'")
-    return result
+    # No usable fallback: the previous one handled only top-level "key: value"
+    # pairs, so it silently misparsed the nested providers block, lists, and the
+    # `prompt_preamble: |` block scalar that the generated per-book config always
+    # contains — producing a config that looked valid and was not. PyYAML is now
+    # a declared dependency, so reaching here means a broken environment.
+    raise RuntimeError(
+        f"Cannot parse {path}: PyYAML is not installed. "
+        "Reinstall tepub to repair the environment: pip install -e ."
+    )
 
 
 def _prepare_provider_credentials(settings: AppSettings) -> AppSettings:
