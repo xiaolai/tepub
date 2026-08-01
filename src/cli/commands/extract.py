@@ -109,14 +109,14 @@ def extract(
                 console.print(f"  - {img.extracted_path.name}")
 
     # Export markdown files with image references
-    # Imported lazily: markdown_export pulls in html2text, which is not a declared
-    # dependency. Importing it at module scope made *every* `tepub extract` run
-    # fail at CLI startup on a clean install, not just markdown export.
+    # Imported lazily so that commands other than `extract` do not pay the
+    # html2text import cost at CLI startup. html2text is a declared dependency,
+    # so a failure here means a broken install rather than a missing extra.
     try:
         from extraction.markdown_export import export_combined_markdown, export_to_markdown
     except ImportError as exc:
         console.print(f"[red]Markdown export unavailable: {exc}[/red]")
-        console.print("[yellow]Install the optional dependency with: pip install html2text[/yellow]")
+        console.print("[yellow]Reinstall tepub to repair the environment: pip install -e .[/yellow]")
         raise SystemExit(1) from exc
 
     created_files = export_to_markdown(settings, input_epub, markdown_dir, image_mapping)
