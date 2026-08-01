@@ -4,6 +4,28 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.3.2] - 2026-08-02
+
+### 🐛 Fixed
+
+- **The CLI would not start from certain directories.** nltk's import guard
+  refuses to load any module whose file lives under the current working
+  directory. Tools installed with `uv tool` live under `$HOME`, so running
+  `tepub` from `~`, `~/.local` or `/` aborted before the CLI came up. nltk was
+  reaching the startup path only because command registration imports the
+  audiobook module, which imported it at module scope.
+
+  nltk is now imported on demand, inside the sentence-splitting helpers that
+  actually need it. Verified working from `/`, `~`, `~/.local`, `/tmp` and a
+  project directory.
+
+### ⚡ Performance
+
+- Roughly 76 ms shaved off every invocation: nltk is no longer imported for
+  commands that never use it, which is all of them except audiobook synthesis.
+
+---
+
 ## [0.3.1] - 2026-08-02
 
 ### 🐛 Fixed

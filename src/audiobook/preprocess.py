@@ -3,7 +3,6 @@ from __future__ import annotations
 import html
 import re
 
-import nltk
 from lxml import html as lxml_html
 
 from state.models import ExtractMode, Segment
@@ -64,6 +63,23 @@ def _normalize_ellipsis(text: str) -> str:
     return new_text
 
 
+def _nltk():
+    """Import nltk lazily.
+
+    nltk was imported at module scope, and the CLI's command registration reaches
+    this module, so *every* tepub invocation loaded it — ~76 ms of startup for a
+    dependency only audiobook synthesis needs.
+
+    It also made the CLI unusable from some directories: nltk's inisec guard
+    blocks importing any module whose file lives under the current working
+    directory, and uv installs tools under $HOME, so running from ~ (or / or
+    ~/.local) aborted before the CLI could start.
+    """
+    import nltk
+
+    return nltk
+
+
 def ensure_punkt() -> None:
     """Ensure the Punkt sentence tokenizer data is available.
 
@@ -72,6 +88,7 @@ def ensure_punkt() -> None:
     synthesis time on a fresh install. Both are requested; each is a no-op when
     already present.
     """
+    nltk = _nltk()
     for resource in ("punkt", "punkt_tab"):
         try:
             nltk.data.find(f"tokenizers/{resource}")
@@ -406,6 +423,7 @@ def split_sentences(text: str, language: str | None = None) -> list[str]:
         sentences = _split_cjk(normalized)
     else:
         ensure_punkt()
+        nltk = _nltk()
         punkt_name = PUNKT_LANGUAGES.get(prefix, "english")
         try:
             tokenizer = nltk.data.load(f"tokenizers/punkt/{punkt_name}.pickle")
