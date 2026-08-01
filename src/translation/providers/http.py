@@ -75,9 +75,7 @@ def post_json(
         except ValueError as exc:
             # Decoding used to sit outside the guarded block in several
             # providers, so a malformed 200 escaped as a raw JSONDecodeError.
-            raise ProviderError(
-                f"{provider_label} returned a non-JSON response: {exc}"
-            ) from exc
+            raise ProviderError(f"{provider_label} returned a non-JSON response: {exc}") from exc
 
     # Unreachable: every branch above returns or raises.
     raise ProviderError(f"{provider_label} request failed without an exception")

@@ -64,7 +64,5 @@ def render_index(output_root: Path, data: BookData) -> None:
         },
         ensure_ascii=False,
     )
-    contents = index_template.replace(
-        "{{BOOK_DATA}}", _escape_for_script_element(book_data_json)
-    )
+    contents = index_template.replace("{{BOOK_DATA}}", _escape_for_script_element(book_data_json))
     (output_root / "index.html").write_text(contents, encoding="utf-8")

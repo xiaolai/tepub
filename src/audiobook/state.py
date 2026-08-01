@@ -59,8 +59,15 @@ def save_state(state: AudioStateDocument, path: Path) -> None:
 #: Session settings that change the rendered audio. A change to any of them makes
 #: previously synthesised segments stale. cover_path is deliberately excluded: it
 #: affects only the container artwork, not the audio.
-_AUDIO_AFFECTING_FIELDS = ("voice", "language", "tts_provider", "tts_model", "tts_speed",
-                           "rate", "volume")
+_AUDIO_AFFECTING_FIELDS = (
+    "voice",
+    "language",
+    "tts_provider",
+    "tts_model",
+    "tts_speed",
+    "rate",
+    "volume",
+)
 
 
 def _invalidate_completed_segments(state: AudioStateDocument) -> int:

@@ -21,7 +21,16 @@ MEDIA_ATTRS: list[tuple[str, Sequence[str]]] = [
 
 #: Schemes that must be left untouched rather than rewritten to a content path.
 _EXTERNAL_PREFIXES = (
-    "data:", "http:", "https:", "//", "#", "mailto:", "tel:", "ftp:", "file:", "blob:",
+    "data:",
+    "http:",
+    "https:",
+    "//",
+    "#",
+    "mailto:",
+    "tel:",
+    "ftp:",
+    "file:",
+    "blob:",
 )
 
 

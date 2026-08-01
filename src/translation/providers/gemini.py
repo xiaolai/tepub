@@ -36,9 +36,7 @@ class GeminiProvider(BaseProvider):
                     raise ProviderFatalError("google-genai package not installed")
                 api_key = self.config.api_key or os.getenv("GEMINI_API_KEY")
                 if not api_key:
-                    raise ProviderFatalError(
-                        "GEMINI_API_KEY missing; cannot call Gemini provider"
-                    )
+                    raise ProviderFatalError("GEMINI_API_KEY missing; cannot call Gemini provider")
                 self._client = genai.Client(api_key=api_key)
         return self._client
 

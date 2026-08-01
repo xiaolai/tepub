@@ -139,9 +139,7 @@ def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
     return describe_pipeline_artifacts(settings, input_epub)[0]
 
 
-def describe_pipeline_artifacts(
-    settings: AppSettings, input_epub: Path
-) -> tuple[bool, str]:
+def describe_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> tuple[bool, str]:
     """Report whether existing artifacts are reusable, and why not when they aren't.
 
     The boolean-only check collapsed missing, unreadable, wrong-EPUB and
