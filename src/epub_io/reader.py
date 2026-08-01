@@ -52,15 +52,3 @@ class EpubReader:
             raw_html: bytes = item.get_content()
             tree = html.fromstring(raw_html)
             yield HtmlDocument(spine_item=spine_item, tree=tree, raw_html=raw_html)
-
-    def get_document(self, href: Path) -> HtmlDocument:
-        item = get_item_by_href(self.book, href)
-        raw_html: bytes = item.get_content()
-        tree = html.fromstring(raw_html)
-        spine_item = next(
-            (sp for sp in iter_spine_items(self.book) if sp.href == href),
-            None,
-        )
-        if spine_item is None:
-            raise KeyError(f"Spine item not found for {href}")
-        return HtmlDocument(spine_item=spine_item, tree=tree, raw_html=raw_html)
