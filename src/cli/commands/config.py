@@ -8,7 +8,6 @@ from pathlib import Path
 import click
 from pydantic import ValidationError
 from rich.panel import Panel
-from rich.table import Table
 from rich.tree import Tree
 
 from cli.core import prepare_settings_for_epub
@@ -103,8 +102,21 @@ def validate(ctx: click.Context, input_epub: Path | None, use_global: bool, conf
     if not yaml_data:
         yaml_data = {}
 
+    # Report keys Pydantic will silently ignore. AppSettings does not set
+    # extra="forbid" — and making it do so would hard-fail existing configs on
+    # upgrade — so a misspelled key ("target_lanugage") would otherwise validate
+    # cleanly while having no effect whatsoever.
+    unknown_keys = sorted(set(yaml_data) - set(AppSettings.model_fields))
+    if unknown_keys:
+        console.print(Panel(
+            "[yellow]These keys are not recognised and will be ignored:[/yellow]\n"
+            + "\n".join(f"  • {key}" for key in unknown_keys)
+            + "\n\n[dim]Check for typos — an ignored key has no effect.[/dim]",
+            title="⚠ Unknown settings",
+            border_style="yellow",
+        ))
+
     # Validate with Pydantic
-    validation_results = []
     errors_by_field = {}
 
     try:
@@ -115,10 +127,15 @@ def validate(ctx: click.Context, input_epub: Path | None, use_global: bool, conf
             temp_data = yaml_data.copy()
             if "work_dir" not in temp_data:
                 temp_data["work_dir"] = "~/.tepub"
-            validated_settings = AppSettings(**temp_data)
+            # Constructed for its validation side effect; the object is not used.
+            AppSettings(**temp_data)
         else:
-            # For per-book config, overlay on existing settings
-            validated_settings = settings.model_copy(update=yaml_data)
+            # For per-book config, overlay on existing settings.
+            # model_copy(update=...) assigns without running validators, so this
+            # command — whose entire job is validation — reported success for
+            # configs with invalid values. Re-validate the merged mapping instead.
+            merged = {**settings.model_dump(), **yaml_data}
+            AppSettings.model_validate(merged)
 
         # If we get here, validation passed
         success = True
@@ -370,15 +387,25 @@ def reset(
             "year": segments_doc.book_year,
         }
 
-        # Recreate config
-        config_path.unlink()  # Remove old
-        create_book_config_template(
-            temp_settings.work_dir,
-            input_epub.name,
-            metadata,
-            segments_doc,
-            input_epub
-        )
+        # Recreate config. The old file used to be unlinked first, so any failure
+        # during generation left the user with no config at all — including local
+        # edits they had made. Keep a backup until the new file is in place.
+        backup_path = config_path.with_suffix(config_path.suffix + ".bak")
+        config_path.replace(backup_path)
+        try:
+            create_book_config_template(
+                temp_settings.work_dir,
+                input_epub.name,
+                metadata,
+                segments_doc,
+                input_epub
+            )
+        except Exception:
+            # Restore the previous config rather than leaving the book unconfigured.
+            backup_path.replace(config_path)
+            raise
+        else:
+            backup_path.unlink(missing_ok=True)
     else:
         # Global config - write default template
         _write_global_config_template(config_path)
