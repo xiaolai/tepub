@@ -11,6 +11,44 @@ class TepubError(Exception):
     pass
 
 
+class ArtifactMismatchError(TepubError):
+    """Raised when workspace artifacts were generated from a different EPUB.
+
+    segments.json records the EPUB it was extracted from. If that does not match
+    the book being translated or exported, the segment ids and xpaths refer to a
+    different document, and proceeding silently produces corrupted output.
+    """
+
+    def __init__(self, input_epub: Path, recorded_epub: Path) -> None:
+        self.input_epub = input_epub
+        self.recorded_epub = recorded_epub
+        super().__init__(
+            f"Workspace artifacts belong to a different EPUB.\n"
+            f"  requested: {input_epub}\n"
+            f"  recorded:  {recorded_epub}\n"
+            f"Re-run `tepub extract` for this book, or point --work-dir at its workspace."
+        )
+
+
+class UnsafeArchiveMemberError(TepubError):
+    """Raised when an EPUB archive member would be written outside its target directory.
+
+    ZIP member names are attacker-controlled. A member named ``/etc/passwd`` or
+    ``../../.ssh/authorized_keys`` would otherwise escape the extraction directory,
+    so such members are rejected before anything is written to disk.
+    """
+
+    def __init__(self, member: str, epub_path: Path | None = None) -> None:
+        self.member = member
+        self.epub_path = epub_path
+        source = f" in {epub_path}" if epub_path is not None else ""
+        super().__init__(
+            f"Refusing to extract unsafe archive member{source}: {member!r}. "
+            "The path escapes the extraction directory, which usually means the "
+            "EPUB is malformed or malicious."
+        )
+
+
 class StateFileNotFoundError(TepubError):
     """Raised when a required state file is missing.
 
