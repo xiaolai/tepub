@@ -1,5 +1,7 @@
 """Extract command implementation."""
 
+import shutil
+import zipfile
 from pathlib import Path
 
 import click
@@ -8,6 +10,7 @@ from cli.core import prepare_settings_for_epub
 from config import AppSettings, create_book_config_template
 from console_singleton import get_console
 from debug_tools.extraction_summary import print_extraction_summary
+from exceptions import UnsafeArchiveMemberError
 from extraction.epub_export import extract_epub_structure, get_epub_metadata_files
 from extraction.image_export import extract_images, get_image_mapping
 from extraction.pipeline import run_extraction
@@ -57,8 +60,13 @@ def extract(
 
     print_extraction_summary(settings, epub_path=input_epub)
 
-    # Extract complete EPUB structure
+    # Extract complete EPUB structure.
+    # Clear the previous tree first: it was reused in place, so files removed from
+    # a re-published EPUB lingered and the raw tree drifted out of sync with the
+    # book actually being processed.
     epub_raw_dir = settings.work_dir / "epub_raw"
+    if epub_raw_dir.exists():
+        shutil.rmtree(epub_raw_dir, ignore_errors=True)
     try:
         structure_mapping = extract_epub_structure(
             input_epub, epub_raw_dir, preserve_structure=True
@@ -74,7 +82,13 @@ def extract(
             for key, path in sorted(metadata_files.items()):
                 rel_path = path.relative_to(epub_raw_dir)
                 console.print(f"  {key}: {rel_path}")
-    except Exception as e:
+    except UnsafeArchiveMemberError:
+        # A malicious or malformed archive is not a "warning" case — surface it.
+        raise
+    except (OSError, zipfile.BadZipFile) as e:
+        # Narrowed from `except Exception`, which also hid permission errors and
+        # programming defects behind a warning while extraction continued with a
+        # partial raw tree.
         console.print(f"[yellow]Warning: Could not extract EPUB structure: {e}[/yellow]")
 
     # Extract images to markdown/images directory

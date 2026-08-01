@@ -13,28 +13,35 @@ from .commands import (
     workspace,
 )
 
+# Single inventory of debug subcommands. The names were previously listed twice —
+# once in the import above and once as eight add_command calls — so adding a
+# command meant editing two places, and forgetting the second failed silently.
+DEBUG_COMMANDS = (
+    show_skip_list_cmd,
+    show_pending_cmd,
+    purge_refusals,
+    inspect_segment_cmd,
+    list_files_cmd,
+    preview_skips,
+    workspace,
+    analyze_skips,
+)
+
 
 @click.group()
-@click.pass_context
-def debug(ctx: click.Context) -> None:  # pragma: no cover - primarily used interactively
+def debug() -> None:  # pragma: no cover - primarily used interactively
     """Debugging utilities for inspecting pipeline state."""
+    # No pass_context: the callback never used the injected ctx.
     pass
 
 
 def register_debug_commands(app: click.Group) -> None:
     """Register debug group with all debug commands."""
-    # Add all debug subcommands
-    debug.add_command(show_skip_list_cmd)
-    debug.add_command(show_pending_cmd)
-    debug.add_command(purge_refusals)
-    debug.add_command(inspect_segment_cmd)
-    debug.add_command(list_files_cmd)
-    debug.add_command(preview_skips)
-    debug.add_command(workspace)
-    debug.add_command(analyze_skips)
+    for command in DEBUG_COMMANDS:
+        debug.add_command(command)
 
     # Register debug group to main app
     app.add_command(debug)
 
 
-__all__ = ["debug", "register_debug_commands"]
+__all__ = ["DEBUG_COMMANDS", "debug", "register_debug_commands"]
