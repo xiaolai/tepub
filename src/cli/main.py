@@ -21,11 +21,36 @@ class DefaultCommandGroup(click.Group):
         self.default_command = default_command
         super().__init__(*args, **kwargs)
 
+    def _first_argument_index(self, args: list[str]) -> int | None:
+        """Index of the first non-option token, skipping group options and values."""
+        value_opts: set[str] = set()
+        for param in self.params:
+            if getattr(param, "is_flag", False):
+                continue
+            value_opts.update(param.opts)
+            value_opts.update(param.secondary_opts)
+
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token == "--":
+                return index + 1 if index + 1 < len(args) else None
+            if token.startswith("-"):
+                # "--opt=value" carries its value inline; "--opt value" consumes the
+                # next token as well.
+                index += 1 if "=" in token or token not in value_opts else 2
+                continue
+            return index
+        return None
+
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         if self.default_command and args:
-            first = args[0]
-            if first not in self.commands and not first.startswith("-"):
-                args.insert(0, self.default_command)
+            # Only args[0] was examined before, so any global option preceding an
+            # implicit EPUB argument ("tepub --verbose book.epub") suppressed the
+            # default command and the invocation failed to parse.
+            index = self._first_argument_index(args)
+            if index is not None and args[index] not in self.commands:
+                args.insert(index, self.default_command)
         return super().parse_args(ctx, args)
 
 

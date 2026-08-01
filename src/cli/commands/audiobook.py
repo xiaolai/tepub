@@ -33,9 +33,10 @@ class HelpfulGroup(click.Group):
             cmd_name, cmd, args = super().resolve_command(ctx, args)
             return cmd_name, cmd, args
         except click.UsageError:
-            # Show help and exit on command not found
+            # Show help, but exit non-zero: an unknown subcommand is a usage error,
+            # and exiting 0 made scripts treat a typo as a successful run.
             click.echo(self.get_help(ctx))
-            ctx.exit(0)
+            ctx.exit(2)
 
 
 def _write_cover_candidate(
@@ -44,7 +45,10 @@ def _write_cover_candidate(
 ) -> tuple[Path | None, SpineCoverCandidate | None]:
     try:
         reader = EpubReader(input_epub, settings)
-    except Exception:
+    except (OSError, ValueError, KeyError) as exc:
+        # Reporting every failure as "no cover candidate" concealed unreadable or
+        # corrupt EPUBs, which look identical to a book that simply has no cover.
+        console.print(f"[yellow]Could not read {input_epub.name} for cover art: {exc}[/yellow]")
         return None, None
     candidate = find_spine_cover_candidate(reader)
     if not candidate:
@@ -164,7 +168,16 @@ def generate(
     openai_state_path = settings.work_dir / "audiobook@openaitts" / "audio_state.json"
     legacy_state_path = settings.work_dir / "audiobook" / "audio_state.json"
 
-    for state_path in [edge_state_path, openai_state_path, legacy_state_path]:
+    # Search the selected provider's state first. The order was always
+    # Edge-then-OpenAI, so choosing OpenAI while an Edge workspace existed loaded
+    # Edge's voice, model and speed — settings that do not apply to OpenAI.
+    preferred_provider = (tts_provider or settings.audiobook_tts_provider or "").lower()
+    if preferred_provider == "openai":
+        search_order = [openai_state_path, edge_state_path, legacy_state_path]
+    else:
+        search_order = [edge_state_path, openai_state_path, legacy_state_path]
+
+    for state_path in search_order:
         if state_path.exists():
             try:
                 stored_state = load_audio_state(state_path)
@@ -176,7 +189,12 @@ def generate(
                     stored_model = stored_state.session.tts_model
                     stored_speed = stored_state.session.tts_speed
                     break  # Use the first valid state found
-            except Exception:
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                # Swallowing every error made a corrupted state file look exactly
+                # like an absent one, silently discarding prior progress.
+                console.print(
+                    f"[yellow]Ignoring unreadable audio state at {state_path}: {exc}[/yellow]"
+                )
                 continue
 
     # Determine provider (CLI > config > stored)
@@ -415,7 +433,7 @@ def export_chapters(ctx: click.Context, source: Path, output: Path | None) -> No
         if not settings.segments_file.exists():
             raise StateFileNotFoundError("segments", source)
 
-        console.print(f"[cyan]Extracting chapter structure from EPUB...[/cyan]")
+        console.print("[cyan]Extracting chapter structure from EPUB...[/cyan]")
         chapters, metadata = extract_chapters_from_epub(source, settings)
 
         # Default output to work_dir/chapters.yaml
@@ -424,7 +442,7 @@ def export_chapters(ctx: click.Context, source: Path, output: Path | None) -> No
 
     elif source.suffix.lower() in {".m4a", ".mp4"}:
         # Extract from audiobook
-        console.print(f"[cyan]Reading chapter markers from audiobook...[/cyan]")
+        console.print("[cyan]Reading chapter markers from audiobook...[/cyan]")
         chapters, metadata = extract_chapters_from_mp4(source)
 
         # Default output to source directory
@@ -440,10 +458,10 @@ def export_chapters(ctx: click.Context, source: Path, output: Path | None) -> No
     write_chapters_yaml(chapters, metadata, output)
 
     console.print(f"\n[green]✓ Exported {len(chapters)} chapters to:[/green] {output}")
-    console.print(f"\n[cyan]Edit the file to customize chapter titles/timestamps, then use:[/cyan]")
+    console.print("\n[cyan]Edit the file to customize chapter titles/timestamps, then use:[/cyan]")
     if source.suffix.lower() == ".epub":
-        console.print(f"  tepub audiobook {source.name}")
-        console.print(f"[dim](Audiobook generation will use custom titles from chapters.yaml)[/dim]")
+        console.print(f"  tepub audiobook generate {source.name}")
+        console.print("[dim](Audiobook generation will use custom titles from chapters.yaml)[/dim]")
     else:
         console.print(f"  tepub audiobook update-chapters {source.name} chapters.yaml")
 
@@ -480,7 +498,7 @@ def update_chapters(ctx: click.Context, audiobook_file: Path, chapters_file: Pat
     update_mp4_chapters(audiobook_file, chapters)
 
     console.print(f"\n[green]✓ Successfully updated {len(chapters)} chapter markers[/green]")
-    console.print(f"\n[dim]Chapters:[/dim]")
+    console.print("\n[dim]Chapters:[/dim]")
     for i, ch in enumerate(chapters[:5], 1):  # Show first 5
         start_time = f"{ch.start:.1f}s" if ch.start is not None else "N/A"
         console.print(f"  {i}. {start_time:>8} - {ch.title}")

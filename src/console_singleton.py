@@ -29,8 +29,11 @@ def configure_console(*, quiet: bool = False, verbose: bool = False) -> None:
 
     Note:
         This should be called once from main.py after parsing CLI flags.
-        Calling it multiple times will replace the existing console instance.
+
+        The shared instance is mutated rather than replaced. Command modules bind
+        `console = get_console()` at import time, which happens before this runs,
+        so replacing the singleton left every one of them holding the old object
+        and --quiet had no effect anywhere.
     """
-    global _console
     # quiet takes precedence over verbose
-    _console = Console(quiet=quiet)
+    get_console().quiet = quiet
