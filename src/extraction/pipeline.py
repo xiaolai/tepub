@@ -15,7 +15,7 @@ from state.store import ensure_state, save_segments
 
 console = get_console()
 
-from .segments import iter_segments
+from .segments import iter_segments, resolve_segment_id_collisions
 
 
 def run_extraction(settings: AppSettings, input_epub: Path) -> None:
@@ -60,6 +60,16 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
     metadata = extract_metadata(reader.book)
 
     timestamp = datetime.now(timezone.utc).isoformat()
+    # Legacy ids can collide across directories; only the colliding segments are
+    # re-keyed, so an existing workspace still matches after re-extraction.
+    segments, rekeyed = resolve_segment_id_collisions(segments)
+    if rekeyed:
+        console.print(
+            f"[yellow]Resolved {len(rekeyed)} colliding segment id(s): {', '.join(rekeyed[:5])}"
+            f"{'…' if len(rekeyed) > 5 else ''}. Those segments will need re-translating; "
+            f"their previous shared state was ambiguous.[/yellow]"
+        )
+
     segments_doc = SegmentsDocument(
         epub_path=input_epub,
         generated_at=timestamp,

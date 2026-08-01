@@ -1,6 +1,6 @@
 [project]
 name = "tepub"
-version = "0.2.3"
+version = "0.2.4"
 description = "TEPUB - Tools for EPUB: A comprehensive toolkit for EPUB processing including translation, audiobook generation, and export"
 requires-python = ">=3.10"
 authors = [
@@ -87,7 +87,7 @@ requires = ["setuptools>=61,<69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-addopts = "--cov=cli --cov=epub_io --cov=extraction --cov=translation --cov=injection --cov=state --cov-report=xml"
+addopts = "--cov=src --cov-report=xml"
 testpaths = ["tests"]
 pythonpath = ["src"]
 

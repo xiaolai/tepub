@@ -252,20 +252,40 @@ def test_iter_segments_handles_complex_markup():
 
 
 def test_segment_ids_do_not_collide_across_directories():
-    """Same basename in different directories must not share a segment id.
+    """Colliding ids are resolved after extraction, not by changing the id scheme.
 
-    Previously the id hashed only the xpath and prefixed file_path.stem, so
-    a/ch1.xhtml and b/ch1.xhtml produced identical ids and one state record
-    silently overwrote the other.
+    Rewriting _build_segment_id outright would re-key every existing workspace
+    and strand completed translations and synthesised audio, so only the segments
+    that genuinely collide are given new ids.
     """
-    markup = "<html><body><p>Same text.</p></body></html>"
+    from extraction.segments import resolve_segment_id_collisions
 
+    markup = "<html><body><p>Same text.</p></body></html>"
     a = list(iter_segments(html.fromstring(markup), Path("OEBPS/a/ch1.xhtml"), spine_index=0))
     b = list(iter_segments(html.fromstring(markup), Path("OEBPS/b/ch1.xhtml"), spine_index=1))
 
-    assert a and b
-    assert a[0].xpath == b[0].xpath
-    assert a[0].segment_id != b[0].segment_id
+    # The legacy id scheme collides; that is what is being resolved.
+    assert a[0].segment_id == b[0].segment_id
+
+    resolved, rekeyed = resolve_segment_id_collisions(a + b)
+
+    ids = [segment.segment_id for segment in resolved]
+    assert len(set(ids)) == len(ids)
+    assert len(rekeyed) == 1
+
+
+def test_non_colliding_segment_ids_are_left_alone():
+    """A healthy workspace must still match after re-extraction."""
+    from extraction.segments import resolve_segment_id_collisions
+
+    markup = "<html><body><p>Text.</p></body></html>"
+    segments = list(iter_segments(html.fromstring(markup), Path("OEBPS/only.xhtml"), spine_index=0))
+    original = [segment.segment_id for segment in segments]
+
+    resolved, rekeyed = resolve_segment_id_collisions(segments)
+
+    assert [segment.segment_id for segment in resolved] == original
+    assert rekeyed == []
 
 
 def test_simple_elements_inside_atomic_are_not_extracted_twice():
