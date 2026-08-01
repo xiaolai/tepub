@@ -56,6 +56,15 @@ dev = [
   "ruff>=0.5",
   "black>=24.4",
 ]
+# Optional translation providers. Their imports are guarded, so tepub works
+# without them, but the packages were undeclared entirely — leaving no supported
+# way to install a provider the code ships support for.
+anthropic = ["anthropic>=0.40"]
+gemini = ["google-genai>=1.0"]
+all-providers = [
+  "anthropic>=0.40",
+  "google-genai>=1.0",
+]
 
 [project.scripts]
 tepub = "cli.main:app"
