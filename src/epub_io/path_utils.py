@@ -41,8 +41,12 @@ def normalize_epub_href(document_path: Path, raw_href: str) -> str | None:
     if not value:
         return None
 
-    # Filter out data URIs and external URLs
-    if value.startswith("data:"):
+    # Filter out data URIs and external URLs. Only "://" was checked, so
+    # schemes without an authority (mailto:, tel:) and protocol-relative URLs
+    # ("//host/path") were treated as ordinary relative paths and resolved
+    # against the document directory.
+    lowered = value.lower()
+    if lowered.startswith(("data:", "mailto:", "tel:", "blob:", "javascript:", "//")):
         return None
     if "://" in value:
         return None

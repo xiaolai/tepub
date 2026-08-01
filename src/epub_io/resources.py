@@ -7,6 +7,8 @@ from pathlib import Path
 
 from ebooklib import epub
 
+from logging_utils.logger import get_logger
+
 
 @dataclass
 class SpineItem:
@@ -30,11 +32,21 @@ def load_book(epub_path: Path) -> epub.EpubBook:
         return epub.read_epub(str(epub_path), options={"ignore_ncx": False})
 
 
+logger = get_logger(__name__)
+
+
 def iter_spine_items(book: epub.EpubBook) -> Iterable[SpineItem]:
     manifest = {item.id: item for item in book.get_items()}
     for idx, (idref, linear) in enumerate(book.spine):
         item = manifest.get(idref)
         if item is None:
+            # A spine entry with no manifest item means the book is malformed and
+            # that chapter cannot be read. Skipping silently produced an export
+            # that looked complete while missing content.
+            logger.warning(
+                "Spine entry %r has no matching manifest item; that document will "
+                "be missing from the output.", idref
+            )
             continue
         href = Path(item.file_name)
         yield SpineItem(
