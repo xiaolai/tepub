@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from typing import Any
-
-import requests
 
 from config import ProviderConfig
 from state.models import Segment
 from translation.prompt_builder import build_prompt
 
-from .base import BaseProvider, ProviderError, ProviderFatalError, ensure_translation_available
+from .base import BaseProvider, ProviderFatalError, ensure_translation_available
+from .http import post_json
 
 
 def _extract_text(body: Any) -> str | None:
@@ -79,50 +77,11 @@ class OpenAIProvider(BaseProvider):
         }
         headers.update(self.config.extra_headers)
 
-        attempts = 3
-        for attempt in range(attempts):
-            last_attempt = attempt == attempts - 1
-            try:
-                response = requests.post(
-                    self.config.base_url,
-                    headers=headers,
-                    data=json.dumps(payload),
-                    timeout=60,
-                )
-            except requests.exceptions.RequestException as exc:
-                if last_attempt:
-                    raise ProviderError(
-                        f"OpenAI request failed after {attempts} attempts: {exc}"
-                    ) from exc
-                time.sleep(2**attempt)
-                continue
-
-            # 429 and 5xx are transient. Treating every status >= 400 as fatal meant
-            # a single rate-limit response aborted the whole run without retrying.
-            if response.status_code == 429 or response.status_code >= 500:
-                if last_attempt:
-                    raise ProviderError(
-                        f"OpenAI API error {response.status_code} after {attempts} "
-                        f"attempts: {response.text}"
-                    )
-                time.sleep(2**attempt)
-                continue
-
-            if response.status_code >= 400:
-                # 4xx other than 429 (bad key, unknown model) will not improve on
-                # retry and should stop the run.
-                raise ProviderFatalError(
-                    f"OpenAI API error {response.status_code}: {response.text}"
-                )
-
-            try:
-                body: Any = response.json()
-            except ValueError as exc:
-                # Decoding sat outside the guarded block, so a malformed 200
-                # response escaped as a raw JSONDecodeError.
-                raise ProviderError(f"OpenAI returned a non-JSON response: {exc}") from exc
-
-            return ensure_translation_available(_extract_text(body))
-
-        # Unreachable: every path above either returns or raises.
-        raise ProviderError("OpenAI provider failed without an exception")
+        body: Any = post_json(
+            "OpenAI",
+            self.config.base_url,
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=60,
+        )
+        return ensure_translation_available(_extract_text(body))
