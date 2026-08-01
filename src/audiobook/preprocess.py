@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import html
-import random
 import re
 
 import nltk
-from lxml import etree
 from lxml import html as lxml_html
 
 from state.models import ExtractMode, Segment
 
 BLOCK_PUNCTUATION = re.compile(r"[.!?…]$")
 NON_WORD_RE = re.compile(r"^[^\w]+$")
-SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。？！])\s+")
 LIST_TAGS = {"ul", "ol"}
 
 # Roman numeral pattern and conversion
@@ -68,10 +65,18 @@ def _normalize_ellipsis(text: str) -> str:
 
 
 def ensure_punkt() -> None:
-    try:
-        nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        nltk.download("punkt")
+    """Ensure the Punkt sentence tokenizer data is available.
+
+    NLTK 3.9 rerouted ``tokenizers/punkt/<lang>.pickle`` to the ``punkt_tab``
+    dataset, so downloading only ``punkt`` left the loader raising LookupError at
+    synthesis time on a fresh install. Both are requested; each is a no-op when
+    already present.
+    """
+    for resource in ("punkt", "punkt_tab"):
+        try:
+            nltk.data.find(f"tokenizers/{resource}")
+        except LookupError:
+            nltk.download(resource, quiet=True)
 
 
 def _ensure_list_punctuation(root: lxml_html.HtmlElement) -> None:
@@ -86,8 +91,20 @@ def _ensure_list_punctuation(root: lxml_html.HtmlElement) -> None:
         else:
             child_text = li.text_content().rstrip()
             if child_text and not BLOCK_PUNCTUATION.search(child_text):
-                li.insert(0, etree.Element("span"))
-                li.text = child_text + ". "
+                # Append the punctuation to the last text-bearing node. Copying
+                # text_content() into li.text left the original children in place,
+                # so every such list item was spoken twice.
+                target: tuple[lxml_html.HtmlElement, str] | None = None
+                for node in li.iter():
+                    if node is li:
+                        continue
+                    if node.text and node.text.strip():
+                        target = (node, "text")
+                    if node.tail and node.tail.strip():
+                        target = (node, "tail")
+                if target is not None:
+                    node, attr = target
+                    setattr(node, attr, getattr(node, attr).rstrip() + ". ")
 
 
 def _html_to_text(raw_html: str, element_type: str) -> str:
@@ -150,6 +167,46 @@ def _convert_roman_numeral_to_spoken(text: str, segment: Segment) -> str:
         return f"{words}{suffix}"
 
 
+
+NOTEREF_HINTS = ("footnote", "noteref", "endnote", "fn", "note")
+
+
+def _is_noteref(link) -> bool:
+    """True when an <a> carrying sup/sub is really a note reference.
+
+    EPUB marks note references explicitly via ``epub:type="noteref"`` or ARIA
+    ``role="doc-noteref"``; publishers otherwise signal it with a class name.
+    A bare in-page fragment link wrapping a superscript is the common
+    unannotated case. Everything else (linked formulas, ordinals, external
+    citations) is real content and must survive.
+    """
+    epub_type = (
+        link.get("{http://www.idpf.org/2007/ops}type") or link.get("epub:type") or ""
+    ).lower()
+    if "noteref" in epub_type:
+        return True
+    if "doc-noteref" in (link.get("role") or "").lower():
+        return True
+
+    haystack = " ".join(
+        filter(None, [link.get("class") or "", link.get("id") or ""])
+    ).lower()
+    if any(hint in haystack for hint in NOTEREF_HINTS):
+        return True
+
+    href = link.get("href")
+    if href is None:
+        # Bare <a><sup>1</sup></a> with no target — a stripped note marker.
+        return True
+    if "#" in href:
+        # Points at a fragment, in this file ("#fn1") or a notes document
+        # ("notes.xhtml#n1"). Both are conventional note references.
+        return True
+
+    # An <a> with a real, fragment-less destination wrapping a superscript is a
+    # linked formula, ordinal or citation — content, not a note marker.
+    return False
+
 def _reextract_filtered(segment: Segment, reader) -> str:
     """Re-extract element from EPUB with footnote filtering.
 
@@ -173,9 +230,14 @@ def _reextract_filtered(segment: Segment, reader) -> str:
     # Clone to avoid modifying original
     clone = lxml_html.fromstring(lxml_html.tostring(element, encoding="unicode"))
 
-    # Remove footnote references (a tags with sup/sub children)
+    # Remove footnote references (a tags with sup/sub children).
+    # A superscript link is not automatically a footnote — linked formulas,
+    # ordinals and citations use the same markup — so require an actual
+    # note-reference signal before deleting content.
     # Preserve tail text before removing the element
     for link in clone.xpath('.//a[sup or sub]'):
+        if not _is_noteref(link):
+            continue
         parent = link.getparent()
         if parent is not None:
             # Preserve the tail text (text after the link element)
@@ -191,6 +253,57 @@ def _reextract_filtered(segment: Segment, reader) -> str:
     # Extract text
     text = " ".join(clone.text_content().split())
     return text
+
+
+FOOTNOTE_DEF_HINTS = ("footnote", "endnote", "rearnote", "ftn", "fn", "note")
+_TOKEN_SPLIT_RE = re.compile(r"[\s_\-]+")
+
+
+def _looks_like_note_identifier(value: str) -> bool:
+    """True when an id/class token names a note, e.g. "ftn3", "footnote-2", "fn1".
+
+    Token-prefix matching rather than substring: a plain ``in`` test would match
+    ids like "fnord" or any class containing "note".
+    """
+    for token in _TOKEN_SPLIT_RE.split(value.lower()):
+        stripped = token.rstrip("0123456789")
+        if stripped and stripped in FOOTNOTE_DEF_HINTS:
+            return True
+    return False
+
+
+def _element_is_footnote_definition(segment: Segment, reader) -> bool:
+    """Check the element and its ancestors for note-definition semantics.
+
+    EPUB 3 marks definitions with ``epub:type="footnote"`` / ``"endnote"`` or ARIA
+    ``role="doc-footnote"``; older books rely on id/class naming.
+    """
+    try:
+        doc = reader.read_document_by_path(segment.file_path)
+        elements = doc.tree.xpath(segment.xpath)
+    except Exception:
+        return False
+    if not elements:
+        return False
+
+    node = elements[0]
+    while node is not None:
+        get = getattr(node, "get", None)
+        if get is None:
+            break
+        epub_type = (
+            get("{http://www.idpf.org/2007/ops}type") or get("epub:type") or ""
+        ).lower()
+        if any(hint in epub_type for hint in ("footnote", "endnote", "rearnote", "note")):
+            return True
+        if (get("role") or "").lower() in {"doc-footnote", "doc-endnote"}:
+            return True
+        for attr in ("id", "class"):
+            value = get(attr) or ""
+            if value and _looks_like_note_identifier(value):
+                return True
+        node = node.getparent()
+    return False
 
 
 def segment_to_text(segment: Segment, reader=None) -> str | None:
@@ -215,10 +328,21 @@ def segment_to_text(segment: Segment, reader=None) -> str | None:
     if any(pattern in seg_id_lower for pattern in footnote_id_patterns):
         return None
 
-    # Check xpath for footnote container divs
+    # Check xpath for footnote container divs.
+    # Note: this only fires for hand-written xpaths carrying @id/@class predicates.
+    # Real extraction stores absolute positional paths ("/html/body/div[3]/p[2]"),
+    # so the element inspection below is what actually catches definitions in the
+    # wild — this check is kept for segments whose xpath does carry predicates.
     footnote_xpath_patterns = ["footnote", "endnote", "notes"]
     if any(f"div[@id='{pattern}" in xpath_lower or f"div[@class='{pattern}" in xpath_lower
            for pattern in footnote_xpath_patterns):
+        return None
+
+    # Inspect the actual element and its ancestors. Segment ids are
+    # "{file_stem}-{digest}" and xpaths are positional, so neither carries the
+    # semantics the checks above look for; without this, in-file footnote
+    # definitions were read aloud in full.
+    if reader is not None and _element_is_footnote_definition(segment, reader):
         return None
 
     # If reader provided, re-extract with footnote filtering
@@ -250,11 +374,44 @@ def segment_to_text(segment: Segment, reader=None) -> str | None:
     return content
 
 
-def split_sentences(text: str, seed: int | None = None) -> list[str]:
+# Punkt ships models for these languages; the key is the ISO-639-1 prefix.
+PUNKT_LANGUAGES = {
+    "cs": "czech", "da": "danish", "de": "german", "el": "greek", "en": "english",
+    "es": "spanish", "et": "estonian", "fi": "finnish", "fr": "french",
+    "it": "italian", "nl": "dutch", "no": "norwegian", "pl": "polish",
+    "pt": "portuguese", "ru": "russian", "sl": "slovene", "sv": "swedish",
+    "tr": "turkish",
+}
+
+# Punkt has no model for CJK, which does not separate sentences with whitespace.
+CJK_SENTENCE_RE = re.compile(r"(?<=[。？！…；.!?])\s*")
+
+
+def _split_cjk(text: str) -> list[str]:
+    """Split on CJK sentence terminators, which Punkt cannot handle."""
+    return [part for part in CJK_SENTENCE_RE.split(text) if part.strip()]
+
+
+def split_sentences(text: str, language: str | None = None) -> list[str]:
+    """Split text into sentences using a tokenizer appropriate to ``language``.
+
+    Previously the English Punkt model was loaded unconditionally, so CJK text —
+    which uses different terminators and no inter-sentence spaces — came back as
+    one giant sentence, producing a single unbroken audio segment.
+    """
     normalized = _normalize_ellipsis(text)
-    ensure_punkt()
-    tokenizer = nltk.data.load("tokenizers/punkt/english.pickle")
-    sentences = tokenizer.tokenize(normalized)
+
+    prefix = (language or "en").split("-")[0].lower()
+    if prefix in {"zh", "ja", "ko"}:
+        sentences = _split_cjk(normalized)
+    else:
+        ensure_punkt()
+        punkt_name = PUNKT_LANGUAGES.get(prefix, "english")
+        try:
+            tokenizer = nltk.data.load(f"tokenizers/punkt/{punkt_name}.pickle")
+        except LookupError:
+            tokenizer = nltk.data.load("tokenizers/punkt/english.pickle")
+        sentences = tokenizer.tokenize(normalized)
 
     cleaned: list[str] = []
     for sentence in sentences:
@@ -275,10 +432,3 @@ def split_sentences(text: str, seed: int | None = None) -> list[str]:
 
     return cleaned
 
-
-def random_pause(range_seconds: tuple[float, float], seed: int | None = None) -> float:
-    low, high = range_seconds
-    if seed is not None:
-        rng = random.Random(seed)
-        return rng.uniform(low, high)
-    return random.uniform(low, high)

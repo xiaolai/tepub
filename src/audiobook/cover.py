@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import posixpath
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from lxml import etree
 

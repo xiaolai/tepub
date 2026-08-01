@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field
 
 class AudioSegmentStatus(str, Enum):
     PENDING = "pending"
-    IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     ERROR = "error"
     SKIPPED = "skipped"
