@@ -249,3 +249,74 @@ def test_iter_segments_handles_complex_markup():
 
     assert namespaced_para.extract_mode == ExtractMode.TEXT
     assert namespaced_para.source_content == "Namespaced case paragraph."
+
+
+def test_segment_ids_do_not_collide_across_directories():
+    """Same basename in different directories must not share a segment id.
+
+    Previously the id hashed only the xpath and prefixed file_path.stem, so
+    a/ch1.xhtml and b/ch1.xhtml produced identical ids and one state record
+    silently overwrote the other.
+    """
+    markup = "<html><body><p>Same text.</p></body></html>"
+
+    a = list(iter_segments(html.fromstring(markup), Path("OEBPS/a/ch1.xhtml"), spine_index=0))
+    b = list(iter_segments(html.fromstring(markup), Path("OEBPS/b/ch1.xhtml"), spine_index=1))
+
+    assert a and b
+    assert a[0].xpath == b[0].xpath
+    assert a[0].segment_id != b[0].segment_id
+
+
+def test_simple_elements_inside_atomic_are_not_extracted_twice():
+    """A <p> inside an atomic <table> is carried by the table's HTML segment."""
+    markup = """
+    <html><body>
+    <table><tr><td><p>Cell paragraph.</p></td></tr></table>
+    </body></html>
+    """
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    assert len(segments) == 1
+    assert segments[0].extract_mode == ExtractMode.HTML
+    assert "Cell paragraph." in segments[0].source_content
+
+
+def test_order_in_file_is_contiguous_from_one():
+    """Skipped/empty elements must not consume order numbers."""
+    markup = """
+    <html><body>
+    <p>   </p>
+    <p>First real.</p>
+    <p></p>
+    <p>Second real.</p>
+    </body></html>
+    """
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    orders = [s.metadata.order_in_file for s in segments]
+    assert orders == list(range(1, len(segments) + 1))
+    assert orders[0] == 1
+
+
+def test_comment_inside_atomic_element_does_not_abort_extraction():
+    """Non-element children (comments) must serialize, not raise TypeError."""
+    markup = "<html><body><ul><li>Item<!-- note -->tail</li></ul></body></html>"
+
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    assert len(segments) == 1
+    assert "Item" in segments[0].source_content
+
+
+def test_tail_text_after_nested_same_tag_is_preserved():
+    """Text following a nested same-tag element counts as the wrapper's own text."""
+    markup = """
+    <html><body>
+    <blockquote><blockquote>Inner</blockquote> outer tail text</blockquote>
+    </body></html>
+    """
+    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+
+    contents = " ".join(s.source_content for s in segments)
+    assert "outer tail text" in contents

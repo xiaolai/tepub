@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import posixpath
 import re
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from urllib.parse import unquote
 
 import html2text
 from lxml import html as lxml_html
 
 from config import AppSettings
 from console_singleton import get_console
+from epub_io.path_utils import normalize_epub_href
 from epub_io.reader import EpubReader
 from epub_io.resources import iter_spine_items
-from epub_io.toc_utils import parse_toc_to_dict
-from epub_io.path_utils import normalize_epub_href
 from state.models import Segment
 from state.store import load_segments
 
@@ -31,6 +30,136 @@ class ChapterBlock:
     toc_href: str  # Original TOC href for reference
 
 
+
+
+TocEntry = tuple[str, int, str]  # (title, spine_index, href)
+
+
+def _build_spine_lookup(reader: EpubReader) -> dict[Path, int]:
+    """Map each spine document path to its spine index."""
+    return {item.href: item.index for item in iter_spine_items(reader.book)}
+
+
+def _collect_toc_entries(toc, spine_lookup: dict[Path, int]) -> list[TocEntry]:
+    """Flatten the (possibly nested) TOC into entries that resolve to spine files."""
+    entries: list[TocEntry] = []
+
+    def _append_if_in_spine(node) -> None:
+        href = node.href.split("#", 1)[0]
+        href_path = Path(href)
+        if href_path in spine_lookup:
+            entries.append((node.title or href, spine_lookup[href_path], href))
+
+    def _walk(items) -> None:
+        for item in items:
+            if hasattr(item, "href") and hasattr(item, "title"):
+                _append_if_in_spine(item)
+            elif isinstance(item, (list, tuple)) and item:
+                head = item[0]
+                if head is not None and hasattr(head, "href") and hasattr(head, "title"):
+                    _append_if_in_spine(head)
+                if len(item) > 1:
+                    _walk(item[1])
+
+    _walk(toc)
+    return entries
+
+
+def _dedupe_entries_by_spine_index(entries: list[TocEntry]) -> list[TocEntry]:
+    """Keep the first TOC entry per spine index.
+
+    Fragment hrefs ("ch1.xhtml#part-2") are stripped to the file, so several TOC
+    entries can share one spine index. Left as-is they produce zero-length ranges
+    [n, n): every such entry but the last contributes no files, and the last
+    silently absorbs the whole file. The first entry is the one whose title
+    introduces that file.
+    """
+    deduped: list[TocEntry] = []
+    seen: set[int] = set()
+    for entry in entries:
+        if entry[1] in seen:
+            continue
+        seen.add(entry[1])
+        deduped.append(entry)
+    return deduped
+
+
+def _files_with_spine_index(
+    segments_by_file: dict[Path, list[Segment]],
+) -> list[tuple[Path, int]]:
+    """Every file that has segments, paired with its spine index, spine-ordered."""
+    pairs = [
+        (file_path, segments[0].metadata.spine_index)
+        for file_path, segments in segments_by_file.items()
+        if segments
+    ]
+    pairs.sort(key=lambda item: item[1])
+    return pairs
+
+
+def _single_file_block(file_path: Path, spine_idx: int) -> ChapterBlock:
+    """A one-file block titled from the filename (front matter / TOC-less fallback)."""
+    return ChapterBlock(
+        title=file_path.stem.replace("_", " ").title(),
+        spine_start=spine_idx,
+        spine_end=spine_idx + 1,
+        files=[file_path],
+        toc_href=file_path.as_posix(),
+    )
+
+
+def _blocks_from_toc_ranges(
+    toc_entries: list[TocEntry],
+    segments_by_file: dict[Path, list[Segment]],
+    max_spine_index: int,
+) -> list[ChapterBlock]:
+    """Build one block per TOC entry, spanning [this entry, next entry)."""
+    files = _files_with_spine_index(segments_by_file)
+    blocks: list[ChapterBlock] = []
+
+    for i, (title, spine_start, href) in enumerate(toc_entries):
+        spine_end = (
+            toc_entries[i + 1][1] if i + 1 < len(toc_entries) else max_spine_index + 1
+        )
+        block_files = [
+            file_path for file_path, idx in files if spine_start <= idx < spine_end
+        ]
+        if block_files:
+            blocks.append(
+                ChapterBlock(
+                    title=title,
+                    spine_start=spine_start,
+                    spine_end=spine_end,
+                    files=block_files,
+                    toc_href=href,
+                )
+            )
+    return blocks
+
+
+def _front_matter_blocks(
+    toc_entries: list[TocEntry],
+    segments_by_file: dict[Path, list[Segment]],
+) -> list[ChapterBlock]:
+    """One block per file appearing before the first TOC entry."""
+    if not toc_entries or not segments_by_file:
+        return []
+    first_toc_spine = min(entry[1] for entry in toc_entries)
+    return [
+        _single_file_block(file_path, idx)
+        for file_path, idx in _files_with_spine_index(segments_by_file)
+        if idx < first_toc_spine
+    ]
+
+
+def _spine_ordered_blocks(
+    segments_by_file: dict[Path, list[Segment]],
+) -> list[ChapterBlock]:
+    """One block per file in spine order, used when the TOC yields nothing."""
+    return [
+        _single_file_block(file_path, idx)
+        for file_path, idx in _files_with_spine_index(segments_by_file)
+    ]
 
 
 def _build_chapter_blocks(
@@ -52,104 +181,22 @@ def _build_chapter_blocks(
     Returns:
         List of ChapterBlock objects, one per logical chapter/section
     """
-    # Build spine index lookup: Path -> spine_index
-    spine_lookup: dict[Path, int] = {}
-    for spine_item in iter_spine_items(reader.book):
-        spine_lookup[spine_item.href] = spine_item.index
-
-    # Get max spine index
+    spine_lookup = _build_spine_lookup(reader)
     max_spine_index = max(spine_lookup.values()) if spine_lookup else 0
 
-    # Extract TOC entries with their spine indices
-    toc_entries: list[tuple[str, int, str]] = []  # (title, spine_index, href)
-
-    def collect_toc_entries(entries):
-        for item in entries:
-            if hasattr(item, "href") and hasattr(item, "title"):
-                href = item.href.split("#", 1)[0]
-                href_path = Path(href)
-                if href_path in spine_lookup:
-                    spine_idx = spine_lookup[href_path]
-                    title = item.title or href
-                    toc_entries.append((title, spine_idx, href))
-            elif isinstance(item, (list, tuple)) and item:
-                head = item[0] if item else None
-                if head and hasattr(head, "href") and hasattr(head, "title"):
-                    href = head.href.split("#", 1)[0]
-                    href_path = Path(href)
-                    if href_path in spine_lookup:
-                        spine_idx = spine_lookup[href_path]
-                        title = head.title or href
-                        toc_entries.append((title, spine_idx, href))
-                if len(item) > 1:
-                    collect_toc_entries(item[1])
-
-    toc = reader.book.toc or []
-    collect_toc_entries(toc)
-
-    # Sort by spine index
+    toc_entries = _collect_toc_entries(reader.book.toc or [], spine_lookup)
     toc_entries.sort(key=lambda x: x[1])
+    toc_entries = _dedupe_entries_by_spine_index(toc_entries)
 
-    # Build chapter blocks
-    blocks: list[ChapterBlock] = []
+    blocks = _blocks_from_toc_ranges(toc_entries, segments_by_file, max_spine_index)
+    blocks = _front_matter_blocks(toc_entries, segments_by_file) + blocks
 
-    for i, (title, spine_start, href) in enumerate(toc_entries):
-        # Determine end of this block (start of next TOC entry or end of spine)
-        if i + 1 < len(toc_entries):
-            spine_end = toc_entries[i + 1][1]
-        else:
-            spine_end = max_spine_index + 1
-
-        # Collect all files in spine range [spine_start, spine_end)
-        block_files: list[tuple[Path, int]] = []  # (path, spine_index)
-        for file_path, segments in segments_by_file.items():
-            if segments:
-                file_spine_idx = segments[0].metadata.spine_index
-                if spine_start <= file_spine_idx < spine_end:
-                    block_files.append((file_path, file_spine_idx))
-
-        # Sort by spine index
-        block_files.sort(key=lambda x: x[1])
-        files_only = [path for path, _ in block_files]
-
-        if files_only:
-            blocks.append(
-                ChapterBlock(
-                    title=title,
-                    spine_start=spine_start,
-                    spine_end=spine_end,
-                    files=files_only,
-                    toc_href=href,
-                )
-            )
-
-    # Handle files before first TOC entry (front matter)
-    if toc_entries and segments_by_file:
-        first_toc_spine = min(entry[1] for entry in toc_entries)
-        front_matter_files: list[tuple[Path, int]] = []
-
-        for file_path, segments in segments_by_file.items():
-            if segments:
-                file_spine_idx = segments[0].metadata.spine_index
-                if file_spine_idx < first_toc_spine:
-                    front_matter_files.append((file_path, file_spine_idx))
-
-        if front_matter_files:
-            # Sort and add as individual blocks (they don't belong to a chapter)
-            front_matter_files.sort(key=lambda x: x[1])
-            for file_path, spine_idx in front_matter_files:
-                # Use filename as title for front matter
-                title = file_path.stem.replace("_", " ").title()
-                blocks.insert(
-                    0,
-                    ChapterBlock(
-                        title=title,
-                        spine_start=spine_idx,
-                        spine_end=spine_idx + 1,
-                        files=[file_path],
-                        toc_href=file_path.as_posix(),
-                    ),
-                )
+    # Fall back to spine order when the TOC is missing or none of its entries
+    # matched the spine. Without this an EPUB with an unusable TOC exported
+    # nothing at all: per-chapter export wrote no files and combined export
+    # omitted every segment.
+    if not blocks:
+        blocks = _spine_ordered_blocks(segments_by_file)
 
     # Sort all blocks by spine index
     blocks.sort(key=lambda b: b.spine_start)
@@ -209,7 +256,14 @@ def _html_to_markdown(
         for img in tree.xpath(".//img | .//image"):
             src = img.get("src") or img.get("href") or img.get("{http://www.w3.org/1999/xlink}href")
             if src:
-                normalized_path = normalize_epub_href(document_path, src)
+                # Resolve against the *file* the reference points at: image_mapping is
+                # keyed by clean EPUB paths, so "fig.png?v=2" or "icons.svg#star" never
+                # matched and the image silently kept its original path. Strip the
+                # query/fragment and percent-decode here rather than in
+                # normalize_epub_href, which deliberately preserves both for document
+                # links (see tests/epub_io/test_path_utils.py).
+                lookup_src = unquote(src.split("#", 1)[0].split("?", 1)[0])
+                normalized_path = normalize_epub_href(document_path, lookup_src)
                 if normalized_path and normalized_path in image_mapping:
                     extracted_name = image_mapping[normalized_path]
                     # Replace the path in markdown
@@ -222,9 +276,65 @@ def _html_to_markdown(
 
         return markdown.strip()
     except Exception as e:
-        # Fallback to simple tag stripping
+        # Fall back to parser-based text extraction. The previous regex fallback
+        # (`<[^>]+>` -> "") deleted any legitimate text containing angle brackets
+        # and left HTML entities unresolved, silently corrupting the export.
         console.print(f"[yellow]Warning: HTML to markdown conversion failed: {e}[/yellow]")
-        return re.sub(r"<[^>]+>", "", html_content)
+        try:
+            fallback_tree = lxml_html.fromstring(f"<div>{html_content}</div>")
+            return fallback_tree.text_content().strip()
+        except Exception:
+            # Content is not parseable as HTML at all; return it unchanged rather
+            # than mangling it with a regex.
+            return html_content.strip()
+
+
+def _prepare_export(
+    settings: AppSettings,
+    input_epub: Path,
+    image_mapping: dict[str, str] | None,
+) -> tuple[dict[Path, list[Segment]], list[ChapterBlock], dict[str, str]]:
+    """Load segments, group them by file, and build chapter blocks.
+
+    Shared by both exporters, which previously carried identical copies of this
+    setup and could drift apart.
+    """
+    segments_doc = load_segments(settings.segments_file)
+    reader = EpubReader(input_epub, settings)
+    img_map = image_mapping or {}
+
+    # Group segments by file path
+    by_file: dict[Path, list[Segment]] = {}
+    for segment in segments_doc.segments:
+        by_file.setdefault(segment.file_path, []).append(segment)
+
+    # Sort segments within each file
+    for file_path in by_file:
+        by_file[file_path].sort(key=lambda s: s.metadata.order_in_file)
+
+    blocks = _build_chapter_blocks(reader, by_file)
+    return by_file, blocks, img_map
+
+
+def _render_block_body(
+    block: ChapterBlock,
+    by_file: dict[Path, list[Segment]],
+    img_map: dict[str, str],
+) -> list[str]:
+    """Render one chapter block's segments to markdown lines (no heading)."""
+    lines: list[str] = []
+    for file_path in block.files:
+        for segment in by_file.get(file_path, []):
+            content = segment.source_content or ""
+            if not content.strip():
+                continue
+
+            # Convert HTML to markdown, preserving images
+            text = _html_to_markdown(content, file_path, img_map)
+            if text.strip():
+                lines.append(text)
+                lines.append("")
+    return lines
 
 
 def export_to_markdown(
@@ -248,23 +358,7 @@ def export_to_markdown(
     Returns:
         List of created markdown file paths
     """
-    segments_doc = load_segments(settings.segments_file)
-    reader = EpubReader(input_epub, settings)
-    img_map = image_mapping or {}
-
-    # Group segments by file path
-    by_file: dict[Path, list[Segment]] = {}
-    for segment in segments_doc.segments:
-        if segment.file_path not in by_file:
-            by_file[segment.file_path] = []
-        by_file[segment.file_path].append(segment)
-
-    # Sort segments within each file
-    for file_path in by_file:
-        by_file[file_path].sort(key=lambda s: s.metadata.order_in_file)
-
-    # Build chapter blocks for smart grouping
-    blocks = _build_chapter_blocks(reader, by_file)
+    by_file, blocks, img_map = _prepare_export(settings, input_epub, image_mapping)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     created_files: list[Path] = []
@@ -277,20 +371,7 @@ def export_to_markdown(
 
         # Build markdown content from all files in this block
         lines = [f"# {block.title}", ""]
-
-        # Process all files in the block
-        for file_path in block.files:
-            segments = by_file.get(file_path, [])
-            for segment in segments:
-                content = segment.source_content or ""
-                if not content.strip():
-                    continue
-
-                # Convert HTML to markdown, preserving images
-                text = _html_to_markdown(content, file_path, img_map)
-                if text.strip():
-                    lines.append(text)
-                    lines.append("")
+        lines.extend(_render_block_body(block, by_file, img_map))
 
         # Write file
         md_content = "\n".join(lines)
@@ -321,23 +402,7 @@ def export_combined_markdown(
     Returns:
         Path to the created combined markdown file
     """
-    segments_doc = load_segments(settings.segments_file)
-    reader = EpubReader(input_epub, settings)
-    img_map = image_mapping or {}
-
-    # Group segments by file path
-    by_file: dict[Path, list[Segment]] = {}
-    for segment in segments_doc.segments:
-        if segment.file_path not in by_file:
-            by_file[segment.file_path] = []
-        by_file[segment.file_path].append(segment)
-
-    # Sort segments within each file
-    for file_path in by_file:
-        by_file[file_path].sort(key=lambda s: s.metadata.order_in_file)
-
-    # Build chapter blocks for smart grouping
-    blocks = _build_chapter_blocks(reader, by_file)
+    by_file, blocks, img_map = _prepare_export(settings, input_epub, image_mapping)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -362,18 +427,7 @@ def export_combined_markdown(
         all_lines.append("")
 
         # Add content from all files in this block
-        for file_path in block.files:
-            segments = by_file.get(file_path, [])
-            for segment in segments:
-                content = segment.source_content or ""
-                if not content.strip():
-                    continue
-
-                # Convert HTML to markdown, preserving images
-                text = _html_to_markdown(content, file_path, img_map)
-                if text.strip():
-                    all_lines.append(text)
-                    all_lines.append("")
+        all_lines.extend(_render_block_body(block, by_file, img_map))
 
         # Add separator between chapters (except after last chapter)
         if idx < len(blocks):

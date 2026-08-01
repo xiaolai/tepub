@@ -120,7 +120,9 @@ def _has_direct_text_content(element: html.HtmlElement, exclude_tag: str) -> boo
     # Clone to avoid modifying original
     clone = deepcopy(element)
 
-    # Remove all same-tag descendants
+    # Remove all same-tag descendants. lxml's remove() also drops the element's
+    # tail, which is text belonging to the *parent* — losing it made wrappers with
+    # meaningful text after a nested element look like pure structural wrappers.
     for desc in list(clone.iter()):
         if desc is clone:
             continue
@@ -128,6 +130,13 @@ def _has_direct_text_content(element: html.HtmlElement, exclude_tag: str) -> boo
             # Remove the descendant
             parent = desc.getparent()
             if parent is not None:
+                tail = desc.tail
+                if tail:
+                    previous = desc.getprevious()
+                    if previous is not None:
+                        previous.tail = (previous.tail or "") + tail
+                    else:
+                        parent.text = (parent.text or "") + tail
                 parent.remove(desc)
 
     # Check if remaining element has any text
@@ -166,15 +175,24 @@ def _clean_html_copy(element: html.HtmlElement) -> html.HtmlElement:
 
 def _extract_inner_html(element: html.HtmlElement) -> str:
     clone = _clean_html_copy(element)
-    html_content = (clone.text or "") + "".join(
-        html.tostring(child, encoding="unicode") if isinstance(child.tag, str) else child
-        for child in clone
-    )
-    return html_content.strip()
+    parts: list[str] = [clone.text or ""]
+    for child in clone:
+        if isinstance(child.tag, str):
+            parts.append(html.tostring(child, encoding="unicode"))
+        else:
+            # Comments and processing instructions have a callable tag. Serializing
+            # them keeps their tail text; yielding the node itself used to reach
+            # "".join() as a non-string and raise TypeError, aborting extraction.
+            parts.append(html.tostring(child, encoding="unicode"))
+    return "".join(parts).strip()
 
 
 def _build_segment_id(file_path: Path, xpath: str) -> str:
-    digest = hashlib.sha1(xpath.encode("utf-8")).hexdigest()[:12]
+    # Hash the full EPUB-relative path, not just the stem: two files with the same
+    # basename in different directories otherwise produce identical ids for the
+    # same xpath, and one state record silently overwrites the other.
+    normalized_path = file_path.as_posix()
+    digest = hashlib.sha1(f"{normalized_path}\n{xpath}".encode()).hexdigest()[:12]
     return f"{file_path.stem}-{digest}"
 
 
@@ -194,6 +212,11 @@ def iter_segments(
                 continue
             extract_mode = ExtractMode.HTML
         elif tag in SIMPLE_TAGS:
+            # A simple element inside an atomic one is already carried by that
+            # atomic element's HTML segment; extracting it again duplicates the
+            # content and produces overlapping injections.
+            if _has_atomic_ancestor(element):
+                continue
             if tag == "div" and not _div_is_text_only(element):
                 continue
 
@@ -212,7 +235,6 @@ def iter_segments(
 
         xpath = root_tree.getpath(element)
         segment_id = _build_segment_id(file_path, xpath)
-        order_idx = next(order_counter)
 
         if extract_mode == ExtractMode.TEXT:
             content = _extract_text(element)
@@ -222,6 +244,10 @@ def iter_segments(
             content = _extract_inner_html(element)
             if not content:
                 continue
+
+        # Take the order number only once the element is known to yield a segment;
+        # advancing it earlier left gaps and could leave no segment at order 1.
+        order_idx = next(order_counter)
 
         metadata = SegmentMetadata(
             element_type=tag,
