@@ -4,6 +4,31 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.3.3] - 2026-08-02
+
+### 🐛 Fixed
+
+- **Audiobook synthesis failed when run from the home directory.** 0.3.2 moved
+  nltk off the CLI startup path, which fixed `tepub --help` and every non-audio
+  command, but sentence splitting still imported nltk and still hit the same
+  guard — so `tepub audiobook generate` crashed from `~`, `/` or `~/.local`.
+
+  nltk's import guard (`inisec`, added in 3.9.2) blocks any module whose file
+  lives *underneath* the current working directory, rather than modules actually
+  resolved *from* it. Tool installers place environments under `$HOME`, so the
+  guard fires on ordinary layouts; this is upstream nltk#3730, with a fix pending
+  in nltk#3731. Its documented remedies (`-P`, `PYTHONSAFEPATH=1`) do not work,
+  because the check never consults `sys.path`.
+
+  tepub now disables that guard for its own nltk import only. This is safe here
+  and not a weakening of security: tepub runs as an installed console script,
+  where `sys.path[0]` is the script's directory and the current working directory
+  is never on `sys.path`, so the path-hijacking attack the guard defends against
+  cannot occur. The override is scoped to the lazy import — nothing is set at
+  startup — and should be removed once a release carrying nltk#3731 is required.
+
+---
+
 ## [0.3.2] - 2026-08-02
 
 ### 🐛 Fixed

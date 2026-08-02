@@ -74,7 +74,20 @@ def _nltk():
     blocks importing any module whose file lives under the current working
     directory, and uv installs tools under $HOME, so running from ~ (or / or
     ~/.local) aborted before the CLI could start.
+
+    That guard is disabled for this import. It exists to stop a module being
+    hijacked from the current working directory (CWE-427), but it tests
+    filesystem containment rather than whether the CWD is importable at all, so
+    it fires on any environment installed beneath the CWD — upstream nltk#3730.
+    tepub runs as an installed console script, where sys.path[0] is the script's
+    own directory and the CWD is never on sys.path, so the hijack it guards
+    against cannot occur here and every block it produces is a false positive.
+    Without this, audiobook synthesis fails outright when run from the home
+    directory. Remove once a release carrying nltk#3731 is required.
     """
+    import os
+
+    os.environ.setdefault("NLTK_DISABLE_IMPORT_SECURITY", "1")
     import nltk
 
     return nltk
