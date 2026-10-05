@@ -95,3 +95,20 @@ def test_a_fatal_provider_error_exits_with_code_1() -> None:
     with pytest.raises(click.exceptions.Exit) as exit_info:
         command()
     assert exit_info.value.exit_code == 1
+
+
+def test_a_longer_unit_gets_a_longer_wait(monkeypatch) -> None:
+    waits = []
+
+    def capture(label, url, *, headers, data, timeout):
+        waits.append(timeout)
+        return {"response": "好", "done_reason": "stop"}
+
+    monkeypatch.setattr(ollama_module, "post_json", capture)
+    from tests.translation.test_reply_checks import _segment
+
+    provider = _ollama()
+    provider.translate(_segment("Short."), "en", "zh")
+    provider.translate(_segment("A long paragraph. " * 300), "en", "zh")
+    assert waits[0] >= 120
+    assert waits[1] > waits[0] + 200

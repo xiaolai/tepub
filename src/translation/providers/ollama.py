@@ -22,6 +22,18 @@ from .http import post_json
 DEFAULT_SERVER = "http://localhost:11434"
 
 
+def request_timeout(prompt: str) -> float:
+    """Seconds to wait for a reply, longer for longer prompts.
+
+    A local model writes a few dozen tokens a second, and a translation is
+    about as long as its source, so a fixed 120 seconds cut off long units
+    mid-reply on every retry: three attempts at a 5,000-character paragraph
+    wasted six minutes and translated nothing. One second per 20 characters
+    on top of two minutes covers 30 characters a second of output.
+    """
+    return 120 + len(prompt) / 20
+
+
 def _generate_endpoint(base_url: str | None) -> str:
     """Accept a server address or a full endpoint.
 
@@ -79,9 +91,10 @@ class OllamaProvider(BaseProvider):
             )
 
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
+        prompt = build_prompt(segment, source_language, target_language)
         payload: dict[str, Any] = {
             "model": self.config.model,
-            "prompt": build_prompt(segment, source_language, target_language),
+            "prompt": prompt,
             "stream": False,
             "options": {"num_predict": self.config.max_tokens},
         }
@@ -92,7 +105,7 @@ class OllamaProvider(BaseProvider):
             self.config.base_url,
             headers={"Content-Type": "application/json"},
             data=json.dumps(payload),
-            timeout=120,
+            timeout=request_timeout(prompt),
         )
         if isinstance(body, dict):
             ensure_not_truncated(body.get("done_reason") == "length", "Ollama", segment)

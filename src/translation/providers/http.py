@@ -41,7 +41,7 @@ def post_json(
     headers: dict[str, str] | None = None,
     json_payload: Any = None,
     data: Any = None,
-    timeout: int = 60,
+    timeout: float = 60,
     attempts: int = 3,
 ) -> Any:
     """POST and return the decoded JSON body, retrying transient failures.
