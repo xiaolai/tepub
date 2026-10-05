@@ -18,6 +18,7 @@ from exceptions import ArtifactMismatchError
 from logging_utils.logger import get_logger
 from state.models import SegmentStatus
 from state.store import (
+    backup_state,
     ensure_state,
     load_segments,
     load_state,
@@ -266,6 +267,30 @@ def run_translation(
         return
 
     provider = create_provider(settings.primary_provider)
+
+    # Translations into another language do not carry over. Keep a copy and say
+    # how much is being reset; this used to happen silently inside ensure_state,
+    # which left the message that should have announced it unreachable.
+    if settings.state_file.exists():
+        previous = load_state(settings.state_file)
+        if (previous.source_language, previous.target_language) != (
+            source_language,
+            target_language,
+        ):
+            finished = sum(
+                1 for r in previous.segments.values() if r.status == SegmentStatus.COMPLETED
+            )
+            backup = backup_state(settings.state_file)
+            noun = "translation" if finished == 1 else "translations"
+            console.print(
+                f"[yellow]The languages changed: this workspace translated "
+                f"{previous.source_language} into {previous.target_language}, and this run "
+                f"translates {source_language} into {target_language}. Resetting "
+                f"{finished} finished {noun}; the previous state is saved as "
+                f"{backup.name}.[/yellow]"
+            )
+            settings.state_file.unlink()
+
     state_doc = ensure_state(
         settings.state_file,
         segments_doc.segments,
@@ -274,18 +299,6 @@ def run_translation(
         source_language,
         target_language,
     )
-
-    if state_doc.source_language != source_language or state_doc.target_language != target_language:
-        console.print("[yellow]Language preferences changed; resetting translation state.[/yellow]")
-        state_doc = ensure_state(
-            settings.state_file,
-            segments_doc.segments,
-            provider.name,
-            provider.model,
-            source_language,
-            target_language,
-            force_reset=True,
-        )
 
     console.print(
         f"Translating from {describe_language(source_language)} into {describe_language(target_language)} using {provider.model}"

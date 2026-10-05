@@ -139,7 +139,7 @@ Each of these reports success while producing wrong output.
 **Test first:** a fake provider failing three times with 429 then succeeding; assert the run completes with no segment left PENDING, using an injected clock so the test does not sleep.
 
 ### WI-2.5 A provider change does not silently erase work (C4)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/state/test_ensure_state.py` and `test_a_language_change_backs_up_and_says_so`. Provider or model changes keep every finished translation and update the current provider and model; a language change copies the state to `state.<UTC timestamp>.json` and prints how many finished translations it resets. The controller's language-change message, previously unreachable, is now the one that announces it.
 **Files:** `src/state/store.py`, `src/translation/controller.py`
 **Do:** changing provider or model keeps completed translations. Changing source or target language resets, but writes a timestamped backup first and prints what it reset.
 **Test first:** completed state, switch model; assert translations kept. Switch target language; assert backup exists and the message names the count.

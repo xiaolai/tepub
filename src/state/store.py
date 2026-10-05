@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterable
-from datetime import datetime
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .base import load_generic_state, save_generic_state, state_file_lock
@@ -63,29 +64,27 @@ def ensure_state(
     force_reset: bool = False,
 ) -> StateDocument:
     segments_list = list(segments)  # Consume iterable once
-    segment_ids = {seg.segment_id for seg in segments_list}
 
     if path.exists() and not force_reset:
         existing = load_state(path)
+        # Only the languages decide whether finished work still applies. A change
+        # of provider or model used to rebuild the whole state as PENDING, with no
+        # warning and no copy; each record already says who translated it.
         if (
-            existing.current_provider == provider
-            and existing.current_model == model
-            and existing.source_language == source_language
+            existing.source_language == source_language
             and existing.target_language == target_language
         ):
-            # Sync segments: add missing, keep existing translations
-            existing_ids = set(existing.segments.keys())
-            missing_ids = segment_ids - existing_ids
-
-            if missing_ids:
-                # Add new segments that weren't in the state
-                for seg in segments_list:
-                    if seg.segment_id in missing_ids:
-                        existing.segments[seg.segment_id] = TranslationRecord(
-                            segment_id=seg.segment_id
-                        )
+            changed = False
+            for seg in segments_list:
+                if seg.segment_id not in existing.segments:
+                    existing.segments[seg.segment_id] = TranslationRecord(segment_id=seg.segment_id)
+                    changed = True
+            if (existing.current_provider, existing.current_model) != (provider, model):
+                existing.current_provider = provider
+                existing.current_model = model
+                changed = True
+            if changed:
                 save_state(existing, path)
-
             return existing
 
     doc = StateDocument(
@@ -100,6 +99,14 @@ def ensure_state(
     )
     save_state(doc, path)
     return doc
+
+
+def backup_state(path: Path) -> Path:
+    """Copy ``path`` beside itself with a UTC timestamp, before it is reset."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = path.with_name(f"{path.stem}.{stamp}{path.suffix}")
+    shutil.copy2(path, backup)
+    return backup
 
 
 def update_translation_record(state_path: Path, segment_id: str, updater) -> TranslationRecord:

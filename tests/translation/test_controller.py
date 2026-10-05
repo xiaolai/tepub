@@ -256,3 +256,25 @@ def test_cooldowns_are_capped(monkeypatch, settings, tmp_path):
     assert sum(slept) == expected
     state = load_state(settings.state_file)
     assert {r.status for r in state.segments.values()} == {SegmentStatus.ERROR}
+
+
+def test_a_language_change_backs_up_and_says_so(monkeypatch, settings, tmp_path):
+    from state.store import ensure_state, mark_status
+
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    segment = _write_segments(settings, input_epub)
+    ensure_state(settings.state_file, [segment], "dummy", "dummy-model", "en", "fr")
+    mark_status(settings.state_file, segment.segment_id, SegmentStatus.COMPLETED, translation="Bonjour")
+
+    console = Console(record=True)
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
+    monkeypatch.setattr("translation.controller.console", console)
+
+    run_translation(settings, input_epub, source_language="en", target_language="zh-CN")
+
+    backups = [p for p in settings.state_file.parent.glob("state.*.json")]
+    assert len(backups) == 1
+    assert load_state(backups[0]).segments[segment.segment_id].translation == "Bonjour"
+    text = console.export_text()
+    assert "1 finished translation" in text and str(backups[0].name) in text
