@@ -4,7 +4,7 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
-## [0.5.0] - 2026-10-05
+## [0.4.1] - 2026-10-06
 
 Local translation by default, a glossary that holds a book's terms to one
 rendering, and inline markup a local model can keep.
