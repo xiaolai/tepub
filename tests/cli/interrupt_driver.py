@@ -72,6 +72,13 @@ def go():
     controller.run_translation(settings, epub, source_language="en", target_language="zh")
 
 
+# On SIGUSR1, print every thread's stack to stderr: the test asks for it when
+# the run does not exit, so a hang shows where it is stuck.
+import faulthandler  # noqa: E402
+import signal  # noqa: E402
+
+faulthandler.register(signal.SIGUSR1, all_threads=True)
+
 if guarded:
     from cli.main import run_guarded
 
