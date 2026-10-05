@@ -87,6 +87,7 @@ class OpenAIProvider(BaseProvider):
         payload = {
             "model": self.config.model,
             "input": build_prompt(segment, source_language, target_language),
+            "max_output_tokens": self.config.max_tokens,
         }
         headers = {
             "Authorization": f"Bearer {api_key}",

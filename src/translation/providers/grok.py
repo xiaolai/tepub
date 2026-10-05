@@ -44,6 +44,7 @@ class GrokProvider(BaseProvider):
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
+            "max_tokens": self.config.max_tokens,
         }
 
         headers = {

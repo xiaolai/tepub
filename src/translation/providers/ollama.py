@@ -83,6 +83,7 @@ class OllamaProvider(BaseProvider):
             "model": self.config.model,
             "prompt": build_prompt(segment, source_language, target_language),
             "stream": False,
+            "options": {"num_predict": self.config.max_tokens},
         }
         if self.config.think is not None:
             payload["think"] = self.config.think
