@@ -95,3 +95,18 @@ def test_a_dropped_anchor_is_put_back_at_the_start() -> None:
 def test_a_dropped_link_is_not_put_back() -> None:
     _text, markers = protect('See <a href="#n">note</a>.')
     assert restore("见注释。", markers) == "见注释。"
+
+
+def test_a_missing_closing_marker_is_added_after_the_same_text() -> None:
+    source = '<a href="ch5.xhtml#p31">31</a> Taing Rinith, Khmer Times, 2023.'
+    _text, markers = protect(source)
+    rebuilt = restore("⟦1⟧31 Taing Rinith，《高棉时报》，2023年。", markers)
+    assert rebuilt.startswith('<a href="ch5.xhtml#p31">31</a>')
+    assert markup_mismatch(source, rebuilt) is None
+
+
+def test_a_missing_closing_marker_is_not_guessed_otherwise() -> None:
+    _text, markers = protect('<a href="#n">see note</a> now')
+    assert restore("⟦1⟧见注释 现在", markers) == "见注释 现在"  # the text differs: no guess
+    _text, markers = protect('x<a href="#n"><sup>2</sup></a>')
+    assert restore("x⟦1⟧⟦2⟧2⟦/2⟧", markers) == "x<sup>2</sup>"  # nested: no guess

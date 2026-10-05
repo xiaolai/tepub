@@ -112,6 +112,9 @@ class Tag:
     # <a id="p12"/>: nothing shows, so where it sits within the paragraph does
     # not matter to a reader.
     anchor: bool = False
+    # The text a pair wrapped when it held text alone, such as a note number;
+    # empty otherwise.
+    inner: str = ""
 
 
 @dataclass(frozen=True)
@@ -182,7 +185,8 @@ def protect(markup: str) -> tuple[str, Markers] | None:
             and element.get("id") is not None
             and element.get("href") is None
         )
-        tags.append(Tag(local_name(element), start, paired, anchor))
+        inner = (element.text or "").strip() if paired and len(element) == 0 else ""
+        tags.append(Tag(local_name(element), start, paired, anchor, inner))
         parts.append(f"⟦{number}⟧")
         if paired:
             parts.append(_WHITESPACE.sub(" ", element.text or ""))
@@ -240,6 +244,24 @@ def _join_lines(reply: str) -> str:
     return re.sub(r"\s*\n\s*", join, reply)
 
 
+def _close_unclosed(reply: str, tags: tuple[Tag, ...]) -> str:
+    """Add a closing marker the model left out, where there is no doubt where.
+
+    Given glossary terms in its prompt, TranslateGemma wrote a note's opening
+    marker and its number, "⟦1⟧31 …", but no ⟦/1⟧, in about one note in six.
+    When the pair wrapped plain text and the reply has exactly that text right
+    after the opening marker, the pair closes after it.
+    """
+    for number, tag in enumerate(tags, start=1):
+        if not tag.inner or re.search(rf"⟦\s*/\s*{number}\s*⟧", reply):
+            continue
+        opening = re.search(rf"⟦\s*{number}\s*⟧\s*", reply)
+        if opening and reply.startswith(tag.inner, opening.end()):
+            cut = opening.end() + len(tag.inner)
+            reply = f"{reply[:cut]}⟦/{number}⟧{reply[cut:]}"
+    return reply
+
+
 def restore(reply: str, markers: Markers) -> str:
     """The reply as markup: markers become the original tags, text is escaped.
 
@@ -251,6 +273,7 @@ def restore(reply: str, markers: Markers) -> str:
     reply = reply.strip()
     if not markers.line_breaks:
         reply = _join_lines(reply)
+    reply = _close_unclosed(reply, tags)
     pieces = _MARKER.split(reply)
     # split yields text, then (slash, number, text) for each marker.
     tokens = [(pieces[i] == "/", int(pieces[i + 1])) for i in range(1, len(pieces), 3)]
