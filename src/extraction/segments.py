@@ -33,6 +33,13 @@ from state.models import ExtractMode, Segment, SegmentMetadata
 
 ATOMIC_TAGS = frozenset({"ul", "ol", "dl", "table", "figure"})
 
+# A list, table or definition list longer than this is split into its items,
+# cells and entries. Kept whole, a book's endnotes, one list of hundreds of
+# notes, made units of 14,000 to 34,000 characters that no request finished.
+# Shorter ones stay whole, so their items are translated with one another.
+SPLIT_ABOVE_CHARS = 3000
+_SPLITTABLE = frozenset({"ul", "ol", "dl", "table"})
+
 BLOCK_TAGS = frozenset(
     {
         "address", "article", "aside", "blockquote", "caption", "center", "dd", "details",
@@ -96,7 +103,11 @@ def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, Extr
         if name in SKIPPED_TAGS:
             continue
         if name in ATOMIC_TAGS:
-            yield child, ExtractMode.HTML
+            if name in _SPLITTABLE and len(_translatable_text(child)) > SPLIT_ABOVE_CHARS:
+                # Items, rows and cells are blocks: the walk makes them units.
+                yield from iter_units(child)
+            else:
+                yield child, ExtractMode.HTML
         elif _has_block_descendant(child):
             # A container, whatever its tag: converted books often wrap lists and
             # paragraphs in a <span>, which is invalid HTML but common.

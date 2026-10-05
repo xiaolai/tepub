@@ -1,0 +1,76 @@
+"""Long lists, tables and definition lists are split into items, and each
+item's translation is placed inside it."""
+
+from __future__ import annotations
+
+import zipfile
+from pathlib import Path
+
+from lxml import etree
+
+from config import AppSettings
+from extraction.pipeline import run_extraction
+from extraction.segments import SPLIT_ABOVE_CHARS
+from injection.engine import run_injection
+from state.store import load_segments
+from tests.epub_fixtures import long_endnotes, long_lists_epub2
+from tests.epub_io.test_translated_output import _translate_everything
+
+XHTML = "{http://www.w3.org/1999/xhtml}"
+
+
+def _extract(book: Path, tmp_path: Path) -> AppSettings:
+    settings = AppSettings(work_dir=tmp_path / "work")
+    run_extraction(settings, book)
+    return settings
+
+
+def test_a_long_list_becomes_one_unit_per_item(tmp_path: Path) -> None:
+    settings = _extract(long_endnotes(tmp_path / "book.epub"), tmp_path)
+    notes = [s for s in load_segments(settings.segments_file).segments if s.file_path.name == "notes.xhtml"]
+    assert [s.metadata.element_type for s in notes].count("li") == 40
+    assert max(len(s.source_content) for s in notes) < SPLIT_ABOVE_CHARS
+
+
+def test_a_short_list_stays_whole(tmp_path: Path) -> None:
+    from tests.epub_builder import build_epub
+
+    book = build_epub(tmp_path / "b.epub", [("c.xhtml", "C", "<ol><li>One.</li><li>Two.</li></ol>")])
+    settings = _extract(book, tmp_path)
+    assert [s.metadata.element_type for s in load_segments(settings.segments_file).segments] == ["ol"]
+
+
+def _tree(book: Path, name: str) -> etree._Element:
+    with zipfile.ZipFile(book) as archive:
+        member = next(n for n in archive.namelist() if n.endswith(name))
+        return etree.fromstring(archive.read(member))
+
+
+def test_bilingual_items_keep_the_list_and_hold_both_texts(tmp_path: Path) -> None:
+    book = long_endnotes(tmp_path / "book.epub")
+    settings = _extract(book, tmp_path)
+    _translate_everything(settings)
+    out = tmp_path / "out.epub"
+    run_injection(settings, book, out, mode="bilingual")
+
+    items = _tree(out, "notes.xhtml").findall(f".//{XHTML}ol/{XHTML}li")
+    assert len(items) == 40  # no translated copies beside the items: numbering kept
+    first = items[0]
+    assert first.get("id") == "n1" and "tepub-original" not in (first.get("class") or "")
+    original, translated = list(first)
+    assert "tepub-original" in original.get("class") and "tepub-translation" in translated.get("class")
+    assert original.find(f"{XHTML}a").get("href") == "ch1.xhtml#r1"  # backlink kept
+    assert "【译】" in "".join(translated.itertext()) or translated.find(f"{XHTML}a") is not None
+
+
+def test_a_dt_translation_is_inline_in_epub2(tmp_path: Path) -> None:
+    book = long_lists_epub2(tmp_path / "book.epub")
+    settings = _extract(book, tmp_path)
+    _translate_everything(settings)
+    out = tmp_path / "out.epub"
+    run_injection(settings, book, out, mode="bilingual")
+
+    term = _tree(out, "ch1.xhtml").find(f".//{XHTML}dt")
+    assert [child.tag.split("}")[1] for child in term] == ["span", "br", "span"]
+    rows = _tree(out, "ch1.xhtml").findall(f".//{XHTML}tr")
+    assert len(rows) == 29 and all(len(row) == 2 for row in rows)  # no added cells

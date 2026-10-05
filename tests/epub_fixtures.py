@@ -94,6 +94,38 @@ def vertical_cjk(path: Path) -> Path:
     )
 
 
+def _long_note(n: int) -> str:
+    return (
+        f"Note {n}: Ivan Franceschini and colleagues, a report on scam compounds in "
+        f"Sihanoukville, published in the year {1990 + n}, with further sources."
+    )
+
+
+def long_endnotes(path: Path) -> Path:
+    """Endnotes as one list long enough to be split into its items, as a real
+    book's were: each item an anchor and a backlink, as converters write them."""
+    chapter = "<h1>Chapter</h1><p>A claim" + "".join(
+        f'<a id="r{n}" href="notes.xhtml#n{n}"><sup>{n}</sup></a>' for n in range(1, 41)
+    ) + ".</p>"
+    items = "".join(
+        f'<li id="n{n}"><a href="ch1.xhtml#r{n}">{n}.</a> {_long_note(n)}</li>' for n in range(1, 41)
+    )
+    notes = f"<h1>Notes</h1><ol>{items}</ol>"
+    return build_epub(path, [("ch1.xhtml", "Chapter", chapter), ("notes.xhtml", "Notes", notes)])
+
+
+def long_lists_epub2(path: Path) -> Path:
+    """A long list, table and definition list in XHTML 1.1, where a <dt> may
+    hold only inline content."""
+    rows = "".join(
+        f"<tr><td>Row {n}</td><td>{_long_note(n)}</td></tr>" for n in range(1, 30)
+    )
+    terms = "".join(f"<dt>Term {n}</dt><dd>{_long_note(n)}</dd>" for n in range(1, 30))
+    items = "".join(f"<li>{_long_note(n)}</li>" for n in range(1, 30))
+    body = f"<h1>Lists</h1><ul>{items}</ul><table>{rows}</table><dl>{terms}</dl>"
+    return build_epub(path, [("text/ch1.xhtml", "Lists", body)], version=2, css=CSS)
+
+
 FIXTURES: dict[str, Callable[[Path], Path]] = {
     "nested_blockquotes": nested_blockquotes,
     "switch_and_mathml": switch_and_mathml,
@@ -102,4 +134,6 @@ FIXTURES: dict[str, Callable[[Path], Path]] = {
     "epub2_with_ncx": epub2_with_ncx,
     "same_basename": same_basename,
     "vertical_cjk": vertical_cjk,
+    "long_endnotes": long_endnotes,
+    "long_lists_epub2": long_lists_epub2,
 }

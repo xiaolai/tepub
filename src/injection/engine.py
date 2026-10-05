@@ -15,9 +15,11 @@ from state.store import load_segments, load_state, save_state
 from translation.polish import polish_if_chinese
 
 from .html_ops import (
+    ITEM_TAGS,
     _set_html_content,
     _set_text_only,
     build_translation_element,
+    inject_into_item,
     insert_translation_after,
     prepare_original,
 )
@@ -80,6 +82,8 @@ def _apply_translations_to_document(
         if mode == "translated_only":
             _replace_with_translation(original, segment, translation)
             _record_heading_title(segment.file_path, original, title_updates)
+        elif local_name(original) in ITEM_TAGS:
+            inject_into_item(original, segment, translation, data_attributes=data_attributes)
         else:
             prepare_original(original, data_attributes=data_attributes)
             insert_translation_after(

@@ -30,12 +30,14 @@ from lxml import html as lxml_html
 
 from extraction.segments import clean_markup
 from state.base import atomic_write
-from state.models import ExtractMode, Segment, SegmentStatus
+from state.models import ExtractMode, Segment, SegmentStatus, TranslationRecord
 from state.store import backup_state, load_state, save_state
 from translation.markup import markup_mismatch
 
 # 3: bare <a/> elements are no longer part of a unit's source.
-SEGMENTS_FORMAT = 3
+# 4: lists, tables and definition lists over SPLIT_ABOVE_CHARS are split into
+#    their items, cells and entries.
+SEGMENTS_FORMAT = 4
 
 
 @dataclass
@@ -59,6 +61,74 @@ def _carried_translation(translation: str, old: Segment, new: Segment) -> str | 
         return None if markup_mismatch(new.source_content, converted) else converted
     # Both HTML: drop what the new rule no longer sends, such as bare <a/>.
     return clean_markup(translation)
+
+
+_ITEM_TAGS = ("li", "td", "th", "dt", "dd")
+
+
+def _items(markup: str) -> list[str]:
+    """Inner markup of each list item, cell or entry, outermost only, in order."""
+    root = lxml_html.fragment_fromstring(markup, create_parent="div")
+    found = []
+    for element in root.iter(*_ITEM_TAGS):
+        if any(ancestor.tag in _ITEM_TAGS for ancestor in element.iterancestors()):
+            continue
+        inner = (element.text or "") + "".join(
+            lxml_html.tostring(child, encoding="unicode") for child in element
+        )
+        found.append(inner.strip())
+    return found
+
+
+def _split_whole_lists(
+    old: list[Segment],
+    new: list[Segment],
+    mapping: dict[str, str],
+    records: dict[str, TranslationRecord],
+) -> tuple[dict[str, TranslationRecord], set[str]]:
+    """Records for new item units, from lists, tables and definition lists that
+    were one unit and are now split into their items (format 4), and the ids of
+    the old units carried this way.
+
+    A whole list's translation kept its items, since the markup contract holds
+    their count, so its nth item is the translation of the source's nth item.
+    Each pair goes to the new unit with that item's text; a list whose counts
+    differ is translated again.
+    """
+    taken = set(mapping.values())
+    free: dict[tuple[str, str], deque[Segment]] = defaultdict(deque)
+    for segment in sorted(new, key=lambda s: (s.file_path.as_posix(), s.metadata.order_in_file)):
+        if segment.segment_id not in taken:
+            free[_match_key(segment)].append(segment)
+    carried: dict[str, TranslationRecord] = {}
+    used: set[str] = set()
+    for segment in old:
+        record = records.get(segment.segment_id)
+        if segment.segment_id in mapping or record is None or segment.extract_mode != ExtractMode.HTML:
+            continue
+        sources, translated = _items(segment.source_content), _items(record.translation or "")
+        if not sources or len(sources) != len(translated):
+            continue
+        for source, item_translation in zip(sources, translated):
+            item = Segment(
+                segment_id=segment.segment_id,
+                file_path=segment.file_path,
+                xpath=segment.xpath,
+                extract_mode=ExtractMode.HTML,
+                source_content=source,
+                metadata=segment.metadata,
+            )
+            candidates = free.get(_match_key(item))
+            if not candidates:
+                continue
+            target = candidates.popleft()
+            converted = _carried_translation(item_translation, item, target)
+            if converted is not None:
+                carried[target.segment_id] = record.model_copy(
+                    update={"segment_id": target.segment_id, "translation": converted}
+                )
+                used.add(segment.segment_id)
+    return carried, used
 
 
 def _match_key(segment: Segment) -> tuple[str, str]:
@@ -107,6 +177,15 @@ def import_legacy_workspace(
                     report.finished_not_carried += 1
                 continue
             carried[new_id] = record.model_copy(update=update)
+        completed = {
+            old_id: record
+            for old_id, record in state.segments.items()
+            if record.status == SegmentStatus.COMPLETED and record.translation is not None
+        }
+        split, split_from = _split_whole_lists(old, new, mapping, completed)
+        carried.update(split)
+        report.mapped += len(split)
+        report.finished_not_carried -= len(split_from)
         state.segments = carried
         save_state(state, state_file)
 

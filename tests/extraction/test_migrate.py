@@ -138,3 +138,43 @@ def test_bare_links_left_in_an_html_translation_are_unwrapped(tmp_path: Path) ->
     new = _segment("n", 1, 'Before x and <a href="#n">1</a>.', ExtractMode.HTML)
     translation = _carry(tmp_path, old, new, '之前<a/> <a>x</a> 和 <a href="#n">1</a>。')[0]
     assert translation == '之前 x 和 <a href="#n">1</a>。'
+
+
+def test_a_whole_list_translation_is_split_onto_its_items(tmp_path: Path) -> None:
+    """Format 4 splits long lists into items; a list translated whole is
+    carried item by item, and keeps who translated it."""
+    old = _segment("old-list", 1, '<li><a href="#r1">1.</a> First note.</li><li>Second note.</li>', ExtractMode.HTML)
+    new = [
+        _segment("new-1", 1, '<a href="#r1">1.</a> First note.', ExtractMode.HTML),
+        _segment("new-2", 2, "Second note."),
+    ]
+    state_file = tmp_path / "state.json"
+    record = TranslationRecord(
+        segment_id="old-list",
+        translation='<li><a href="#r1">1.</a> 第一条注释。</li><li>第二条<b>注释</b>。</li>',
+        status=SegmentStatus.COMPLETED,
+        provider_name="ollama",
+        model_name="translategemma:12b",
+    )
+    save_state(StateDocument(segments={"old-list": record}), state_file)
+
+    report = import_legacy_workspace(tmp_path, state_file, [old], new)
+
+    state = load_state(state_file)
+    assert state.segments["new-1"].translation == '<a href="#r1">1.</a> 第一条注释。'
+    assert state.segments["new-2"].translation == "第二条注释。"  # a text unit now
+    assert state.segments["new-2"].provider_name == "ollama"
+    assert report.mapped == 2 and report.finished_not_carried == 0
+
+
+def test_a_whole_list_whose_items_do_not_match_is_translated_again(tmp_path: Path) -> None:
+    old = _segment("old-list", 1, "<li>One.</li><li>Two.</li>", ExtractMode.HTML)
+    new = [_segment("new-1", 1, "One."), _segment("new-2", 2, "Two.")]
+    state_file = tmp_path / "state.json"
+    record = TranslationRecord(segment_id="old-list", translation="<li>一和二。</li>", status=SegmentStatus.COMPLETED)
+    save_state(StateDocument(segments={"old-list": record}), state_file)
+
+    report = import_legacy_workspace(tmp_path, state_file, [old], new)
+
+    assert load_state(state_file).segments == {}
+    assert report.finished_not_carried == 1
