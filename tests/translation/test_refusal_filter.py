@@ -39,3 +39,20 @@ def test_chinese_refusal_variants_are_reachable():
     """The bare 抱歉，我 prefix used to shadow every longer variant."""
     assert looks_like_refusal("抱歉，我不能完成这个请求。")
     assert looks_like_refusal("抱歉，無法翻譯這段內容。")
+
+
+def test_dialogue_that_sounds_like_a_refusal_is_not_flagged():
+    """Translated into English, ordinary dialogue often opens this way.
+
+    Once the filter runs on every reply, flagging these would mark good
+    translations as errors.
+    """
+    assert not looks_like_refusal("I cannot believe it.")
+    assert not looks_like_refusal("I'm sorry, I can't come tonight.")
+    assert not looks_like_refusal("I am unable to sleep when the wind howls.")
+
+
+def test_refusals_that_name_the_task_are_flagged():
+    assert looks_like_refusal("I can't help with that.")
+    assert looks_like_refusal("I am unable to translate this passage.")
+    assert looks_like_refusal("As an AI language model, I must decline.")

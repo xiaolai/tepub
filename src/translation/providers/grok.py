@@ -7,7 +7,12 @@ from config import ProviderConfig
 from state.models import Segment
 from translation import prompt_builder
 
-from .base import BaseProvider, ProviderFatalError, ensure_translation_available
+from .base import (
+    BaseProvider,
+    ProviderFatalError,
+    ensure_not_truncated,
+    ensure_translation_available,
+)
 from .http import post_json
 
 
@@ -61,6 +66,7 @@ class GrokProvider(BaseProvider):
             if choices and isinstance(choices, list):
                 first = choices[0]
                 if isinstance(first, dict):
+                    ensure_not_truncated(first.get("finish_reason") == "length", "Grok", segment)
                     message = first.get("message")
                     if isinstance(message, dict):
                         output = message.get("content")

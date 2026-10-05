@@ -29,6 +29,7 @@ from state.store import (
 from translation.languages import describe_language
 from translation.polish import polish_translation
 from translation.providers import ProviderError, ProviderFatalError, create_provider
+from translation.refusal_filter import looks_like_refusal
 
 from .prefilter import should_auto_copy
 
@@ -156,6 +157,14 @@ def _translate_segment(
             source_language=source_language,
             target_language=target_language,
         )
+        # A refusal is not a translation. This check used to run only in the debug
+        # purge command, so refusals were stored as COMPLETED and exported. A
+        # source that itself reads like a refusal is translated as normal.
+        if looks_like_refusal(translation_text) and not looks_like_refusal(
+            segment.source_content
+        ):
+            preview = " ".join(translation_text.split())[:80]
+            raise ProviderError(f"Provider refused segment {segment.segment_id}: {preview!r}")
         # Apply polish immediately
         polished_text = polish_translation(translation_text)
         return TranslationResult(

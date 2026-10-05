@@ -8,8 +8,25 @@ from config import ProviderConfig
 from state.models import Segment
 from translation.prompt_builder import build_prompt
 
-from .base import BaseProvider, ProviderFatalError, ensure_translation_available
+from .base import (
+    BaseProvider,
+    ProviderFatalError,
+    ensure_not_truncated,
+    ensure_translation_available,
+)
 from .http import post_json
+
+
+def _is_truncated(body: Any) -> bool:
+    """The Responses API marks a cut-off reply incomplete; Chat Completions says length."""
+    if not isinstance(body, dict):
+        return False
+    if body.get("status") == "incomplete":
+        return True
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        return choices[0].get("finish_reason") == "length"
+    return False
 
 
 def _extract_text(body: Any) -> str | None:
@@ -84,4 +101,5 @@ class OpenAIProvider(BaseProvider):
             data=json.dumps(payload),
             timeout=60,
         )
+        ensure_not_truncated(_is_truncated(body), "OpenAI", segment)
         return ensure_translation_available(_extract_text(body))

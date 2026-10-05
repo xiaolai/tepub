@@ -52,3 +52,17 @@ def ensure_translation_available(text: str | None) -> str:
     if text is None or not text.strip():
         raise ProviderError("Provider returned empty translation")
     return text
+
+
+def ensure_not_truncated(truncated: bool, provider_label: str, segment: Segment) -> None:
+    """Refuse a reply the provider says it cut off at its output limit.
+
+    Each API reports this its own way; callers translate their signal into a
+    boolean. Only Anthropic used to check, so the other providers stored the
+    first part of a long segment as its complete translation.
+    """
+    if truncated:
+        raise ProviderError(
+            f"{provider_label} truncated its translation of segment {segment.segment_id} "
+            f"at the output limit. Raise the provider's output limit, or split the segment."
+        )

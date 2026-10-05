@@ -127,7 +127,7 @@ Each of these reports success while producing wrong output.
 **Test first:** a preamble containing `{"a": 1}` and `{target_language}`; assert the JSON survives and the placeholder is filled.
 
 ### WI-2.3 Refusals and truncations are never COMPLETED (C6)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/translation/test_reply_checks.py` and the extended `test_refusal_filter.py` (7 failed before). Not as planned: running the filter on every reply exposed false positives for books translated into English ("I cannot believe it", "I'm sorry, I can't come tonight"), so a refusal must now name the task (translate, help, request, content, and Chinese equivalents) unless it self-identifies as a model, and a reply whose source itself reads like a refusal is kept. Truncation signals follow each API's documented field (Responses `status: incomplete`, chat `finish_reason: length`, Ollama `done_reason: length`, Gemini `MAX_TOKENS`); WI-0.4's live tests are where a real endpoint confirms them.
 **Files:** `src/translation/controller.py`, `src/translation/providers/*.py`
 **Do:** run `looks_like_refusal` on every result before marking it complete; each provider reports truncation from its own stop signal; a refused or truncated unit is marked ERROR with the reason.
 **Test first:** a fake provider returning a refusal, and one reporting truncation; assert both end as ERROR.

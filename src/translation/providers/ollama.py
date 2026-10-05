@@ -7,7 +7,7 @@ from config import ProviderConfig
 from state.models import Segment
 from translation.prompt_builder import build_prompt
 
-from .base import BaseProvider, ensure_translation_available
+from .base import BaseProvider, ensure_not_truncated, ensure_translation_available
 from .http import post_json
 
 
@@ -32,5 +32,7 @@ class OllamaProvider(BaseProvider):
             data=json.dumps(payload),
             timeout=120,
         )
+        if isinstance(body, dict):
+            ensure_not_truncated(body.get("done_reason") == "length", "Ollama", segment)
         text = body.get("response") if isinstance(body, dict) else None
         return ensure_translation_available(text)

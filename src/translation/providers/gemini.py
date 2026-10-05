@@ -14,7 +14,12 @@ from config import ProviderConfig
 from state.models import Segment
 from translation import prompt_builder
 
-from .base import BaseProvider, ProviderFatalError, ensure_translation_available
+from .base import (
+    BaseProvider,
+    ProviderFatalError,
+    ensure_not_truncated,
+    ensure_translation_available,
+)
 
 
 class GeminiProvider(BaseProvider):
@@ -57,6 +62,12 @@ class GeminiProvider(BaseProvider):
             )
         except Exception as exc:  # pragma: no cover - network dependent
             raise ProviderFatalError(f"Gemini request failed: {exc}") from exc
+
+        candidates_seen: Any = getattr(response, "candidates", None) or []
+        if candidates_seen:
+            reason = getattr(candidates_seen[0], "finish_reason", None)
+            reason_name = getattr(reason, "name", str(reason or ""))
+            ensure_not_truncated("MAX_TOKENS" in reason_name.upper(), "Gemini", segment)
 
         text: str | None = None
         if hasattr(response, "text"):
