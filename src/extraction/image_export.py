@@ -23,16 +23,6 @@ class ImageInfo:
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp"}
 
 
-def _is_image_item(item) -> bool:
-    """Check if an EPUB item is an image."""
-    if hasattr(item, "media_type"):
-        return item.media_type.startswith("image/")
-    if hasattr(item, "file_name"):
-        ext = Path(item.file_name).suffix.lower()
-        return ext in IMAGE_EXTENSIONS
-    return False
-
-
 def _is_potential_cover(file_path: Path, is_first_manifest_image: bool) -> bool:
     """Determine if an image is likely a cover candidate.
 
@@ -82,11 +72,11 @@ def extract_images(
     used_names: set[str] = set()
 
     # Extract all image items from EPUB
-    for item in reader.book.get_items():
-        if not _is_image_item(item):
+    for item in reader.items():
+        if not item.is_image:
             continue
 
-        epub_path = Path(item.file_name)
+        epub_path = item.href
 
         # Generate output filename (preserve original name, handle duplicates)
         output_filename = epub_path.name
@@ -104,7 +94,7 @@ def extract_images(
         # Read the item. A single unreadable manifest entry is recoverable —
         # skip it and carry on.
         try:
-            content = item.get_content()
+            content = reader.read_bytes(item)
         except Exception as e:
             console.print(f"[yellow]Warning: Failed to read image {epub_path}: {e}[/yellow]")
             used_names.discard(output_filename)

@@ -431,7 +431,7 @@ More solutions: [GitHub Issues](https://github.com/xiaolai/tepub/issues)
 ## Credits
 
 Built with:
-- [ebooklib](https://github.com/aerkalov/ebooklib) - EPUB processing
+- [lxml](https://lxml.de/) - EPUB parsing and writing
 - [edge-tts](https://github.com/rany2/edge-tts) - Free text-to-speech
 - [OpenAI](https://openai.com/) - Translation and premium TTS
 - [Rich](https://github.com/Textualize/rich) - Beautiful terminal output

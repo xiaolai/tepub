@@ -2,27 +2,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from extraction.image_export import (
-    _is_image_item,
     _is_potential_cover,
     extract_images,
     get_image_mapping,
 )
-
-
-def test_is_image_item():
-    # Mock item with media_type
-    item_image = SimpleNamespace(media_type="image/jpeg", file_name="test.jpg")
-    assert _is_image_item(item_image) is True
-
-    item_text = SimpleNamespace(media_type="text/html", file_name="test.html")
-    assert _is_image_item(item_text) is False
-
-    # Mock item with only filename
-    item_png = SimpleNamespace(file_name="image.png")
-    assert _is_image_item(item_png) is True
-
-    item_txt = SimpleNamespace(file_name="readme.txt")
-    assert _is_image_item(item_txt) is False
+from tests.epub_builder import build_epub
 
 
 def test_is_potential_cover():
@@ -33,63 +17,20 @@ def test_is_potential_cover():
 
 
 def test_extract_images(tmp_path):
-    """Test image extraction with mock EPUB."""
-    # Create mock items
-    mock_items = [
-        SimpleNamespace(
-            media_type="image/jpeg",
-            file_name="images/cover.jpg",
-            get_content=lambda: b"fake-jpg-data",
-        ),
-        SimpleNamespace(
-            media_type="image/png",
-            file_name="images/fig1.png",
-            get_content=lambda: b"fake-png-data",
-        ),
-        SimpleNamespace(
-            media_type="text/html",
-            file_name="chapter.html",
-            get_content=lambda: b"<html></html>",
-        ),
-    ]
+    """Images are extracted from a real EPUB; documents are not."""
+    epub_path = build_epub(
+        tmp_path / "test.epub",
+        [("chapter.xhtml", "One", "<p>Text.</p>")],
+        resources={"images/cover.jpg": b"fake-jpg-data", "images/fig1.png": b"fake-png-data"},
+    )
+    output_dir = tmp_path / "images"
 
-    # Mock book
-    mock_book = SimpleNamespace(get_items=lambda: mock_items)
+    extracted = extract_images(SimpleNamespace(), epub_path, output_dir)
 
-    # Mock reader
-    mock_reader = SimpleNamespace(book=mock_book)
-
-    # Mock settings
-    settings = SimpleNamespace()
-
-    # Patch EpubReader to return mock
-    from extraction import image_export
-
-    original_reader = image_export.EpubReader
-
-    def mock_epub_reader(epub_path, settings):
-        return mock_reader
-
-    image_export.EpubReader = mock_epub_reader
-
-    try:
-        # Extract images
-        output_dir = tmp_path / "images"
-        epub_path = tmp_path / "test.epub"
-        extracted = extract_images(settings, epub_path, output_dir)
-
-        # Verify results
-        assert len(extracted) == 2
-        assert (output_dir / "cover.jpg").exists()
-        assert (output_dir / "fig1.png").exists()
-
-        # Verify cover candidate detection
-        cover_candidates = [img for img in extracted if img.is_cover_candidate]
-        assert len(cover_candidates) >= 1
-        assert any("cover" in img.epub_path.name for img in cover_candidates)
-
-    finally:
-        image_export.EpubReader = original_reader
+    assert sorted(img.extracted_path.name for img in extracted) == ["cover.jpg", "fig1.png"]
+    assert (output_dir / "cover.jpg").read_bytes() == b"fake-jpg-data"
+    cover_candidates = [img for img in extracted if img.is_cover_candidate]
+    assert any("cover" in img.epub_path.name for img in cover_candidates)
 
 
 def test_get_image_mapping():

@@ -17,7 +17,6 @@ from cli.errors import handle_state_errors
 from config import AppSettings
 from console_singleton import get_console
 from epub_io.reader import EpubReader
-from epub_io.resources import get_item_by_href
 from state.base import safe_load_state
 from state.models import SegmentsDocument
 from state.store import load_segments
@@ -53,16 +52,15 @@ def _write_cover_candidate(
     candidate = find_spine_cover_candidate(reader)
     if not candidate:
         return None, None
-    try:
-        item = get_item_by_href(reader.book, Path(candidate.href) if isinstance(candidate.href, str) else candidate.href)
-    except KeyError:
+    item = reader.item_by_href(Path(candidate.href))
+    if item is None:
         return None, None
     cover_dir = settings.work_dir / "audiobook" / "cover_candidates"
     cover_dir.mkdir(parents=True, exist_ok=True)
     suffix = Path(candidate.href).suffix or ".img"
     target_name = f"spine_{Path(candidate.href).stem or 'candidate'}{suffix}"
     candidate_path = cover_dir / target_name
-    candidate_path.write_bytes(item.get_content())
+    candidate_path.write_bytes(reader.read_bytes(item))
     return candidate_path, candidate
 
 

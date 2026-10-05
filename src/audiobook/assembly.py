@@ -9,8 +9,6 @@ import subprocess
 from io import BytesIO
 from pathlib import Path
 
-from ebooklib import ITEM_IMAGE
-
 try:
     from mutagen.mp4 import MP4, MP4Chapter, MP4Cover
 except ImportError:
@@ -25,7 +23,6 @@ from config import AppSettings
 from config.placeholders import fill_placeholders
 from console_singleton import get_console
 from epub_io.reader import EpubReader
-from epub_io.resources import get_item_by_href
 from epub_io.toc_utils import parse_toc_to_dict
 from epub_io.xhtml import document_title
 from state.models import Segment
@@ -102,18 +99,11 @@ def _extract_narrator_name(voice_id: str) -> str:
 
 
 def _book_title(reader: EpubReader) -> str:
-    title_meta = reader.book.get_metadata("DC", "title")
-    if title_meta:
-        return title_meta[0][0]
-    return reader.epub_path.stem
+    return reader.package.metadata.title or reader.epub_path.stem
 
 
 def _book_authors(reader: EpubReader) -> list[str]:
-    authors = []
-    for author, _attrs in reader.book.get_metadata("DC", "creator"):
-        if author:
-            authors.append(author)
-    return authors
+    return list(reader.package.metadata.creators)
 
 
 
@@ -129,26 +119,20 @@ def _document_titles(reader: EpubReader) -> dict[str, str]:
 
 
 def _find_cover_item(reader: EpubReader):
-    for meta, attrs in reader.book.get_metadata("OPF", "meta"):
-        if isinstance(attrs, dict) and attrs.get("name") == "cover":
-            cover_id = attrs.get("content")
-            if cover_id:
-                item = reader.book.get_item_with_id(cover_id)
-                if item:
-                    return item
+    """The package's declared cover, else a spine cover image, else a likely image."""
+    declared = reader.item_for(reader.package.cover_item())
+    if declared is not None and declared.is_image:
+        return declared
     spine_candidate = find_spine_cover_candidate(reader)
     if spine_candidate:
-        try:
-            return get_item_by_href(reader.book, spine_candidate.href)
-        except KeyError:
-            pass
-    for item in reader.book.get_items():
-        if item.get_type() == ITEM_IMAGE and "cover" in item.get_name().lower():
+        item = reader.item_by_href(spine_candidate.href)
+        if item is not None:
             return item
-    for item in reader.book.get_items():
-        if item.get_type() == ITEM_IMAGE:
+    images = [item for item in reader.items() if item.is_image]
+    for item in images:
+        if "cover" in item.href.as_posix().lower():
             return item
-    return None
+    return images[0] if images else None
 
 
 def _generate_statement_audio(
@@ -224,7 +208,7 @@ def _prepare_cover(
             cover_item = _find_cover_item(reader)
             if not cover_item:
                 return None
-            image = Image.open(BytesIO(cover_item.get_content()))
+            image = Image.open(BytesIO(reader.read_bytes(cover_item)))
             original_format = image.format
     except Exception:
         return None
@@ -282,12 +266,9 @@ def _build_spine_to_toc_map(
         Dict mapping spine_index -> (toc_file_path, toc_title)
     """
     # Build spine index lookup
-    spine_items = reader.book.spine
-    spine_lookup: dict[str, int] = {}
-    for idx, (item_id, _linear) in enumerate(spine_items):
-        item = reader.book.get_item_with_id(item_id)
-        if item:
-            spine_lookup[item.get_name()] = idx
+    spine_lookup: dict[str, int] = {
+        item.href.as_posix(): item.index for item in reader.package.spine_items()
+    }
 
     # Find spine indices for TOC entries
     toc_entries: list[tuple[int, str, str]] = []  # (spine_index, file_path, title)
@@ -312,7 +293,7 @@ def _build_spine_to_toc_map(
 
     # Map spine indices to their governing TOC entry
     current_toc_idx = 0
-    for spine_idx in range(len(spine_items)):
+    for spine_idx in range(len(reader.package.spine)):
         # Skip files before first TOC entry
         if spine_idx < first_toc_idx:
             continue

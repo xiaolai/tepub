@@ -10,9 +10,9 @@ from lxml import html as lxml_html
 
 from config import AppSettings
 from console_singleton import get_console
+from epub_io.container import iter_toc
 from epub_io.path_utils import normalize_epub_href
 from epub_io.reader import EpubReader
-from epub_io.resources import iter_spine_items
 from state.models import Segment
 from state.store import load_segments
 
@@ -37,31 +37,20 @@ TocEntry = tuple[str, int, str]  # (title, spine_index, href)
 
 def _build_spine_lookup(reader: EpubReader) -> dict[Path, int]:
     """Map each spine document path to its spine index."""
-    return {item.href: item.index for item in iter_spine_items(reader.book)}
+    return {item.href: item.index for item in reader.package.spine_items()}
 
 
 def _collect_toc_entries(toc, spine_lookup: dict[Path, int]) -> list[TocEntry]:
     """Flatten the (possibly nested) TOC into entries that resolve to spine files."""
     entries: list[TocEntry] = []
 
-    def _append_if_in_spine(node) -> None:
+    for node in iter_toc(toc):
+        if not node.href:
+            continue
         href = node.href.split("#", 1)[0]
         href_path = Path(href)
         if href_path in spine_lookup:
             entries.append((node.title or href, spine_lookup[href_path], href))
-
-    def _walk(items) -> None:
-        for item in items:
-            if hasattr(item, "href") and hasattr(item, "title"):
-                _append_if_in_spine(item)
-            elif isinstance(item, (list, tuple)) and item:
-                head = item[0]
-                if head is not None and hasattr(head, "href") and hasattr(head, "title"):
-                    _append_if_in_spine(head)
-                if len(item) > 1:
-                    _walk(item[1])
-
-    _walk(toc)
     return entries
 
 
@@ -184,7 +173,7 @@ def _build_chapter_blocks(
     spine_lookup = _build_spine_lookup(reader)
     max_spine_index = max(spine_lookup.values()) if spine_lookup else 0
 
-    toc_entries = _collect_toc_entries(reader.book.toc or [], spine_lookup)
+    toc_entries = _collect_toc_entries(reader.package.toc or [], spine_lookup)
     toc_entries.sort(key=lambda x: x[1])
     toc_entries = _dedupe_entries_by_spine_index(toc_entries)
 

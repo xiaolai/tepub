@@ -102,15 +102,14 @@ def _print_epub_statistics(epub_path: Path, segments_doc, auto_skips) -> None:
     try:
         from config import AppSettings
         from epub_io.reader import EpubReader
-        from epub_io.resources import iter_spine_items
         from epub_io.selector import _flatten_toc_entries
 
         # Load EPUB to get spine and TOC counts
         temp_settings = AppSettings()
         reader = EpubReader(epub_path, temp_settings)
 
-        spine_items = list(iter_spine_items(reader.book))
-        toc_entries = _flatten_toc_entries(getattr(reader.book, "toc", []))
+        spine_items = reader.package.spine_items()
+        toc_entries = _flatten_toc_entries(reader.package.toc)
 
         # Count processed files
         processed_files = len(set(seg.file_path for seg in segments_doc.segments))

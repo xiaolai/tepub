@@ -1,10 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from ebooklib import epub
-
 from epub_io.path_utils import normalize_epub_href
-from epub_io.reader import EpubReader
 from epub_io.toc_utils import parse_toc_to_dict
 from extraction.markdown_export import (
     _html_to_markdown,
@@ -14,6 +11,7 @@ from extraction.markdown_export import (
 )
 from state.models import ExtractMode, Segment, SegmentMetadata, SegmentsDocument
 from state.store import save_segments
+from tests.epub_builder import build_epub
 
 
 def test_sanitize_filename():
@@ -49,23 +47,25 @@ def test_html_to_markdown_without_images():
     assert "world" in result
 
 
-def test_parse_toc_with_mock_reader(tmp_path, monkeypatch):
-    """Test TOC parsing with a mock epub book."""
-    # Create mock TOC structure
-    link1 = epub.Link("Text/ch1.xhtml", "Chapter 1", "ch1")
-    link2 = epub.Link("Text/ch2.xhtml#section", "Chapter 2", "ch2")
-    nested = epub.Link("Text/ch3.xhtml", "Chapter 3", "ch3")
+def test_parse_toc_maps_documents_to_their_first_title(tmp_path):
+    from config import AppSettings
+    from epub_io.reader import EpubReader
 
-    mock_book = SimpleNamespace(toc=[link1, link2, (nested, [])])
+    book = build_epub(
+        tmp_path / "b.epub",
+        [
+            ("Text/ch1.xhtml", "Chapter 1", "<p>1</p>"),
+            ("Text/ch2.xhtml", "Chapter 2", "<p>2</p>"),
+            ("Text/ch3.xhtml", "Chapter 3", "<p>3</p>"),
+        ],
+    )
+    toc_map = parse_toc_to_dict(EpubReader(book, AppSettings(work_dir=tmp_path / "w")))
 
-    # Create mock reader
-    mock_reader = SimpleNamespace(book=mock_book)
-
-    toc_map = parse_toc_to_dict(mock_reader)
-
-    assert toc_map["Text/ch1.xhtml"] == "Chapter 1"
-    assert toc_map["Text/ch2.xhtml"] == "Chapter 2"
-    assert toc_map["Text/ch3.xhtml"] == "Chapter 3"
+    assert toc_map == {
+        "Text/ch1.xhtml": "Chapter 1",
+        "Text/ch2.xhtml": "Chapter 2",
+        "Text/ch3.xhtml": "Chapter 3",
+    }
 
 
 def test_export_to_markdown(tmp_path, monkeypatch):
@@ -113,32 +113,10 @@ def test_export_to_markdown(tmp_path, monkeypatch):
     # Create mock settings
     settings = SimpleNamespace(segments_file=segments_file)
 
-    # Mock TOC
-    link1 = epub.Link("Text/ch1.xhtml", "Introduction", "ch1")
-    link2 = epub.Link("Text/ch2.xhtml", "Chapter Two", "ch2")
-
-    # Mock spine items
-    mock_item1 = SimpleNamespace(id="ch1", file_name="Text/ch1.xhtml", media_type="application/xhtml+xml")
-    mock_item2 = SimpleNamespace(id="ch2", file_name="Text/ch2.xhtml", media_type="application/xhtml+xml")
-    mock_spine = [("ch1", "yes"), ("ch2", "yes")]
-
-    mock_book = SimpleNamespace(
-        toc=[link1, link2],
-        spine=mock_spine
+    build_epub(
+        tmp_path / "test.epub",
+        [("Text/ch1.xhtml", "Introduction", "<p>1</p>"), ("Text/ch2.xhtml", "Chapter Two", "<p>2</p>")],
     )
-
-    def mock_get_items():
-        return [mock_item1, mock_item2]
-
-    mock_book.get_items = mock_get_items
-
-    # Mock EpubReader to return our mock book
-    def mock_reader_init(self, epub_path, settings):
-        self.epub_path = epub_path
-        self.settings = settings
-        self.book = mock_book
-
-    monkeypatch.setattr(EpubReader, "__init__", mock_reader_init)
 
     # Export markdown
     mock_epub = tmp_path / "test.epub"
@@ -198,32 +176,10 @@ def test_export_combined_markdown(tmp_path, monkeypatch):
     # Create mock settings
     settings = SimpleNamespace(segments_file=segments_file)
 
-    # Mock TOC
-    link1 = epub.Link("Text/ch1.xhtml", "Introduction", "ch1")
-    link2 = epub.Link("Text/ch2.xhtml", "Chapter Two", "ch2")
-
-    # Mock spine items
-    mock_item1 = SimpleNamespace(id="ch1", file_name="Text/ch1.xhtml", media_type="application/xhtml+xml")
-    mock_item2 = SimpleNamespace(id="ch2", file_name="Text/ch2.xhtml", media_type="application/xhtml+xml")
-    mock_spine = [("ch1", "yes"), ("ch2", "yes")]
-
-    mock_book = SimpleNamespace(
-        toc=[link1, link2],
-        spine=mock_spine
+    build_epub(
+        tmp_path / "test-book.epub",
+        [("Text/ch1.xhtml", "Introduction", "<p>1</p>"), ("Text/ch2.xhtml", "Chapter Two", "<p>2</p>")],
     )
-
-    def mock_get_items():
-        return [mock_item1, mock_item2]
-
-    mock_book.get_items = mock_get_items
-
-    # Mock EpubReader
-    def mock_reader_init(self, epub_path, settings):
-        self.epub_path = epub_path
-        self.settings = settings
-        self.book = mock_book
-
-    monkeypatch.setattr(EpubReader, "__init__", mock_reader_init)
 
     # Export combined markdown
     mock_epub = tmp_path / "test-book.epub"

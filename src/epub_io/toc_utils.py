@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from epub_io.container import iter_toc
 from epub_io.reader import EpubReader
 
 
@@ -44,21 +45,6 @@ def parse_toc_to_dict(reader: EpubReader) -> dict[str, str]:
         if not mapping.get(href):
             mapping[href] = title
 
-    def recurse(entries):
-        """Recursively traverse TOC entries."""
-        for item in entries:
-            # Handle direct Link objects
-            if hasattr(item, "href") and hasattr(item, "title"):
-                _record(item)
-            # Handle nested tuple/list structure (older EpubPy format)
-            elif isinstance(item, (list, tuple)) and item:
-                head = item[0]
-                if hasattr(head, "href") and hasattr(head, "title"):
-                    _record(head)
-                # Recurse into children if they exist
-                if len(item) > 1:
-                    recurse(item[1])
-
-    toc = reader.book.toc or []
-    recurse(toc)
+    for entry in iter_toc(reader.package.toc):
+        _record(entry)
     return mapping

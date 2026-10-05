@@ -3,13 +3,12 @@ from __future__ import annotations
 import shutil
 from pathlib import Path, PurePosixPath
 
-from ebooklib import ITEM_DOCUMENT, epub
 from lxml import html as lxml_html
 
 from config import AppSettings
+from epub_io.container import TocEntry
 from epub_io.path_utils import safe_relative_member
 from epub_io.reader import EpubReader
-from epub_io.resources import iter_spine_items
 from epub_io.xhtml import document_title
 from injection.engine import apply_translations
 
@@ -23,10 +22,7 @@ def _default_output_dir(epub_path: Path, work_dir: Path) -> Path:
 
 
 def _book_title(reader: EpubReader) -> str:
-    metadata = reader.book.get_metadata("DC", "title")
-    if metadata:
-        return metadata[0][0]
-    return reader.epub_path.stem
+    return reader.package.metadata.title or reader.epub_path.stem
 
 
 def _document_title(tree) -> str:
@@ -39,7 +35,7 @@ def _document_title(tree) -> str:
 
 def _build_spine(reader: EpubReader, doc_titles: dict[Path, str]) -> list[dict]:
     spine: list[dict] = []
-    for item in iter_spine_items(reader.book):
+    for item in reader.package.spine_items():
         title = doc_titles.get(item.href, item.href.stem)
         spine.append(
             {
@@ -50,48 +46,31 @@ def _build_spine(reader: EpubReader, doc_titles: dict[Path, str]) -> list[dict]:
     return spine
 
 
-def _parse_toc(entries) -> list[dict]:
+def _parse_toc(entries: list[TocEntry]) -> list[dict]:
     toc_list: list[dict] = []
 
-    def recurse(items, level=0):
-        for item in items:
-            if isinstance(item, epub.Link):
-                toc_list.append(
-                    {
-                        "title": item.title,
-                        "href": item.href,
-                        "level": level,
-                    }
-                )
-            elif isinstance(item, (list, tuple)) and item:
-                head = item[0]
-                children = item[1] if len(item) > 1 else []
-                if isinstance(head, epub.Link):
-                    toc_list.append(
-                        {
-                            "title": head.title,
-                            "href": head.href,
-                            "level": level,
-                        }
-                    )
-                recurse(children, level + 1)
+    def recurse(items: list[TocEntry], level: int = 0) -> None:
+        for entry in items:
+            if entry.href:
+                toc_list.append({"title": entry.title, "href": entry.href, "level": level})
+            recurse(entry.children, level + 1)
 
     recurse(entries)
     return toc_list
 
 
 def _copy_static_resources(reader: EpubReader, content_dir: Path) -> None:
-    for item in reader.book.get_items():
+    for item in reader.items():
         # Skip HTML documents; they are handled separately
-        if item.get_type() == ITEM_DOCUMENT:
+        if item.is_document:
             continue
         # Manifest names are book-controlled. Joining them unchecked let a
         # crafted EPUB write outside content_dir — pathlib discards the base
         # entirely for an absolute name, and ".." walks upward.
-        member = safe_relative_member(item.file_name, reader.epub_path)
+        member = safe_relative_member(item.href.as_posix(), reader.epub_path)
         dest = content_dir / Path(*member.parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(item.get_content())
+        dest.write_bytes(reader.read_bytes(item))
 
 
 def export_web(
@@ -153,7 +132,7 @@ def export_web(
     _copy_static_resources(reader, content_dir)
 
     spine = _build_spine(reader, doc_titles)
-    toc = _parse_toc(reader.book.toc) if reader.book.toc else []
+    toc = _parse_toc(reader.package.toc)
     # title_updates was computed and then discarded, so translated-only exports
     # kept the original TOC labels beside translated content.
     if title_updates:

@@ -7,8 +7,8 @@ from rich.progress import Progress
 
 from config import AppSettings
 from console_singleton import get_console
+from epub_io.container import metadata_summary
 from epub_io.reader import EpubReader
-from epub_io.resources import extract_metadata
 from epub_io.selector import build_skip_map
 from state.models import Segment, SegmentsDocument, SkippedDocument
 from state.store import ensure_state, load_segments, save_segments
@@ -68,7 +68,7 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
                 progress.advance(task)
 
     # Extract book metadata
-    metadata = extract_metadata(reader.book)
+    metadata = metadata_summary(reader.package.metadata)
 
     timestamp = datetime.now(timezone.utc).isoformat()
     # Unit ids hash the full EPUB path with the unit's place in the document, so

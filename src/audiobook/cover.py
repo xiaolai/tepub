@@ -7,7 +7,6 @@ from lxml import etree
 
 from epub_io.path_utils import normalize_epub_href
 from epub_io.reader import EpubReader
-from epub_io.resources import get_item_by_href
 
 
 @dataclass
@@ -45,9 +44,7 @@ def find_spine_cover_candidate(reader: EpubReader) -> SpineCoverCandidate | None
             candidate_href_str = normalize_epub_href(document.path, href_value or "")
             if not candidate_href_str:
                 continue
-            try:
-                get_item_by_href(reader.book, Path(candidate_href_str))
-            except KeyError:
+            if reader.item_by_href(Path(candidate_href_str)) is None:
                 continue
             return SpineCoverCandidate(href=Path(candidate_href_str), document_href=document.path)
     return None

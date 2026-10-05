@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import posixpath
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote
@@ -24,6 +25,10 @@ from exceptions import TepubError
 
 CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 OPF_NS = "http://www.idpf.org/2007/opf"
+DC_NS = "http://purl.org/dc/elements/1.1/"
+NCX_NS = "http://www.daisy.org/z3986/2005/ncx/"
+XHTML_NS = "http://www.w3.org/1999/xhtml"
+OPS_NS = "http://www.idpf.org/2007/ops"
 MIMETYPE = b"application/epub+zip"
 
 
@@ -53,6 +58,34 @@ class SpineItem:
     linear: bool
 
 
+@dataclass(frozen=True)
+class SpineDocument:
+    """A spine entry resolved through the manifest."""
+
+    index: int
+    idref: str
+    href: Path  # relative to the package document
+    media_type: str
+    linear: bool
+
+
+@dataclass
+class TocEntry:
+    title: str
+    href: str | None  # relative to the package document, fragment kept
+    children: list[TocEntry] = field(default_factory=list)
+
+
+@dataclass
+class Metadata:
+    title: str | None = None
+    creators: list[str] = field(default_factory=list)
+    publisher: str | None = None
+    date: str | None = None
+    language: str | None = None
+    cover_id: str | None = None
+
+
 @dataclass
 class Package:
     opf_path: str
@@ -61,6 +94,38 @@ class Package:
     spine: list[SpineItem]
     spine_toc: str | None
     entries: list[zipfile.ZipInfo] = field(repr=False)
+    metadata: Metadata = field(default_factory=Metadata)
+    toc: list[TocEntry] = field(default_factory=list)
+
+    def spine_items(self) -> list[SpineDocument]:
+        """Spine entries whose manifest item exists, in reading order."""
+        found = []
+        for index, entry in enumerate(self.spine):
+            item = self.manifest.get(entry.idref)
+            if item is None:
+                continue
+            found.append(
+                SpineDocument(
+                    index=index,
+                    idref=entry.idref,
+                    href=Path(self.package_href(item.path)),
+                    media_type=item.media_type,
+                    linear=entry.linear,
+                )
+            )
+        return found
+
+    def package_href(self, zip_path: str) -> str:
+        """A zip entry name expressed relative to the package document."""
+        return posixpath.relpath(zip_path, self.opf_dir or ".")
+
+    def cover_item(self) -> ManifestItem | None:
+        for item in self.manifest.values():
+            if "cover-image" in item.properties:
+                return item
+        if self.metadata.cover_id:
+            return self.manifest.get(self.metadata.cover_id)
+        return None
 
     @property
     def opf_dir(self) -> str:
@@ -155,14 +220,134 @@ def read_package(epub_path: Path) -> Package:
         SpineItem(idref=n.get("idref", ""), linear=n.get("linear", "yes") != "no")
         for n in (spine_node.iterfind(f"{{{OPF_NS}}}itemref") if spine_node is not None else [])
     ]
-    return Package(
+    package = Package(
         opf_path=opf_path,
         version=opf.get("version", ""),
         manifest=manifest,
         spine=spine,
         spine_toc=spine_node.get("toc") if spine_node is not None else None,
         entries=entries,
+        metadata=_metadata(opf),
     )
+    with zipfile.ZipFile(epub_path) as archive:
+        package.toc = _read_toc(package, archive)
+    return package
+
+
+def metadata_summary(metadata: Metadata) -> dict[str, str | None]:
+    """Title, first author, publisher and year, as extraction records them."""
+    year = metadata.date
+    if year and len(year) >= 4 and year[:4].isdigit():
+        year = year[:4]
+    return {
+        "title": metadata.title,
+        "author": metadata.creators[0] if metadata.creators else None,
+        "publisher": metadata.publisher,
+        "year": year,
+    }
+
+
+def iter_toc(entries: list[TocEntry]) -> Iterator[TocEntry]:
+    """Every entry of a table of contents, depth first, in reading order."""
+    for entry in entries:
+        yield entry
+        yield from iter_toc(entry.children)
+
+
+def _first_text(parent: etree._Element, tag: str) -> str | None:
+    node = parent.find(tag)
+    text = (node.text or "").strip() if node is not None else ""
+    return text or None
+
+
+def _metadata(opf: etree._Element) -> Metadata:
+    meta = opf.find(f"{{{OPF_NS}}}metadata")
+    if meta is None:
+        return Metadata()
+    cover_id = None
+    for node in meta.iterfind(f"{{{OPF_NS}}}meta"):
+        if node.get("name") == "cover":
+            cover_id = node.get("content")
+    return Metadata(
+        title=_first_text(meta, f"{{{DC_NS}}}title"),
+        creators=[
+            (n.text or "").strip() for n in meta.iterfind(f"{{{DC_NS}}}creator") if (n.text or "").strip()
+        ],
+        publisher=_first_text(meta, f"{{{DC_NS}}}publisher"),
+        date=_first_text(meta, f"{{{DC_NS}}}date"),
+        language=_first_text(meta, f"{{{DC_NS}}}language"),
+        cover_id=cover_id,
+    )
+
+
+def _toc_href(package: Package, toc_path: str, href: str | None) -> str | None:
+    if not href:
+        return None
+    path, _, fragment = href.partition("#")
+    target = resolve(toc_path, path) if path else toc_path
+    relative = package.package_href(target)
+    return f"{relative}#{fragment}" if fragment else relative
+
+
+def _label(element: etree._Element) -> str:
+    return " ".join("".join(element.itertext()).split())
+
+
+def _nav_entries(package: Package, nav_path: str, ol: etree._Element) -> list[TocEntry]:
+    entries = []
+    for li in ol.iterfind(f"{{{XHTML_NS}}}li"):
+        head = li.find(f"{{{XHTML_NS}}}a")
+        if head is None:
+            head = li.find(f"{{{XHTML_NS}}}span")
+        if head is None:
+            continue
+        nested = li.find(f"{{{XHTML_NS}}}ol")
+        entries.append(
+            TocEntry(
+                title=_label(head),
+                href=_toc_href(package, nav_path, head.get("href")),
+                children=_nav_entries(package, nav_path, nested) if nested is not None else [],
+            )
+        )
+    return entries
+
+
+def _ncx_entries(package: Package, ncx_path: str, parent: etree._Element) -> list[TocEntry]:
+    entries = []
+    for point in parent.iterfind(f"{{{NCX_NS}}}navPoint"):
+        label = point.find(f"{{{NCX_NS}}}navLabel/{{{NCX_NS}}}text")
+        content = point.find(f"{{{NCX_NS}}}content")
+        entries.append(
+            TocEntry(
+                title=" ".join((label.text or "").split()) if label is not None else "",
+                href=_toc_href(package, ncx_path, content.get("src") if content is not None else None),
+                children=_ncx_entries(package, ncx_path, point),
+            )
+        )
+    return entries
+
+
+def _read_toc(package: Package, archive: zipfile.ZipFile) -> list[TocEntry]:
+    """The book's table of contents: the EPUB 3 nav, else the NCX, else nothing.
+
+    A nav without a toc section (landmarks only) is not an error; ebooklib
+    raised IndexError on it.
+    """
+    nav = package.nav_item()
+    if nav is not None:
+        root = etree.fromstring(archive.read(nav.path), parser=secure_xml_parser())
+        for element in root.iter(f"{{{XHTML_NS}}}nav"):
+            if "toc" in (element.get(f"{{{OPS_NS}}}type") or "").split():
+                ol = element.find(f"{{{XHTML_NS}}}ol")
+                if ol is not None:
+                    return _nav_entries(package, nav.path, ol)
+    ncx = package.ncx_item()
+    if ncx is not None:
+        root = etree.fromstring(archive.read(ncx.path), parser=secure_xml_parser())
+        nav_map = root.find(f"{{{NCX_NS}}}navMap")
+        if nav_map is not None:
+            return _ncx_entries(package, ncx.path, nav_map)
+    return []
 
 
 def write_copy(source: Path, output: Path, replacements: dict[str, bytes]) -> None:

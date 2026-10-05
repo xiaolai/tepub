@@ -10,8 +10,8 @@ from lxml import etree
 from config import AppSettings
 from logging_utils.logger import get_logger
 
-from .container import read_package
-from .resources import SpineItem, iter_spine_items, load_book
+from .container import ManifestItem, read_package
+from .container import SpineDocument as SpineItem
 from .xhtml import NotWellFormed, XhtmlDocument, parse_xhtml
 
 logger = get_logger(__name__)
@@ -38,6 +38,25 @@ class HtmlDocument:
         return self.spine_item.href
 
 
+@dataclass(frozen=True)
+class BookItem:
+    """A manifest item: what consumers used ebooklib's item objects for."""
+
+    id: str
+    href: Path  # relative to the package document
+    path: str  # zip entry name
+    media_type: str
+    properties: frozenset[str]
+
+    @property
+    def is_image(self) -> bool:
+        return self.media_type.startswith("image/")
+
+    @property
+    def is_document(self) -> bool:
+        return self.media_type == "application/xhtml+xml"
+
+
 class EpubReader:
     def __init__(self, epub_path: Path, settings: AppSettings):
         self.epub_path = epub_path
@@ -55,7 +74,6 @@ class EpubReader:
                 f"EPUB file too large: {size_mb:.1f}MB (maximum: {max_mb:.0f}MB)"
             )
 
-        self.book = load_book(epub_path)
         self.package = read_package(epub_path)
         self._documents: dict[Path, HtmlDocument] | None = None
         # Per-document results that consumers compute once and reuse, such as
@@ -66,7 +84,7 @@ class EpubReader:
         # One open for the whole walk: reopening per document re-reads the zip's
         # directory every time, which is slow on books with thousands of entries.
         with zipfile.ZipFile(self.epub_path) as archive:
-            for spine_item in iter_spine_items(self.book):
+            for spine_item in self.package.spine_items():
                 if not spine_item.media_type.startswith("application/xhtml"):
                     continue
                 # The file's own bytes. ebooklib's get_content() returns a rebuilt
@@ -84,6 +102,33 @@ class EpubReader:
                 yield HtmlDocument(
                     spine_item=spine_item, tree=xhtml.root, raw_html=raw_html, xhtml=xhtml
                 )
+
+    def items(self) -> list[BookItem]:
+        """Every manifest item, in manifest order."""
+        return [
+            BookItem(
+                id=item.id,
+                href=Path(self.package.package_href(item.path)),
+                path=item.path,
+                media_type=item.media_type,
+                properties=item.properties,
+            )
+            for item in self.package.manifest.values()
+        ]
+
+    def item_by_href(self, href: Path) -> BookItem | None:
+        """The manifest item at a package-relative href, or None."""
+        target = self.package.zip_path(Path(href).as_posix())
+        return next((item for item in self.items() if item.path == target), None)
+
+    def item_for(self, manifest_item: ManifestItem | None) -> BookItem | None:
+        if manifest_item is None:
+            return None
+        return next((item for item in self.items() if item.path == manifest_item.path), None)
+
+    def read_bytes(self, item: BookItem) -> bytes:
+        with zipfile.ZipFile(self.epub_path) as archive:
+            return archive.read(item.path)
 
     def read_document_by_path(self, href: Path) -> HtmlDocument:
         """Return the parsed spine document at ``href``, parsing each one once.

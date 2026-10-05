@@ -10,8 +10,9 @@ from rich.prompt import Confirm
 
 from config import AppSettings
 
+from .container import SpineDocument as SpineItem
+from .container import iter_toc
 from .reader import EpubReader
-from .resources import SpineItem, iter_spine_items
 
 
 @dataclass
@@ -63,24 +64,8 @@ def _match_keyword(text: str, keywords: Iterable[str]) -> str | None:
 
 
 def _flatten_toc_entries(entries) -> list[tuple[str, str]]:
-    flattened: list[tuple[str, str]] = []
-
-    def _walk(items) -> None:
-        for item in items:
-            if item is None:
-                continue
-            href = getattr(item, "href", None)
-            title = getattr(item, "title", "")
-            if href and title:
-                flattened.append((title, href))
-            subitems = getattr(item, "subitems", None)
-            if subitems:
-                _walk(subitems)
-            elif isinstance(item, (list, tuple)):
-                _walk(item)
-
-    _walk(entries)
-    return flattened
+    """(title, href) for every titled, targeted entry, in reading order."""
+    return [(entry.title, entry.href) for entry in iter_toc(entries) if entry.href and entry.title]
 
 
 def _collect_toc_candidates(
@@ -186,9 +171,9 @@ def _apply_skip_after_logic(
 def analyze_skip_candidates(epub_path: Path, settings: AppSettings) -> SkipAnalysis:
     reader = EpubReader(epub_path, settings)
     keywords = [rule.keyword for rule in settings.skip_rules]
-    spine_lookup = {item.href: item for item in iter_spine_items(reader.book)}
+    spine_lookup = {item.href: item for item in reader.package.spine_items()}
 
-    toc_entries = _flatten_toc_entries(getattr(reader.book, "toc", []))
+    toc_entries = _flatten_toc_entries(reader.package.toc)
     toc_candidates, unmatched_titles = _collect_toc_candidates(spine_lookup, toc_entries, keywords)
 
     # Only use TOC-based skip detection, not filename/content-based
