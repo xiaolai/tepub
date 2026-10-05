@@ -114,7 +114,7 @@ Each of these reports success while producing wrong output.
 ## Phase 2: the path a new user walks
 
 ### WI-2.1 `.env` keys reach the providers (C2)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/config/test_dotenv.py` (6 of 8 failed before): keys for all five providers reach the environment, the OpenAI provider sends the `.env` key in its Authorization header, an exported variable wins over `.env`, and lowercase `.env` entries still act as settings. Not as planned: `.env` is not removed from the settings payload, because lowercase entries such as `target_language` are an existing use; entries shaped like environment variable names are exported instead.
 **Files:** `src/config/loader.py`
 **Do:** load `.env` into the process environment without overwriting variables already set, and stop merging it into the settings payload.
 **Test first:** a `.env` with `OPENAI_API_KEY` in a temp directory; assert the OpenAI provider sends that key.

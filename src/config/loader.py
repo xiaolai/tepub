@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,24 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 logger = get_logger(__name__)
+
+# The shape of an environment variable name. A .env entry of this shape, such as
+# OPENAI_API_KEY, is exported to the process; anything else is a setting.
+_ENV_VAR_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def _apply_env_file(path: Path, payload: dict[str, Any]) -> None:
+    """Read a .env file: export variables, merge settings.
+
+    API keys used to be merged into the settings payload, where they are not
+    fields and were dropped, while the providers read them from the process
+    environment. A variable already exported in the shell is left as it is.
+    """
+    for key, value in _parse_env_file(path).items():
+        if _ENV_VAR_NAME.fullmatch(key):
+            os.environ.setdefault(key, value)
+        else:
+            payload[key] = value
 
 
 def _parse_yaml_file(path: Path) -> dict[str, Any]:
@@ -90,7 +109,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
 
     default_env = Path(".env")
     if default_env.exists():
-        payload.update(_parse_env_file(default_env))
+        _apply_env_file(default_env, payload)
 
     # Load project config.yaml (can override global)
     yaml_path = Path("config.yaml")
@@ -110,7 +129,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         if config_path.suffix.lower() in {".yaml", ".yml"}:
             payload.update(_parse_yaml_file(config_path))
         else:
-            payload.update(_parse_env_file(config_path))
+            _apply_env_file(config_path, payload)
 
     # Convert known keys to structured data if present
     if "work_dir" in payload:
