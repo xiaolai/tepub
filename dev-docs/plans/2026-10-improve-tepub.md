@@ -121,7 +121,7 @@ Each of these reports success while producing wrong output.
 **Done when:** the test passes for OpenAI, Anthropic, Gemini, DeepL and Grok.
 
 ### WI-2.2 Braces in a custom prompt are text (C7)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/config/test_placeholders.py`. Both user-template sites, the custom prompt and the audiobook statements, now use `config/placeholders.py`, which fills only offered names, leaves other braces as text, and still treats a doubled brace as one, so existing templates keep working. This supersedes the statement-template error added in WI-1.5.
 **Files:** `src/translation/prompt_builder.py`
 **Do:** substitute only the documented placeholders by name; leave every other brace as written.
 **Test first:** a preamble containing `{"a": 1}` and `{target_language}`; assert the JSON survives and the placeholder is filled.

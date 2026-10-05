@@ -22,6 +22,7 @@ from pydub import AudioSegment
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from config import AppSettings
+from config.placeholders import fill_placeholders
 from console_singleton import get_console
 from epub_io.reader import EpubReader
 from epub_io.resources import get_item_by_href
@@ -409,17 +410,16 @@ def _render_statement(
     if not template:
         return None
 
-    try:
-        text = template.format(
-            book_name=book_title,
-            author=author_str,
-            narrator_name=_extract_narrator_name(session.voice),
-        )
-    except (KeyError, IndexError, ValueError) as exc:
-        raise ValueError(
-            f"The audiobook {label} statement template is invalid ({exc!r}). Placeholders "
-            "are {book_name}, {author} and {narrator_name}; write a literal brace as {{ or }}."
-        ) from exc
+    # Only {book_name}, {author} and {narrator_name} are filled; any other brace
+    # is text (see config.placeholders).
+    text = fill_placeholders(
+        template,
+        {
+            "book_name": book_title,
+            "author": author_str,
+            "narrator_name": _extract_narrator_name(session.voice),
+        },
+    )
     audio_path = output_root / f"{label}_statement.m4a"
     # A configured statement that cannot be rendered stops assembly. Logging and
     # carrying on produced a book silently missing its opening or closing.

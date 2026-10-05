@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from textwrap import dedent
 
+from config.placeholders import fill_placeholders
 from state.models import ExtractMode, Segment
 
 from .languages import describe_language
@@ -61,12 +62,17 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
         # {language_instruction} is documented as an available placeholder in both
         # README.md and config.example.yaml, but was never passed here, so any
         # custom prompt_preamble using it failed with KeyError.
+        # Only these names are filled; any other brace in the user's text is
+        # left alone (see config.placeholders).
         intro = dedent(
-            _PROMPT_PREAMBLE.format(
-                source_language=display_source,
-                target_language=display_target,
-                mode_instruction=mode_instruction,
-                language_instruction=language_instruction,
+            fill_placeholders(
+                _PROMPT_PREAMBLE,
+                {
+                    "source_language": display_source,
+                    "target_language": display_target,
+                    "mode_instruction": mode_instruction,
+                    "language_instruction": language_instruction,
+                },
             )
         ).strip()
     else:
