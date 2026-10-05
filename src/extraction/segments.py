@@ -105,7 +105,10 @@ def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, Extr
         if name in SKIPPED_TAGS:
             continue
         if name in ATOMIC_TAGS:
-            if name in _SPLITTABLE and len(_translatable_text(child)) > SPLIT_ABOVE_CHARS:
+            # Measured on what is sent: lists of links ran to 15,000 characters
+            # of markup around 1,300 of text, and stayed whole when the text
+            # alone was measured.
+            if name in _SPLITTABLE and len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS:
                 # Items, rows and cells are blocks: the walk makes them units.
                 yield from iter_units(child)
             else:

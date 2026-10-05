@@ -37,7 +37,9 @@ from translation.markup import markup_mismatch
 # 3: bare <a/> elements are no longer part of a unit's source.
 # 4: lists, tables and definition lists over SPLIT_ABOVE_CHARS are split into
 #    their items, cells and entries.
-SEGMENTS_FORMAT = 4
+# 5: that size is measured on the markup sent, not the text, and a unit's
+#    leading text is escaped like the rest of its source.
+SEGMENTS_FORMAT = 5
 
 
 @dataclass

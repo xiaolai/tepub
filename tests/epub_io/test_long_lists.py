@@ -74,3 +74,17 @@ def test_a_dt_translation_is_inline_in_epub2(tmp_path: Path) -> None:
     assert [child.tag.split("}")[1] for child in term] == ["span", "br", "span"]
     rows = _tree(out, "ch1.xhtml").findall(f".//{XHTML}tr")
     assert len(rows) == 29 and all(len(row) == 2 for row in rows)  # no added cells
+
+
+def test_a_list_of_links_is_split_by_the_size_of_its_markup(tmp_path: Path) -> None:
+    """Little text, much markup: 60 linked entries of a few words each."""
+    from tests.epub_builder import build_epub
+
+    items = "".join(
+        f'<li><a href="c.xhtml#section-number-{n}" class="toc-entry-level-two">Part {n}</a></li>'
+        for n in range(60)
+    )
+    book = build_epub(tmp_path / "b.epub", [("c.xhtml", "C", f"<ol>{items}</ol>")])
+    settings = _extract(book, tmp_path)
+    units = load_segments(settings.segments_file).segments
+    assert [u.metadata.element_type for u in units].count("li") == 60
