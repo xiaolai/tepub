@@ -85,6 +85,11 @@ class AppSettings(BaseModel):
             SkipRule(keyword="dedication"),
             SkipRule(keyword="acknowledgment"),
             SkipRule(keyword="acknowledgement"),
+            # Plurals are listed, not inferred: "indexes" in a title is rarely
+            # an index ("Naming Loop Indexes").
+            SkipRule(keyword="acknowledgments"),
+            SkipRule(keyword="acknowledgements"),
+            SkipRule(keyword="credits"),
             SkipRule(keyword="the author"),
             SkipRule(keyword="further reading"),
             SkipRule(keyword="photograph"),

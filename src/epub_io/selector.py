@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -72,11 +72,22 @@ def _collect_toc_candidates(
     spine_lookup: dict[Path, SpineItem],
     toc_entries: list[tuple[str, str]],
     keywords: Iterable[str],
+    back_matter: Iterable[str] = (),
+    back_matter_from: int | None = None,
 ) -> tuple[dict[Path, SkipCandidate], list[str]]:
+    """Files to skip by their TOC titles, and titles no rule matched.
+
+    A file is named by its first TOC entry; later entries are its sections,
+    and one titled "Further Reading" skipped a whole chapter. A later entry
+    still marks its file when it is back matter (``back_matter``) in the last
+    part of the TOC (from ``back_matter_from``): "Technical Terms" followed by
+    "Index" in one file at the end of a book is back matter throughout.
+    """
     candidates: dict[Path, SkipCandidate] = {}
     unmatched_titles: list[str] = []
     total_entries = len(toc_entries)
     seen_titles: set[str] = set()
+    decided: set[Path] = set()
 
     for index, (title, href) in enumerate(toc_entries):
         href_path = Path(href.split("#", 1)[0])
@@ -85,6 +96,18 @@ def _collect_toc_candidates(
             continue
 
         normalized_title = _normalize_text(title)
+        if href_path in decided:
+            if href_path not in candidates and back_matter_from is not None and index >= back_matter_from:
+                keyword = _match_keyword(normalized_title, back_matter)
+                if keyword:
+                    candidates[href_path] = SkipCandidate(
+                        file_path=href_path,
+                        spine_index=spine_item.index,
+                        reason=keyword,
+                        source="toc",
+                    )
+            continue
+        decided.add(href_path)
         keyword = _match_keyword(normalized_title, keywords)
         if keyword:
             candidates[href_path] = SkipCandidate(
@@ -107,11 +130,52 @@ def _collect_toc_candidates(
     return candidates, unmatched_titles
 
 
+def first_line(tree) -> str:
+    """A document's first line of text: its first heading or paragraph."""
+    from .xhtml import local_name, text_of
+
+    body = next((e for e in tree.iter() if isinstance(e.tag, str) and local_name(e) == "body"), None)
+    for element in (body if body is not None else tree).iter():
+        if isinstance(element.tag, str) and local_name(element) in (
+            "h1", "h2", "h3", "h4", "h5", "h6", "p"
+        ):
+            text = _normalize_text(text_of(element))
+            if text:
+                return text
+    return ""
+
+
+def _untitled_back_matter(
+    spine_lookup: dict[Path, SpineItem],
+    toc_paths: set[Path],
+    after_index: int,
+    triggers: Iterable[str],
+    first_line_of: Callable[[Path], str],
+) -> tuple[Path, str] | None:
+    """The first document the TOC leaves out whose first line is a back-matter
+    title and nothing else, such as "Notes", past ``after_index`` in the spine.
+
+    Converted books often list only the chapters: one had six files of notes,
+    their title a paragraph reading "Notes", that no TOC rule could see.
+    Requiring the whole first line to be the title keeps a chapter that
+    merely starts with the word from being taken for one.
+    """
+    for path, item in sorted(spine_lookup.items(), key=lambda pair: pair[1].index):
+        if item.index <= after_index or path in toc_paths:
+            continue
+        line = first_line_of(path)
+        keyword = _match_keyword(line, triggers)
+        if keyword and _keyword_pattern(keyword) is not None and _keyword_pattern(keyword).fullmatch(line):
+            return path, keyword
+    return None
+
+
 def _apply_skip_after_logic(
     candidates: dict[Path, SkipCandidate],
     spine_lookup: dict[Path, SpineItem],
     toc_entries: list[tuple[str, str]],
     settings: AppSettings,
+    first_line_of: Callable[[Path], str] | None = None,
 ) -> dict[Path, SkipCandidate]:
     """
     Apply cascade skipping after back-matter triggers.
@@ -154,6 +218,33 @@ def _apply_skip_after_logic(
                 trigger_keyword = keyword
                 break
 
+    # Back matter the TOC leaves out, found by its first line; it triggers the
+    # cascade if it comes before any trigger the TOC has.
+    if first_line_of is not None and toc_entries:
+        toc_paths = {Path(href.split("#", 1)[0]) for _, href in toc_entries}
+        threshold_href = Path(toc_entries[min(threshold_index, total_entries - 1)][1].split("#", 1)[0])
+        threshold_item = spine_lookup.get(threshold_href)
+        untitled = _untitled_back_matter(
+            spine_lookup,
+            toc_paths,
+            threshold_item.index if threshold_item else -1,
+            settings.back_matter_triggers,
+            first_line_of,
+        )
+        if untitled is not None:
+            path, keyword = untitled
+            if trigger_spine_index is None or spine_lookup[path].index < trigger_spine_index:
+                trigger_spine_index, trigger_keyword = spine_lookup[path].index, keyword
+                candidates.setdefault(
+                    path,
+                    SkipCandidate(
+                        file_path=path,
+                        spine_index=spine_lookup[path].index,
+                        reason=keyword,
+                        source="content",
+                    ),
+                )
+
     # If trigger found, mark all subsequent spine items for cascade skipping
     if trigger_spine_index is not None:
         for path, item in spine_lookup.items():
@@ -174,7 +265,13 @@ def analyze_skip_candidates(epub_path: Path, settings: AppSettings) -> SkipAnaly
     spine_lookup = {item.href: item for item in reader.package.spine_items()}
 
     toc_entries = _flatten_toc_entries(reader.package.toc)
-    toc_candidates, unmatched_titles = _collect_toc_candidates(spine_lookup, toc_entries, keywords)
+    toc_candidates, unmatched_titles = _collect_toc_candidates(
+        spine_lookup,
+        toc_entries,
+        keywords,
+        back_matter=settings.back_matter_triggers if settings.skip_after_back_matter else (),
+        back_matter_from=int(len(toc_entries) * settings.back_matter_threshold),
+    )
 
     # Only use TOC-based skip detection, not filename/content-based
     # Filenames are arbitrary technical artifacts and can cause false positives
@@ -182,7 +279,13 @@ def analyze_skip_candidates(epub_path: Path, settings: AppSettings) -> SkipAnaly
     skip_candidates: dict[Path, SkipCandidate] = dict(toc_candidates)
 
     # Apply cascade skipping after back-matter triggers
-    skip_candidates = _apply_skip_after_logic(skip_candidates, spine_lookup, toc_entries, settings)
+    def first_line_of(path: Path) -> str:
+        tree = reader.read_document_by_path(path).tree
+        return first_line(tree) if tree is not None else ""
+
+    skip_candidates = _apply_skip_after_logic(
+        skip_candidates, spine_lookup, toc_entries, settings, first_line_of
+    )
 
     ordered_candidates = sorted(
         skip_candidates.values(), key=lambda c: (c.spine_index, c.file_path.as_posix())
