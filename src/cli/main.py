@@ -14,6 +14,7 @@ from cli.commands import register_commands
 from cli.core import prepare_initial_settings
 from cli.debug import register_debug_commands
 from console_singleton import configure_console, get_console
+from exceptions import TepubError
 
 console = get_console()
 
@@ -147,6 +148,11 @@ def run() -> None:
     except click.ClickException as exc:
         exc.show()
         sys.exit(exc.exit_code)
+    except TepubError as exc:
+        # tepub's own errors say what is wrong and what to do; a damaged EPUB
+        # used to end in a traceback. Other exceptions are defects and keep it.
+        get_console().print(f"[red]{exc}[/red]")
+        sys.exit(1)
     sys.exit(result if isinstance(result, int) else 0)
 
 

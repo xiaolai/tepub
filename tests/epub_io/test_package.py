@@ -88,3 +88,31 @@ def _move_nav(book: Path, new_path: str, content: str) -> None:
                 data = data.replace(b'href="nav.xhtml"', f'href="{href}"'.encode())
             archive.writestr(info, data)
         archive.writestr(new_path, content)
+
+
+def test_a_file_that_is_not_a_zip_is_named_as_not_an_epub(tmp_path) -> None:
+    import pytest
+
+    from epub_io.container import EpubStructureError, read_package
+
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"\x00\x01 not a zip archive at all")
+    with pytest.raises(EpubStructureError, match="not a zip archive"):
+        read_package(book)
+
+
+def test_the_cli_reports_a_damaged_epub_without_a_traceback(tmp_path) -> None:
+    import subprocess
+    import sys
+
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"\x00\x01 not a zip archive at all")
+    done = subprocess.run(
+        [sys.executable, "-c", "from cli.main import run; run()", "extract", str(book)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    output = done.stdout + done.stderr
+    assert done.returncode == 1
+    assert "not a zip archive" in output and "Traceback" not in output

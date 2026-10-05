@@ -187,7 +187,14 @@ def _check_entry_names(entries: list[zipfile.ZipInfo]) -> None:
 
 
 def read_package(epub_path: Path) -> Package:
-    with zipfile.ZipFile(epub_path) as archive:
+    try:
+        archive_file = zipfile.ZipFile(epub_path)
+    except zipfile.BadZipFile as exc:
+        raise EpubStructureError(
+            f"{epub_path.name} is not an EPUB: it is not a zip archive. It may be "
+            "damaged, or protected by DRM."
+        ) from exc
+    with archive_file as archive:
         entries = archive.infolist()
         _check_entry_names(entries)
         try:
