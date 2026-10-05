@@ -6,19 +6,17 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from mutagen._util import insert_bytes, resize_bytes
-from mutagen.mp4 import MP4, Atom, Atoms, MP4Chapters, MP4Tags
-
-from console_singleton import get_console
-
-console = get_console()
+from mutagen.mp4 import MP4, Atom, Atoms, MP4Tags
 
 ChapterTuple = tuple[float, str]
 
+# The Nero chpl atom stores start times in 100-nanosecond ticks. That unit is
+# fixed by the format and does not depend on the movie's own timescale; mutagen
+# and ffprobe both divide by it directly.
+CHPL_TICKS_PER_SECOND = 10_000_000
 
-def _build_chpl_payload(chapters: Sequence[ChapterTuple], timescale: int) -> bytes:
-    if timescale <= 0:
-        timescale = 1000
 
+def _build_chpl_payload(chapters: Sequence[ChapterTuple]) -> bytes:
     # The chpl format stores the chapter count in a single byte. Without this check
     # bytearray.append() raised a bare ValueError from deep inside the packer.
     if len(chapters) > 255:
@@ -39,24 +37,13 @@ def _build_chpl_payload(chapters: Sequence[ChapterTuple], timescale: int) -> byt
         # metadata, so drop any partial trailing sequence after truncating.
         encoded = safe_title.encode("utf-8")[:255]
         encoded = encoded.decode("utf-8", errors="ignore").encode("utf-8")
-        start = int(round(seconds * timescale * 10000))
+        start = int(round(seconds * CHPL_TICKS_PER_SECOND))
         body.extend(struct.pack(">Q", start))
         body.append(len(encoded))
         body.extend(encoded)
 
     header = struct.pack(">I", 0x01000000) + b"\x00\x00\x00\x00"
     return header + body
-
-
-def _movie_timescale(fileobj: io.BufferedRandom, atoms: Atoms) -> int:
-    try:
-        mvhd_atom = atoms.path(b"moov", b"mvhd")[-1]
-    except KeyError:
-        return 1000
-
-    chapters = MP4Chapters()
-    chapters._parse_mvhd(mvhd_atom, fileobj)
-    return chapters._timescale or 1000
 
 
 def _apply_delta(
@@ -130,8 +117,7 @@ def write_chapter_markers(mp4_path: Path, markers: Sequence[tuple[int, str]]) ->
 
     with open(mp4_path, "r+b") as fh:
         atoms = Atoms(fh)
-        timescale = _movie_timescale(fh, atoms)
-        payload = _build_chpl_payload(seconds_markers, timescale)
+        payload = _build_chpl_payload(seconds_markers)
         chpl_atom = Atom.render(b"chpl", payload)
         helper = MP4Tags()
 
@@ -148,15 +134,30 @@ def write_chapter_markers(mp4_path: Path, markers: Sequence[tuple[int, str]]) ->
         else:
             _replace_existing_chpl(helper, fh, atoms, chpl_atom, path)
 
-    # Verify the chapters we just wrote can actually be parsed back. This used to
-    # swallow every exception, so a file with unreadable chapter metadata was
-    # reported as a success.
+    # Read the chapters back and hold them to what was meant. Parsing alone is
+    # not enough: chapters written in the wrong unit parse perfectly and point
+    # at the wrong time, which is how every marker landed 24x late unnoticed.
+    _verify_chapter_starts(mp4_path, seconds_markers)
+
+
+class ChapterVerificationError(RuntimeError):
+    """Chapter markers were written but do not read back as intended."""
+
+
+def _verify_chapter_starts(mp4_path: Path, expected: Sequence[ChapterTuple]) -> None:
     try:
-        mp4 = MP4(mp4_path)
-        _ = mp4.chapters
-    except Exception as exc:  # noqa: BLE001 - surfaced, not swallowed
-        console.print(
-            f"[yellow]Warning: chapter metadata written to {mp4_path.name} could not be "
-            f"read back ({exc}). The audiobook is usable but chapter markers may not "
-            f"appear in players.[/yellow]"
+        found = list(MP4(mp4_path).chapters or [])
+    except Exception as exc:  # noqa: BLE001 - re-raised with context
+        raise ChapterVerificationError(
+            f"chapter markers in {mp4_path.name} could not be read back: {exc}"
+        ) from exc
+    if len(found) != len(expected):
+        raise ChapterVerificationError(
+            f"{mp4_path.name}: wrote {len(expected)} chapter markers, read back {len(found)}"
         )
+    for index, (chapter, (seconds, _title)) in enumerate(zip(found, expected)):
+        if abs(chapter.start - seconds) > 0.01:
+            raise ChapterVerificationError(
+                f"{mp4_path.name}: chapter {index + 1} should start at {seconds:.3f} s "
+                f"but reads back at {chapter.start:.3f} s"
+            )

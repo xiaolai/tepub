@@ -452,8 +452,13 @@ def _tag_audiobook(
     if not native_chapters and chapter_markers:
         try:
             write_chapter_markers(workspace_path, chapter_markers)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Chapter marker injection failed: %s", exc)
+        except Exception as exc:
+            # Logging and carrying on reported a finished audiobook whose chapters
+            # were missing or pointed at the wrong times.
+            raise RuntimeError(
+                f"The audio was written to {workspace_path}, but its chapter markers "
+                f"could not be written correctly: {exc}"
+            ) from exc
 
 
 def _concat_entry(path: Path) -> str:

@@ -75,7 +75,7 @@ phase 0.
 Each of these reports success while producing wrong output.
 
 ### WI-1.1 Chapter markers in the right unit (A1)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `test_chapter_starts_do_not_depend_on_the_movie_timescale` failed at timescales 11025 and 24000 and passed at 1000 before the fix, and passes at all three after it, read back by both mutagen and ffprobe. Beyond the plan: the writer now verifies every start time on read-back and raises `ChapterVerificationError` (pinned by `test_wrong_chapter_times_are_refused`), and assembly no longer logs and continues when chapter writing fails.
 **Files:** `src/audiobook/mp4chapters.py`
 **Do:** write `chpl` start times as `round(seconds * 10_000_000)`; delete the timescale lookup and its use of mutagen private methods for timescale.
 **Test first:** the existing `test_write_chapter_markers_roundtrip`, plus a new test that writes markers into a file whose movie timescale is 24000 and reads them back with ffprobe as well as mutagen.
