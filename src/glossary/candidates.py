@@ -39,8 +39,34 @@ _OPENERS = frozenset(
     "A An And As At After Also Although Because But By Even For From He Her Here His "
     "However I If In It Its Later Many Meanwhile Most My Now On Once One Our She Since "
     "So Some Still That The Their Then There These They This Those Though To Today "
-    "We When While With Yet".split()
+    "We When While With Yet Here See Note Please Example Step Section".split()
 )
+# Words that cannot start or end a term: "types of" and "amygdala and" are
+# halves of index sub-entries, not terms.
+_FUNCTION_WORDS = frozenset(
+    "a an and as at by for from in into of on or the to with".split()
+)
+_CONTRACTION = re.compile(r"['’](?:m|ve|d|ll|re|t|s)$", re.IGNORECASE)
+
+
+def _not_a_term(name: str, lowered: Counter[str], capitalised: int) -> bool:
+    """A function word, a contraction, a section heading, or a single word the
+    book uses more often in lowercase ("Fraud" in a cited title is fraud)."""
+    words = name.split()
+    if words[0].lower() in _FUNCTION_WORDS or words[-1].lower() in _FUNCTION_WORDS:
+        return True
+    if len(words) > 1:
+        return False
+    return (
+        name in _OPENERS
+        or name in _NEVER_TERMS
+        or bool(_CONTRACTION.search(name))
+        or lowered[name.lower()] >= capitalised
+    )
+
+
+def _lowercase_words(text: str) -> Counter[str]:
+    return Counter(re.findall(r"(?<![\w-])[a-z][a-z-]*(?![\w])", text))
 
 
 def _nationality_words(names: list[str]) -> set[str]:
@@ -90,7 +116,9 @@ _INVERTED_NAME = re.compile(
     rf"^({_CAPITALISED}(?: {_CAPITALISED})?), ({_CAPITALISED}\.?(?: {_CAPITALISED}\.?)*)$"
 )
 _NAME = re.compile(
-    rf"(?<![\w'’-]){_CAPITALISED}(?:\s+(?:of\s+|de\s+|van\s+|von\s+|al-)?{_CAPITALISED})*"
+    # Spaces, not line breaks, join the words of a name: units are joined with
+    # newlines, and a heading must not run into the next unit's first word.
+    rf"(?<![\w'’-]){_CAPITALISED}(?:[^\S\n]+(?:of[^\S\n]+|de[^\S\n]+|van[^\S\n]+|von[^\S\n]+|al-)?{_CAPITALISED})*"
 )
 _LEADING_ARTICLE = re.compile(r"^(?:The|A|An)\s+")
 
@@ -147,14 +175,14 @@ def recurring_names(text: str, *, min_count: int) -> list[str]:
         counts[name] += 1
         if not at_start:
             inside[name] += 1
-    lowered = Counter(re.findall(r"(?<![\w-])[a-z][a-z-]*(?![\w])", text))
+    lowered = _lowercase_words(text)
     names = []
     for name, count in counts.items():
-        if " " in name:
-            # A run of capitalised words is a name wherever it stands.
-            if count >= min_count:
-                names.append(name)
-        elif inside[name] >= min_count and lowered[name.lower()] < count:
+        if count < min_count or _not_a_term(name, lowered, count):
+            continue
+        # A run of capitalised words is a name wherever it stands; a single
+        # word must also appear inside sentences, not only open them.
+        if " " in name or inside[name] >= min_count:
             names.append(name)
     return names
 
@@ -185,11 +213,22 @@ def candidates(
 ) -> list[tuple[str, int]]:
     """(term, occurrences in the book), most frequent first, up to ``limit``."""
     proposed: dict[str, None] = {}
+    lowered = _lowercase_words(text)
     for index in indexes:
         for heading in index_headings(index):
+            heading = heading.rstrip(".")
             # A lowercase one-word heading ("police") is a general word; the
             # book's own terms are phrases ("scam compound") or names.
-            if heading == heading.lower() and " " not in heading:
+            if not heading or (heading == heading.lower() and " " not in heading):
+                continue
+            # Counting capitalised uses takes a pass over the book; only a
+            # single word needs it.
+            capitalised = (
+                len(re.findall(rf"(?<![\w-]){re.escape(heading)}(?![\w])", text))
+                if " " not in heading
+                else 0
+            )
+            if _not_a_term(heading, lowered, capitalised):
                 continue
             proposed[_singular(heading, text)] = None
     proposed.update(dict.fromkeys(recurring_names(text, min_count=min_count)))

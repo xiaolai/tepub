@@ -94,3 +94,33 @@ def test_names_with_accents_are_names() -> None:
     text = "We met José yesterday. Then Nguyễn Văn Đức spoke, and José left with Nguyễn Văn Đức."
     found = dict(candidates([], text, known=set(), min_count=2))
     assert found == {"José": 2, "Nguyễn Văn Đức": 2}
+
+
+def test_function_words_contractions_and_index_fragments_are_left_out() -> None:
+    index = etree.fromstring(
+        """<html xmlns="http://www.w3.org/1999/xhtml"><body><ul>
+        <li>types of, <a href="#a">3</a></li>
+        <li>amygdala and, <a href="#b">4</a></li>
+        <li>great performance., <a href="#c">5</a></li>
+        <li>In, <a href="#d">6</a></li>
+        <li>frontal cortex, <a href="#e">7</a></li>
+        </ul></body></html>"""
+    )
+    text = (
+        "I’m sure the frontal cortex works. If it fails, If ( x ) runs, If y. I’m told "
+        "types of things and the amygdala and more; great performance. In a frontal "
+        "cortex, In time, the frontal cortex. I’m here; if not, if so, in in in."
+    )
+    found = dict(candidates([index], text, known=set(), min_count=2))
+    assert found == {"frontal cortex": 3}
+
+
+def test_inline_code_is_not_text_for_terms() -> None:
+    from glossary import plain_text
+
+    assert plain_text("Use <code>End If</code> here.") == "Use  here."
+
+
+def test_a_name_does_not_run_across_units() -> None:
+    names = recurring_names("JOB\nOXFORD Collocations\nJOB\nOXFORD Collocations", min_count=2)
+    assert "JOB\nOXFORD Collocations" not in names and "OXFORD Collocations" in names

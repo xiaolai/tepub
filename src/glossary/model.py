@@ -110,7 +110,8 @@ def plain_text(content: str) -> str:
 
     Markup goes; a line break reads as a space ("scam<br/>compound"), and note
     references, a <sup> or a link whose text is only a number, are dropped, so
-    that "scam<a>1</a> compound" still holds the phrase.
+    that "scam<a>1</a> compound" still holds the phrase. Inline code is
+    dropped too: it is not translated, so no term in it can be held to one.
     """
     if "<" not in content:
         return content
@@ -121,7 +122,10 @@ def plain_text(content: str) -> str:
         tag = element.tag.split("}")[-1].lower()
         if tag == "br":
             element.tail = " " + (element.tail or "")
-        elif tag == "sup" or (tag == "a" and _NOTE_REFERENCE.match(element.text_content())):
+        elif tag in ("sup", "code", "kbd", "samp") or (
+            tag == "a" and _NOTE_REFERENCE.match(element.text_content())
+        ):
+            # Note references, and code, which is not translated.
             element.drop_tree()  # keeps its tail
     return root.text_content()
 
