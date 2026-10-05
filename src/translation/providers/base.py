@@ -74,6 +74,10 @@ class BaseProvider(abc.ABC):
     #: handles tags itself, as DeepL does, gets the HTML.
     uses_markers: bool = True
 
+    #: Whether the provider reads the prompt, so that glossary terms and retry
+    #: notes in it can change its reply. DeepL translates the text alone.
+    follows_instructions: bool = True
+
     def ensure_segment_supported(self, segment: Segment) -> None:
         """Raise when this provider cannot faithfully handle the segment."""
         if segment.extract_mode == ExtractMode.HTML and not self.supports_html:

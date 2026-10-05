@@ -15,6 +15,7 @@ from rich.table import Table
 from config import AppSettings
 from config.workspace import assert_same_book
 from console_singleton import get_console
+from glossary import glossary_for
 from logging_utils.logger import get_logger
 from state.models import ExtractMode, SegmentStatus
 from state.store import backup_state, ensure_state, load_segments, load_state
@@ -142,49 +143,66 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
     return polish_translation(text)
 
 
-def _translate_checked(segment, provider, source_language: str, target_language: str) -> str:
-    """Translate, and hold an HTML unit's reply to the markup contract (D6).
+def _translate_checked(
+    segment, provider, source_language: str, target_language: str, glossary=None
+) -> str:
+    """Translate, holding the reply to the markup contract (D6) and the glossary.
 
     An HTML unit with only inline markup goes to a language model as text with
     numbered markers, and its tags are rebuilt from the source afterwards (see
-    translation.markup). A reply that still changed the markup is retried once
-    with the problem named in the prompt; a second such reply is an error. The
-    check runs after polishing, which rewrites the whole string.
+    translation.markup). The glossary's renderings for the unit's terms go in
+    the prompt. A reply that changed the markup or missed a rendering is
+    retried once with the problems named; a second reply that changes the
+    markup is an error, while a missed rendering is only logged, since a
+    translator may rightly avoid repeating a term. `tepub glossary check`
+    lists those. The checks run after polishing, which rewrites the string.
     """
-    if segment.extract_mode != ExtractMode.HTML:
-        return _reply(segment, provider, source_language, target_language)
-    protected = protect(segment.source_content) if provider.uses_markers else None
-    if protected is None:
-        sent = segment
-
-        def rebuild(text: str) -> str:
-            return text
-
-        keep = "Keep every tag and every href, src and id value exactly as in the source"
-    else:
-        marked, tags = protected
+    html_unit = segment.extract_mode == ExtractMode.HTML
+    protected = protect(segment.source_content) if html_unit and provider.uses_markers else None
+    sent = segment
+    keep = "Keep every tag and every href, src and id value exactly as in the source"
+    if protected is not None:
         sent = segment.model_copy(
-            update={"source_content": marked, "extract_mode": ExtractMode.TEXT}
+            update={"source_content": protected[0], "extract_mode": ExtractMode.TEXT}
         )
-
-        def rebuild(text: str) -> str:
-            return restore(text, tags)
-
         keep = "Keep every numbered marker exactly once, unchanged, and every line break"
 
+    def rebuild(text: str) -> str:
+        return restore(text, protected[1]) if protected is not None else text
+
+    terms = glossary.terms_in(segment.source_content) if glossary is not None else []
+    if terms:
+        hints = {term.source: term.target for term in terms}
+        sent = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"terms": hints})})
+
+    def problems(text: str) -> tuple[str | None, list[str]]:
+        markup = markup_mismatch(segment.source_content, text) if html_unit else None
+        return markup, glossary.problems(terms, text) if terms else []
+
     text = rebuild(_reply(sent, provider, source_language, target_language))
-    problem = markup_mismatch(segment.source_content, text)
-    if problem is None:
+    markup, missed = problems(text)
+    if markup is None and (not missed or not provider.follows_instructions):
+        _log_missed(segment, missed)
         return text
-    note = f"Your previous translation changed the markup ({problem}). {keep}; translate only the text."
-    retry = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"notes": note})})
+    notes = []
+    if markup is not None:
+        notes.append(f"Your previous translation changed the markup ({markup}). {keep}; translate only the text.")
+    if missed:
+        notes.append(f"Your previous translation did not follow the glossary: {'; '.join(missed)}.")
+    retry = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"notes": " ".join(notes)})})
     text = rebuild(_reply(retry, provider, source_language, target_language))
-    problem = markup_mismatch(segment.source_content, text)
-    if problem is not None:
+    markup, missed = problems(text)
+    if markup is not None:
         raise ProviderError(
-            f"Translation of segment {segment.segment_id} changed the markup twice: {problem}"
+            f"Translation of segment {segment.segment_id} changed the markup twice: {markup}"
         )
+    _log_missed(segment, missed)
     return text
+
+
+def _log_missed(segment, missed: list[str]) -> None:
+    if missed:
+        logger.warning("Glossary not followed in %s: %s", segment.segment_id, "; ".join(missed))
 
 
 def _translate_segment(
@@ -192,6 +210,7 @@ def _translate_segment(
     provider,
     source_language: str,
     target_language: str,
+    glossary=None,
 ) -> TranslationResult:
     """Translate a single segment. Thread-safe worker function.
 
@@ -200,6 +219,7 @@ def _translate_segment(
         provider: Translation provider instance
         source_language: Source language code
         target_language: Target language code
+        glossary: The book's glossary, if it has one
 
     Returns:
         TranslationResult with translation or error
@@ -221,7 +241,9 @@ def _translate_segment(
         if ensure_supported is not None:
             ensure_supported(segment)
 
-        polished_text = _translate_checked(segment, provider, source_language, target_language)
+        polished_text = _translate_checked(
+            segment, provider, source_language, target_language, glossary
+        )
         return TranslationResult(
             segment_id=segment.segment_id,
             translation=polished_text,
@@ -308,6 +330,9 @@ def run_translation(
     with exclusive_run(settings.state_file):
         provider = create_provider(settings.primary_provider)
         provider.preflight()
+        glossary = glossary_for(settings.work_root, settings.work_dir, target_language)
+        if glossary is not None:
+            console.print(f"[cyan]Glossary: {len(glossary.decided())} terms[/cyan]")
 
         # Translations into another language do not carry over. Keep a copy and say
         # how much is being reset; this used to happen silently inside ensure_state,
@@ -463,6 +488,7 @@ def run_translation(
                                 provider,
                                 source_language,
                                 target_language,
+                                glossary,
                             )
                             future_to_segment[future] = segment
                             active_workers += 1

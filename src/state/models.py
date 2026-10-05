@@ -25,6 +25,9 @@ class SegmentMetadata(BaseModel):
     spine_index: int
     order_in_file: int
     notes: str | None = None
+    # Glossary renderings for this unit's terms, source -> target. Set for one
+    # request only and never written to segments.json.
+    terms: dict[str, str] = Field(default_factory=dict, exclude=True)
 
 
 class Segment(BaseModel):

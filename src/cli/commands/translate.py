@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 
 from cli.core import prepare_settings_for_epub
-from cli.errors import handle_provider_errors, handle_state_errors
+from cli.errors import handle_run_errors, handle_state_errors
 from config import AppSettings
 from translation.controller import run_translation
 from translation.languages import normalize_language
@@ -22,7 +22,7 @@ from translation.languages import normalize_language
 )
 @click.pass_context
 @handle_state_errors
-@handle_provider_errors
+@handle_run_errors
 def translate(
     ctx: click.Context,
     input_epub: Path,

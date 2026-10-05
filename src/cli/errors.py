@@ -49,17 +49,19 @@ def handle_state_errors(func: F) -> F:
     return cast(F, wrapper)
 
 
-def handle_provider_errors(func: F) -> F:
-    """Report a provider that cannot work at all, such as an unreachable Ollama,
-    in red and exit with code 1, instead of a traceback."""
+def handle_run_errors(func: F) -> F:
+    """Report what stops a translation run before it starts, such as an
+    unreachable Ollama or a malformed glossary, in red and exit with code 1,
+    instead of a traceback."""
 
     @wraps(func)
     def wrapper(*args, **kwargs):
+        from glossary import GlossaryError
         from translation.providers import ProviderFatalError
 
         try:
             return func(*args, **kwargs)
-        except ProviderFatalError as e:
+        except (ProviderFatalError, GlossaryError) as e:
             console.print(f"[red]{e}[/red]")
             raise click.exceptions.Exit(1)
 

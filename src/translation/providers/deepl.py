@@ -14,6 +14,7 @@ from .http import post_json
 class DeepLProvider(BaseProvider):
     supports_html = True
     uses_markers = False
+    follows_instructions = False
 
     DEFAULT_BASE_URL = "https://api.deepl.com/v2/translate"
 

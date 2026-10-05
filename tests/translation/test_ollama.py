@@ -9,7 +9,7 @@ import click
 import pytest
 import requests
 
-from cli.errors import handle_provider_errors
+from cli.errors import handle_run_errors
 from config import AppSettings, ProviderConfig
 from translation.providers import ProviderFatalError, create_provider
 from translation.providers import ollama as ollama_module
@@ -88,7 +88,7 @@ def test_think_is_rejected_for_other_providers() -> None:
 
 
 def test_a_fatal_provider_error_exits_with_code_1() -> None:
-    @handle_provider_errors
+    @handle_run_errors
     def command():
         raise ProviderFatalError("Cannot reach Ollama")
 

@@ -102,6 +102,15 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
             mode_instruction=mode_instruction,
         ).strip()
 
+    terms = segment.metadata.terms
+    if terms:
+        # From the book's glossary. Appended, like the mode instruction, so a
+        # custom prompt cannot drop it.
+        renderings = "; ".join(
+            f'"{source}" → {target} (leave as is)' if source == target else f'"{source}" → {target}'
+            for source, target in terms.items()
+        )
+        intro = f"{intro}\nUse exactly these renderings for these terms: {renderings}."
     note = segment.metadata.notes
     if note:
         # Set when a previous reply broke the markup contract; see the controller.
