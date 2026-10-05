@@ -88,3 +88,25 @@ def test_a_list_of_links_is_split_by_the_size_of_its_markup(tmp_path: Path) -> N
     settings = _extract(book, tmp_path)
     units = load_segments(settings.segments_file).segments
     assert [u.metadata.element_type for u in units].count("li") == 60
+
+
+def test_a_translated_copy_does_not_repeat_page_markers(tmp_path: Path) -> None:
+    """A page-break marker copied into the translation marked the same printed
+    page twice, as role="doc-pagebreak" with its id removed."""
+    from tests.epub_builder import build_epub
+
+    body = (
+        '<p>Before the break<span id="page_v" role="doc-pagebreak" title="v"/> and '
+        '<a href="#x">after</a>.</p>'
+    )
+    book = build_epub(tmp_path / "b.epub", [("c.xhtml", "C", body)])
+    settings = _extract(book, tmp_path)
+    _translate_everything(settings)
+    out = tmp_path / "out.epub"
+    run_injection(settings, book, out, mode="bilingual")
+
+    tree = _tree(out, "c.xhtml")
+    breaks = [n for n in tree.iter() if isinstance(n.tag, str) and n.get("role") == "doc-pagebreak"]
+    assert len(breaks) == 1 and breaks[0].get("id") == "page_v"
+    copy = next(p for p in tree.iter(f"{XHTML}p") if "tepub-translation" in (p.get("class") or ""))
+    assert "after" in "".join(copy.itertext())

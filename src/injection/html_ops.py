@@ -55,12 +55,39 @@ def _set_html_content(element: etree._Element, markup: str) -> None:
         element.append(child)
 
 
+_OPS_TYPE = "{http://www.idpf.org/2007/ops}type"
+
+
+def _is_page_break(node: etree._Element) -> bool:
+    return node.get("role") == "doc-pagebreak" or "pagebreak" in (node.get(_OPS_TYPE) or "").split()
+
+
 def _strip_ids(element: etree._Element) -> None:
     """Translated copies sit beside their originals; repeating ids would make
-    every in-book link ambiguous, and epubcheck rejects duplicates (D5)."""
-    for node in element.iter():
-        if isinstance(node.tag, str):
-            node.attrib.pop("id", None)
+    every in-book link ambiguous, and epubcheck rejects duplicates (D5).
+
+    Page-break markers go too: they mark where a page of the printed book
+    begins, and a copy marked the same page twice for page lists and screen
+    readers, as role="doc-pagebreak" with its id gone.
+    """
+    for node in list(element.iter()):
+        if not isinstance(node.tag, str):
+            continue
+        if node is not element and _is_page_break(node) and not len(node) and not (node.text or "").strip():
+            _remove_keeping_tail(node)
+            continue
+        node.attrib.pop("id", None)
+
+
+def _remove_keeping_tail(node: etree._Element) -> None:
+    parent = node.getparent()
+    if node.tail:
+        previous = node.getprevious()
+        if previous is not None:
+            previous.tail = (previous.tail or "") + node.tail
+        else:
+            parent.text = (parent.text or "") + node.tail
+    parent.remove(node)
 
 
 def build_translation_element(
