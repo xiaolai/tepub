@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from lxml import html
+from lxml import etree
 
 from config import AppSettings
+from logging_utils.logger import get_logger
 
-from .resources import SpineItem, get_item_by_href, iter_spine_items, load_book
+from .container import read_package
+from .resources import SpineItem, iter_spine_items, load_book
+from .xhtml import NotWellFormed, XhtmlDocument, parse_xhtml
+
+logger = get_logger(__name__)
 
 # Maximum EPUB file size: 500MB
 MAX_EPUB_SIZE = 500 * 1024 * 1024
@@ -16,9 +22,16 @@ MAX_EPUB_SIZE = 500 * 1024 * 1024
 
 @dataclass
 class HtmlDocument:
+    """One spine document, parsed as XML.
+
+    ``tree`` and ``xhtml`` are None when the document is not well-formed XML; it
+    is then left untranslated and copied into the output unchanged.
+    """
+
     spine_item: SpineItem
-    tree: html.HtmlElement
+    tree: etree._Element | None
     raw_html: bytes
+    xhtml: XhtmlDocument | None = None
 
     @property
     def path(self) -> Path:
@@ -43,16 +56,34 @@ class EpubReader:
             )
 
         self.book = load_book(epub_path)
+        self.package = read_package(epub_path)
         self._documents: dict[Path, HtmlDocument] | None = None
+        # Per-document results that consumers compute once and reuse, such as
+        # located translation units.
+        self.unit_cache: dict[Path, object] = {}
 
     def iter_documents(self) -> Iterable[HtmlDocument]:
-        for spine_item in iter_spine_items(self.book):
-            if not spine_item.media_type.startswith("application/xhtml"):
-                continue
-            item = get_item_by_href(self.book, spine_item.href)
-            raw_html: bytes = item.get_content()
-            tree = html.fromstring(raw_html)
-            yield HtmlDocument(spine_item=spine_item, tree=tree, raw_html=raw_html)
+        # One open for the whole walk: reopening per document re-reads the zip's
+        # directory every time, which is slow on books with thousands of entries.
+        with zipfile.ZipFile(self.epub_path) as archive:
+            for spine_item in iter_spine_items(self.book):
+                if not spine_item.media_type.startswith("application/xhtml"):
+                    continue
+                # The file's own bytes. ebooklib's get_content() returns a rebuilt
+                # document with an empty <head>, so every translated chapter used
+                # to lose its title and stylesheet links.
+                raw_html = archive.read(self.package.zip_path(spine_item.href.as_posix()))
+                try:
+                    xhtml = parse_xhtml(raw_html)
+                except NotWellFormed as exc:
+                    logger.warning(
+                        "%s is %s; it will be left untranslated", spine_item.href.as_posix(), exc
+                    )
+                    yield HtmlDocument(spine_item=spine_item, tree=None, raw_html=raw_html)
+                    continue
+                yield HtmlDocument(
+                    spine_item=spine_item, tree=xhtml.root, raw_html=raw_html, xhtml=xhtml
+                )
 
     def read_document_by_path(self, href: Path) -> HtmlDocument:
         """Return the parsed spine document at ``href``, parsing each one once.

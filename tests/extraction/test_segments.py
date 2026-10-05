@@ -1,9 +1,20 @@
 import re
 from pathlib import Path
 
-from lxml import html
-
+from epub_io.xhtml import parse_xhtml
 from extraction.segments import iter_segments
+
+
+def _xhtml(markup: str):
+    """Parse test markup as the reader does: XHTML in its namespace."""
+    markup = markup.strip()
+    if "xmlns=" not in markup.split(">", 1)[0]:
+        markup = markup.replace(
+            "<html",
+            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"',
+            1,
+        )
+    return parse_xhtml(markup.encode("utf-8")).root
 from state.models import ExtractMode
 
 
@@ -16,7 +27,7 @@ def test_iter_segments_classifies_simple_and_atomic():
     <ul><li>Item <span>One</span></li><li>Item Two</li></ul>
     </body></html>
     """
-    tree = html.fromstring(markup)
+    tree = _xhtml(markup)
     segments = list(iter_segments(tree, Path("chapter1.xhtml"), spine_index=0))
     assert len(segments) == 4
 
@@ -39,7 +50,7 @@ def test_iter_segments_handles_drop_cap():
     <p><span><span>A</span></span>nother drop cap example.</p>
     </body></html>
     """
-    tree = html.fromstring(markup)
+    tree = _xhtml(markup)
     segments = list(iter_segments(tree, Path("test.xhtml"), spine_index=0))
     assert len(segments) == 3
 
@@ -63,7 +74,7 @@ def test_iter_segments_normalizes_ellipsis():
     <p>Mix of . . . and ... patterns.</p>
     </body></html>
     """
-    tree = html.fromstring(markup)
+    tree = _xhtml(markup)
     segments = list(iter_segments(tree, Path("test.xhtml"), spine_index=0))
     assert len(segments) == 4
 
@@ -83,7 +94,7 @@ def test_iter_segments_nested_blockquote_only_innermost_has_text():
     </blockquote></blockquote></blockquote>
     </body></html>
     """
-    tree = html.fromstring(markup)
+    tree = _xhtml(markup)
     segments = list(iter_segments(tree, Path("test.xhtml"), spine_index=0))
 
     # Only innermost blockquote has text, outer levels are wrappers
@@ -93,7 +104,11 @@ def test_iter_segments_nested_blockquote_only_innermost_has_text():
 
 
 def test_iter_segments_nested_blockquote_multiple_levels_have_text():
-    """Extract all levels that have their own text content."""
+    """A blockquote with text beside a nested one is one unit, translated once.
+
+    This test used to expect two segments, the outer (which contains the inner's
+    text) and the inner, so the inner text was translated and injected twice.
+    """
     markup = """
     <html><body>
     <blockquote>
@@ -102,18 +117,16 @@ def test_iter_segments_nested_blockquote_multiple_levels_have_text():
     </blockquote>
     </body></html>
     """
-    tree = html.fromstring(markup)
-    segments = list(iter_segments(tree, Path("test.xhtml"), spine_index=0))
+    segments = list(iter_segments(_xhtml(markup), Path("test.xhtml"), spine_index=0))
 
-    # Both levels have text
-    assert len(segments) == 2
-    contents = [s.source_content for s in segments]
-    assert "Outer level text Inner level text" in contents  # Outer (includes inner)
-    assert "Inner level text" in contents  # Inner
+    assert len(segments) == 1
+    assert segments[0].extract_mode == ExtractMode.HTML
+    assert "Outer level text" in segments[0].source_content
+    assert "Inner level text" in segments[0].source_content
 
 
 def test_iter_segments_nested_blockquote_mixed():
-    """Extract only levels with text, skip empty wrappers."""
+    """An empty wrapper is walked through; the first level with text is one unit."""
     markup = """
     <html><body>
     <blockquote>
@@ -124,16 +137,12 @@ def test_iter_segments_nested_blockquote_mixed():
     </blockquote>
     </body></html>
     """
-    tree = html.fromstring(markup)
-    segments = list(iter_segments(tree, Path("test.xhtml"), spine_index=0))
+    segments = list(iter_segments(_xhtml(markup), Path("test.xhtml"), spine_index=0))
 
-    # Outer has no own text (skip), middle and innermost have text (extract)
-    assert len(segments) == 2
-    contents = [s.source_content for s in segments]
-    # Middle level includes innermost
-    assert any("Middle level text" in c and "Innermost text" in c for c in contents)
-    # Innermost only
-    assert "Innermost text" in contents
+    # Previously the innermost text was also extracted on its own: twice in total.
+    assert len(segments) == 1
+    assert "Middle level text" in segments[0].source_content
+    assert "Innermost text" in segments[0].source_content
 
 
 def test_iter_segments_nested_div_smart_extraction():
@@ -145,7 +154,7 @@ def test_iter_segments_nested_div_smart_extraction():
     </div>
     </body></html>
     """
-    tree = html.fromstring(markup)
+    tree = _xhtml(markup)
     segments = list(iter_segments(tree, Path("test.xhtml"), spine_index=0))
 
     # Only inner div has text
@@ -197,10 +206,12 @@ def test_iter_segments_handles_complex_markup():
       </body>
     </html>
     """
-    tree = html.fromstring(markup)
+    tree = _xhtml(markup)
     segments = list(iter_segments(tree, Path("complex.xhtml"), spine_index=2))
 
-    assert len(segments) == 7
+    # The paragraph inside epub:switch is not extracted: a reading system shows
+    # either the case or the default, so switch content is skipped (D1).
+    assert len(segments) == 6
     assert [segment.metadata.element_type for segment in segments] == [
         "h2",
         "p",
@@ -208,14 +219,13 @@ def test_iter_segments_handles_complex_markup():
         "p",
         "table",
         "ul",
-        "p",
     ]
 
     for index, segment in enumerate(segments, start=1):
         assert segment.metadata.order_in_file == index
         assert segment.metadata.spine_index == 2
 
-    heading, first_para, blurb_div, nested_para, table_seg, list_seg, namespaced_para = segments
+    heading, first_para, blurb_div, nested_para, table_seg, list_seg = segments
 
     assert heading.extract_mode == ExtractMode.TEXT
     assert heading.source_content == "Preface & Overview"
@@ -247,45 +257,28 @@ def test_iter_segments_handles_complex_markup():
     assert "span" not in list_seg.source_content
     assert "class=" not in list_seg.source_content
 
-    assert namespaced_para.extract_mode == ExtractMode.TEXT
-    assert namespaced_para.source_content == "Namespaced case paragraph."
+    assert "Namespaced case paragraph." not in " ".join(seg.source_content for seg in segments)
 
 
 def test_segment_ids_do_not_collide_across_directories():
-    """Colliding ids are resolved after extraction, not by changing the id scheme.
+    """Ids hash the full EPUB path, so equal file names in two folders differ.
 
-    Rewriting _build_segment_id outright would re-key every existing workspace
-    and strand completed translations and synthesised audio, so only the segments
-    that genuinely collide are given new ids.
+    The old ids hashed only the xpath beside the file stem, so OEBPS/a/ch1.xhtml
+    and OEBPS/b/ch1.xhtml produced the same id, and a repair pass re-keyed them.
     """
-    from extraction.segments import resolve_segment_id_collisions
-
     markup = "<html><body><p>Same text.</p></body></html>"
-    a = list(iter_segments(html.fromstring(markup), Path("OEBPS/a/ch1.xhtml"), spine_index=0))
-    b = list(iter_segments(html.fromstring(markup), Path("OEBPS/b/ch1.xhtml"), spine_index=1))
+    a = list(iter_segments(_xhtml(markup), Path("OEBPS/a/ch1.xhtml"), spine_index=0))
+    b = list(iter_segments(_xhtml(markup), Path("OEBPS/b/ch1.xhtml"), spine_index=1))
 
-    # The legacy id scheme collides; that is what is being resolved.
-    assert a[0].segment_id == b[0].segment_id
-
-    resolved, rekeyed = resolve_segment_id_collisions(a + b)
-
-    ids = [segment.segment_id for segment in resolved]
-    assert len(set(ids)) == len(ids)
-    assert len(rekeyed) == 1
+    assert a[0].segment_id != b[0].segment_id
 
 
-def test_non_colliding_segment_ids_are_left_alone():
-    """A healthy workspace must still match after re-extraction."""
-    from extraction.segments import resolve_segment_id_collisions
-
-    markup = "<html><body><p>Text.</p></body></html>"
-    segments = list(iter_segments(html.fromstring(markup), Path("OEBPS/only.xhtml"), spine_index=0))
-    original = [segment.segment_id for segment in segments]
-
-    resolved, rekeyed = resolve_segment_id_collisions(segments)
-
-    assert [segment.segment_id for segment in resolved] == original
-    assert rekeyed == []
+def test_segment_ids_are_stable_across_runs():
+    """The same document gives the same ids, so a workspace matches on re-extraction."""
+    markup = "<html><body><p>One.</p><p>Two.</p></body></html>"
+    first = [s.segment_id for s in iter_segments(_xhtml(markup), Path("x/c.xhtml"), 0)]
+    second = [s.segment_id for s in iter_segments(_xhtml(markup), Path("x/c.xhtml"), 0)]
+    assert first == second and len(set(first)) == 2
 
 
 def test_simple_elements_inside_atomic_are_not_extracted_twice():
@@ -295,7 +288,7 @@ def test_simple_elements_inside_atomic_are_not_extracted_twice():
     <table><tr><td><p>Cell paragraph.</p></td></tr></table>
     </body></html>
     """
-    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+    segments = list(iter_segments(_xhtml(markup), Path("c.xhtml"), spine_index=0))
 
     assert len(segments) == 1
     assert segments[0].extract_mode == ExtractMode.HTML
@@ -312,7 +305,7 @@ def test_order_in_file_is_contiguous_from_one():
     <p>Second real.</p>
     </body></html>
     """
-    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+    segments = list(iter_segments(_xhtml(markup), Path("c.xhtml"), spine_index=0))
 
     orders = [s.metadata.order_in_file for s in segments]
     assert orders == list(range(1, len(segments) + 1))
@@ -323,7 +316,7 @@ def test_comment_inside_atomic_element_does_not_abort_extraction():
     """Non-element children (comments) must serialize, not raise TypeError."""
     markup = "<html><body><ul><li>Item<!-- note -->tail</li></ul></body></html>"
 
-    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+    segments = list(iter_segments(_xhtml(markup), Path("c.xhtml"), spine_index=0))
 
     assert len(segments) == 1
     assert "Item" in segments[0].source_content
@@ -336,7 +329,7 @@ def test_tail_text_after_nested_same_tag_is_preserved():
     <blockquote><blockquote>Inner</blockquote> outer tail text</blockquote>
     </body></html>
     """
-    segments = list(iter_segments(html.fromstring(markup), Path("c.xhtml"), spine_index=0))
+    segments = list(iter_segments(_xhtml(markup), Path("c.xhtml"), spine_index=0))
 
     contents = " ".join(s.source_content for s in segments)
     assert "outer tail text" in contents

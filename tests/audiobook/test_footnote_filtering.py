@@ -1,226 +1,83 @@
-"""Tests for footnote filtering during audiobook generation."""
+"""Tests for footnote filtering during audiobook generation.
+
+They run against real EPUBs built for the purpose. Their predecessors mocked
+reader.read_document_by_path and doc.tree.xpath, which is how a reader method
+that did not exist went unnoticed while the suite stayed green.
+"""
 
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from lxml import html as lxml_html
 
-from audiobook.preprocess import _reextract_filtered, segment_to_text
+from audiobook.preprocess import segment_to_text
+from config import AppSettings
+from epub_io.reader import EpubReader
+from extraction.segments import iter_segments
 from state.models import ExtractMode, Segment, SegmentMetadata
+from tests.epub_builder import build_epub
 
 
-def test_reextract_filtered_removes_sup_footnotes():
-    """Test that <a><sup> footnote references are removed."""
-    html_content = """
-    <p>This is a sentence with a footnote<a href="#fn1"><sup>1</sup></a> reference.</p>
-    """
-
-    # Mock segment
-    segment = Segment(
-        segment_id="test-001",
-        file_path=Path("chapter.xhtml"),
-        xpath="//p",
-        extract_mode=ExtractMode.HTML,
-        source_content=html_content,
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=0,
-            order_in_file=0
-        )
-    )
-
-    # Mock reader
-    mock_doc = Mock()
-    element = lxml_html.fromstring(html_content)
-    mock_doc.tree.xpath.return_value = [element]
-
-    mock_reader = Mock()
-    mock_reader.read_document_by_path.return_value = mock_doc
-
-    # Execute
-    result = _reextract_filtered(segment, mock_reader)
-
-    # Verify footnote reference removed
-    assert result == "This is a sentence with a footnote reference."
-    assert "<sup>" not in result
-    assert "1" not in result
+def _book(tmp_path: Path, body: str, notes: str = ""):
+    """A reader and the extracted segments of a one-chapter book."""
+    chapters = [("ch1.xhtml", "Chapter", body)]
+    if notes:
+        chapters.append(("notes.xhtml", "Notes", notes))
+    epub = build_epub(tmp_path / "book.epub", chapters)
+    reader = EpubReader(epub, AppSettings(work_dir=tmp_path / "work"))
+    segments = [
+        segment
+        for document in reader.iter_documents()
+        for segment in iter_segments(document.tree, document.path, document.spine_item.index)
+    ]
+    return reader, segments
 
 
-def test_reextract_filtered_removes_sub_footnotes():
-    """Test that <a><sub> footnote references are removed."""
-    html_content = """
-    <p>This is text<a href="#note2"><sub>2</sub></a> with subscript note.</p>
-    """
-
-    segment = Segment(
-        segment_id="test-002",
-        file_path=Path("chapter.xhtml"),
-        xpath="//p",
-        extract_mode=ExtractMode.HTML,
-        source_content=html_content,
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=0,
-            order_in_file=0
-        )
-    )
-
-    mock_doc = Mock()
-    element = lxml_html.fromstring(html_content)
-    mock_doc.tree.xpath.return_value = [element]
-
-    mock_reader = Mock()
-    mock_reader.read_document_by_path.return_value = mock_doc
-
-    result = _reextract_filtered(segment, mock_reader)
-
-    assert result == "This is text with subscript note."
-    assert "<sub>" not in result
-    assert "2" not in result
+def _spoken(tmp_path: Path, body: str) -> str:
+    reader, segments = _book(tmp_path, body)
+    return " ".join(filter(None, (segment_to_text(s, reader=reader) for s in segments)))
 
 
-def test_reextract_filtered_preserves_regular_links():
-    """Test that regular links (without sup/sub) are preserved."""
-    html_content = """
-    <p>Visit <a href="https://example.com">our website</a> for more.</p>
-    """
-
-    segment = Segment(
-        segment_id="test-003",
-        file_path=Path("chapter.xhtml"),
-        xpath="//p",
-        extract_mode=ExtractMode.HTML,
-        source_content=html_content,
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=0,
-            order_in_file=0
-        )
-    )
-
-    mock_doc = Mock()
-    element = lxml_html.fromstring(html_content)
-    mock_doc.tree.xpath.return_value = [element]
-
-    mock_reader = Mock()
-    mock_reader.read_document_by_path.return_value = mock_doc
-
-    result = _reextract_filtered(segment, mock_reader)
-
-    # Link text should be preserved
-    assert "our website" in result
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            '<p>This is a sentence with a footnote<a href="#fn1"><sup>1</sup></a> reference.</p>',
+            "This is a sentence with a footnote reference.",
+        ),
+        (
+            '<p>This is text<a href="#note2"><sub>2</sub></a> with subscript note.</p>',
+            "This is text with subscript note.",
+        ),
+        (
+            '<p>First<a href="#a"><sup>1</sup></a> and second<a href="#b"><sup>2</sup></a>'
+            ' and third<a href="#c"><sup>3</sup></a> notes.</p>',
+            "First and second and third notes.",
+        ),
+    ],
+    ids=["sup", "sub", "several"],
+)
+def test_note_references_are_not_spoken(tmp_path: Path, body: str, expected: str) -> None:
+    assert _spoken(tmp_path, body) == expected
 
 
-def test_reextract_filtered_multiple_footnotes():
-    """Test removing multiple footnote references."""
-    html_content = """
-    <p>First<a><sup>1</sup></a> and second<a><sup>2</sup></a> footnotes.</p>
-    """
-
-    segment = Segment(
-        segment_id="test-004",
-        file_path=Path("chapter.xhtml"),
-        xpath="//p",
-        extract_mode=ExtractMode.HTML,
-        source_content=html_content,
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=0,
-            order_in_file=0
-        )
-    )
-
-    mock_doc = Mock()
-    element = lxml_html.fromstring(html_content)
-    mock_doc.tree.xpath.return_value = [element]
-
-    mock_reader = Mock()
-    mock_reader.read_document_by_path.return_value = mock_doc
-
-    result = _reextract_filtered(segment, mock_reader)
-
-    assert result == "First and second footnotes."
-    assert "1" not in result
-    assert "2" not in result
+def test_regular_links_are_spoken(tmp_path: Path) -> None:
+    body = '<p>Visit <a href="https://example.com">our website</a> for more information.</p>'
+    assert _spoken(tmp_path, body) == "Visit our website for more information."
 
 
-def test_segment_to_text_uses_reader_when_provided():
-    """Test that segment_to_text uses reader for re-extraction when provided."""
-    segment = Segment(
-        segment_id="test-005",
-        file_path=Path("chapter.xhtml"),
-        xpath="//p",
-        extract_mode=ExtractMode.HTML,
-        source_content="<p>Text with<a><sup>1</sup></a> footnote.</p>",
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=0,
-            order_in_file=0
-        )
-    )
-
-    # Mock reader setup
-    mock_doc = Mock()
-    element = lxml_html.fromstring(segment.source_content)
-    mock_doc.tree.xpath.return_value = [element]
-
-    mock_reader = Mock()
-    mock_reader.read_document_by_path.return_value = mock_doc
-
-    # With reader - should filter
-    result_with_reader = segment_to_text(segment, reader=mock_reader)
-    assert result_with_reader == "Text with footnote."
-
-    # Without reader - should keep HTML as-is (footnote number appears)
-    result_without_reader = segment_to_text(segment, reader=None)
-    assert "1" in result_without_reader
+def test_a_unit_that_no_longer_matches_falls_back_to_its_stored_text(tmp_path: Path) -> None:
+    reader, (segment,) = _book(tmp_path, '<p>Current<a href="#n"><sup>1</sup></a> text.</p>')
+    stale = segment.model_copy(update={"source_content": "Text from an older edition."})
+    assert segment_to_text(stale, reader=reader) == "Text from an older edition."
 
 
-def test_segment_to_text_fallback_when_element_cannot_be_located():
-    """An element the parser cannot locate again is narrated from stored text."""
-    from lxml import etree
-
-    segment = Segment(
-        segment_id="test-006",
-        file_path=Path("chapter.xhtml"),
-        xpath="/html/body/epub:switch/p",
-        extract_mode=ExtractMode.HTML,
-        source_content="<p>Fallback text content</p>",
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=0,
-            order_in_file=0
-        )
-    )
-
-    document = Mock()
-    document.tree.xpath.side_effect = etree.XPathEvalError("Undefined namespace prefix")
-    reader = Mock()
-    reader.read_document_by_path.return_value = document
-
-    assert segment_to_text(segment, reader=reader) == "Fallback text content"
-
-
-def test_segment_to_text_does_not_swallow_a_failed_document_lookup():
-    """A document missing from the EPUB is an error, not a reason to guess.
-
-    Catching every exception here is how a reader method that did not exist
-    went unnoticed: each call raised AttributeError and was silently ignored.
-    """
-    segment = Segment(
-        segment_id="test-007",
-        file_path=Path("missing.xhtml"),
-        xpath="/html/body/p",
-        extract_mode=ExtractMode.TEXT,
-        source_content="Text",
-        metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=1),
-    )
-    reader = Mock()
-    reader.read_document_by_path.side_effect = KeyError("missing.xhtml")
-
+def test_segment_to_text_does_not_swallow_a_failed_document_lookup(tmp_path: Path) -> None:
+    """A document missing from the EPUB is an error, not a reason to guess."""
+    reader, (segment,) = _book(tmp_path, "<p>Text.</p>")
+    elsewhere = segment.model_copy(update={"file_path": Path("missing.xhtml")})
     with pytest.raises(KeyError):
-        segment_to_text(segment, reader=reader)
+        segment_to_text(elsewhere, reader=reader)
 
 
 def test_segment_to_text_skips_table_and_figure():

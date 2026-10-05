@@ -11,11 +11,12 @@ from epub_io.reader import EpubReader
 from epub_io.resources import extract_metadata
 from epub_io.selector import build_skip_map
 from state.models import Segment, SegmentsDocument, SkippedDocument
-from state.store import ensure_state, save_segments
+from state.store import ensure_state, load_segments, save_segments
 
 console = get_console()
 
-from .segments import iter_segments, resolve_segment_id_collisions
+from .migrate import SEGMENTS_FORMAT, import_legacy_workspace
+from .segments import iter_segments, loose_body_text
 
 
 def run_extraction(settings: AppSettings, input_epub: Path) -> None:
@@ -33,6 +34,16 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
             file_path = document.path
             if not document.spine_item.linear:
                 continue
+            if document.tree is None:
+                # Not well-formed XML: left untranslated, already warned (D3).
+                continue
+            loose = loose_body_text(document.tree)
+            if loose:
+                console.print(
+                    f"[yellow]{file_path.as_posix()}: {loose} passage(s) of text sit "
+                    "directly in <body>, outside any paragraph, and will not be "
+                    "translated.[/yellow]"
+                )
             decision = skip_map.get(file_path)
             skip_reason = None
             skip_source = None
@@ -60,17 +71,39 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
     metadata = extract_metadata(reader.book)
 
     timestamp = datetime.now(timezone.utc).isoformat()
-    # Legacy ids can collide across directories; only the colliding segments are
-    # re-keyed, so an existing workspace still matches after re-extraction.
-    segments, rekeyed = resolve_segment_id_collisions(segments)
-    if rekeyed:
-        console.print(
-            f"[yellow]Resolved {len(rekeyed)} colliding segment id(s): {', '.join(rekeyed[:5])}"
-            f"{'…' if len(rekeyed) > 5 else ''}. Those segments will need re-translating; "
-            f"their previous shared state was ambiguous.[/yellow]"
-        )
+    # Unit ids hash the full EPUB path with the unit's place in the document, so
+    # they cannot collide; a duplicate here would be an extraction defect.
+    ids = [segment.segment_id for segment in segments]
+    if len(ids) != len(set(ids)):
+        duplicates = sorted({sid for sid in ids if ids.count(sid) > 1})
+        raise RuntimeError(f"Extraction produced duplicate segment ids: {duplicates[:5]}")
+
+    segments_path = settings.segments_file
+    if segments_path.exists():
+        previous = load_segments(segments_path)
+        if previous.format_version < SEGMENTS_FORMAT:
+            report = import_legacy_workspace(
+                settings.work_dir, settings.state_file, previous.segments, segments
+            )
+            console.print(
+                f"[cyan]Updated this workspace to the new segmentation: {report.mapped} of "
+                f"{len(previous.segments)} earlier segments matched a new unit by file and "
+                f"text; {report.audio_files_remapped} audio clips kept.[/cyan]"
+            )
+            if report.finished_not_carried:
+                console.print(
+                    f"[yellow]{report.finished_not_carried} finished translations matched no "
+                    "new unit and will be translated again.[/yellow]"
+                )
+            if report.backups:
+                console.print(
+                    "[dim]Previous state saved as: "
+                    + ", ".join(path.name for path in report.backups)
+                    + "[/dim]"
+                )
 
     segments_doc = SegmentsDocument(
+        format_version=SEGMENTS_FORMAT,
         epub_path=input_epub,
         generated_at=timestamp,
         segments=segments,
@@ -80,7 +113,6 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
         book_publisher=metadata.get("publisher"),
         book_year=metadata.get("year"),
     )
-    segments_path = settings.segments_file
     segments_path.parent.mkdir(parents=True, exist_ok=True)
     save_segments(segments_doc, segments_path)
 

@@ -1,74 +1,71 @@
+"""Element operations for injecting translations into XHTML trees."""
+
 from __future__ import annotations
 
-from lxml import html
+from copy import deepcopy
 
+from lxml import etree
+
+from epub_io.xhtml import parse_fragment
 from state.models import ExtractMode, Segment
 
 
-def _clone_element(element: html.HtmlElement) -> html.HtmlElement:
-    # with_tail=False: the tail belongs to the parent, not the element. Serialising
-    # it made non-whitespace tail text part of the clone (and could break
-    # fragment_fromstring, which rejects trailing content).
-    return html.fragment_fromstring(html.tostring(element, encoding="unicode", with_tail=False))
+def prepare_original(element: etree._Element) -> None:
+    element.set("data-lang", "original")
 
 
-def prepare_original(element: html.HtmlElement) -> None:
-    element.attrib["data-lang"] = "original"
-
-
-def _set_text_only(element: html.HtmlElement, text: str) -> None:
-    element.text = text
+def _clear_children(element: etree._Element) -> None:
     for child in list(element):
         element.remove(child)
 
 
-def _set_html_content(element: html.HtmlElement, markup: str) -> None:
-    """Set element's content from HTML markup string.
+def _set_text_only(element: etree._Element, text: str) -> None:
+    _clear_children(element)
+    element.text = text
 
-    Clears element and populates with parsed HTML fragments.
-    Properly handles the fragment_fromstring wrapper to avoid tag leaks.
+
+def _set_html_content(element: etree._Element, markup: str) -> None:
+    """Replace the element's content with parsed markup, keeping its attributes.
+
+    The markup lands in the XHTML namespace; parsed as HTML and appended to an
+    XHTML tree it serialised with xmlns="", in no namespace at all.
     """
-    # clear() also drops every attribute, which erased the data-lang marker that
-    # distinguishes the translated node from the original in bilingual output.
-    preserved_attrs = dict(element.attrib)
-    element.clear()
-    element.attrib.update(preserved_attrs)
+    _clear_children(element)
+    element.text = None
     if not markup:
         return
+    text, children = parse_fragment(markup)
+    element.text = text or None
+    for child in children:
+        element.append(child)
 
-    # Parse HTML - fragment_fromstring with create_parent=True returns container
-    container = html.fragment_fromstring(f"<wrapper>{markup}</wrapper>", create_parent=True)
 
-    # Container has <wrapper> as first child - extract its contents
-    if len(container) > 0 and getattr(container[0], "tag", None) == "wrapper":
-        wrapper = container[0]
-        element.text = wrapper.text
-        for child in wrapper:
-            element.append(child)
-    else:
-        # Fallback: shouldn't happen but handle gracefully
-        element.text = container.text
-        for child in container:
-            element.append(child)
+def _strip_ids(element: etree._Element) -> None:
+    """Translated copies sit beside their originals; repeating ids would make
+    every in-book link ambiguous, and epubcheck rejects duplicates (D5)."""
+    for node in element.iter():
+        if isinstance(node.tag, str):
+            node.attrib.pop("id", None)
 
 
 def build_translation_element(
-    original: html.HtmlElement, segment: Segment, translation: str
-) -> html.HtmlElement:
-    clone = _clone_element(original)
-    clone.attrib["data-lang"] = "translation"
+    original: etree._Element, segment: Segment, translation: str
+) -> etree._Element:
+    clone = deepcopy(original)
+    clone.tail = None
     if segment.extract_mode == ExtractMode.TEXT:
         _set_text_only(clone, translation)
     else:
         _set_html_content(clone, translation)
+    _strip_ids(clone)
+    clone.set("data-lang", "translation")
     return clone
 
 
 def insert_translation_after(
-    original: html.HtmlElement, translation_element: html.HtmlElement
+    original: etree._Element, translation_element: etree._Element
 ) -> None:
     parent = original.getparent()
     if parent is None:
         raise ValueError("Original element missing parent; cannot insert translation")
-    index = parent.index(original)
-    parent.insert(index + 1, translation_element)
+    parent.insert(parent.index(original) + 1, translation_element)

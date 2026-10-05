@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import collections
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -25,11 +26,7 @@ pytestmark = pytest.mark.skipif(not epubcheck.AVAILABLE, reason="epubcheck not i
 # Fixtures that the parts of the new core not yet built still break, by reason.
 # Strict: when a fix lands, its entries must be removed here.
 PENDING: dict[tuple[str, str], str] = {
-    ("epub2_with_ncx", "bilingual"): "HTML parser drops the XHTML 1.1 DOCTYPE and head title (WI-4.2)",
-    ("epub2_with_ncx", "translated_only"): "HTML parser drops the XHTML 1.1 DOCTYPE and head title (WI-4.2)",
-    ("nested_blockquotes", "bilingual"): "translated copies repeat ids (WI-4.6, D5)",
-    ("switch_and_mathml", "bilingual"): "epub: prefix in a stored xpath cannot be evaluated (WI-4.2, WI-4.4)",
-    ("switch_and_mathml", "translated_only"): "epub: prefix in a stored xpath cannot be evaluated (WI-4.2, WI-4.4)",
+    ("epub2_with_ncx", "bilingual"): "data-lang is not allowed in XHTML 1.1 (EPUB 2)",
 }
 
 
@@ -48,6 +45,29 @@ def _translate_everything(settings: AppSettings) -> None:
             "error_message": None,
         }
     settings.state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def _head_of(data: bytes) -> list[str]:
+    """The <title> and every <link> of a document, as a comparable list."""
+    from lxml import etree
+
+    root = etree.fromstring(data)
+    head = root.find("{http://www.w3.org/1999/xhtml}head")
+    if head is None:
+        return []
+    return [
+        etree.tostring(child, method="c14n").decode()
+        for child in head
+        if isinstance(child.tag, str) and etree.QName(child).localname in ("title", "link")
+    ]
+
+
+def _assert_heads_kept(source: Path, output: Path) -> None:
+    """epubcheck does not flag a lost stylesheet link; this does."""
+    with zipfile.ZipFile(source) as src, zipfile.ZipFile(output) as out:
+        for name in src.namelist():
+            if name.endswith(".xhtml") and not name.endswith("nav.xhtml"):
+                assert _head_of(out.read(name)) == _head_of(src.read(name)), name
 
 
 def _error_counts(findings) -> collections.Counter:
@@ -76,5 +96,6 @@ def test_translated_output_adds_no_epubcheck_errors(name: str, mode: str, tmp_pa
     updated, _ = run_injection(settings, book, out, mode=mode)
 
     assert updated, "nothing was injected"
+    _assert_heads_kept(book, out)
     added = _error_counts(epubcheck.check(out)) - _error_counts(epubcheck.check(book))
     assert not added, {f.code: f.message for f in epubcheck.errors(epubcheck.check(out))}

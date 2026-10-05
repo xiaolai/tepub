@@ -10,6 +10,7 @@ from config import AppSettings
 from epub_io.path_utils import safe_relative_member
 from epub_io.reader import EpubReader
 from epub_io.resources import iter_spine_items
+from epub_io.xhtml import document_title
 from injection.engine import apply_translations
 
 from .assets import BookData, copy_static_assets, render_index
@@ -29,17 +30,11 @@ def _book_title(reader: EpubReader) -> str:
 
 
 def _document_title(tree) -> str:
-    candidates = tree.xpath("//h1")
-    if candidates:
-        text = candidates[0].text_content().strip()
-        if text:
-            return text
-    titles = tree.xpath("//title")
-    if titles:
-        text = titles[0].text_content().strip()
-        if text:
-            return text
-    return ""
+    # Works on the reader's XHTML trees and on lxml.html trees of cleaned
+    # content alike; //h1 found nothing in a namespaced tree.
+    if tree is None:
+        return ""
+    return document_title(tree)
 
 
 def _build_spine(reader: EpubReader, doc_titles: dict[Path, str]) -> list[dict]:

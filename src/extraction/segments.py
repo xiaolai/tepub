@@ -1,313 +1,225 @@
+"""Split a content document into translation units.
+
+One rule decides what a unit is (decision D1 in the improvement plan):
+
+- a table, list or figure is one unit, whole;
+- a block element with no block descendants is a unit;
+- a block element with text of its own beside block children ("mixed
+  content", such as <blockquote>Before<p>In</p>After</blockquote>) is one unit,
+  whole, so no text is left behind;
+- otherwise a block is a container and its children are examined.
+
+SVG, MathML, epub:switch alternatives, scripts, styles and code listings are
+never translated. The old rules extracted a paragraph inside a blockquote twice,
+and both levels of a nested blockquote with text, so text was translated and
+injected twice.
+
+Segmentation is a pure function of the document, so injection finds a unit
+again by running it on the same document and checking the unit's source text.
+"""
+
 from __future__ import annotations
 
 import hashlib
-from collections import defaultdict
 from collections.abc import Iterator
 from copy import deepcopy
-from itertools import count
 from pathlib import Path
 
-from lxml import html
+from lxml import etree
 
+from epub_io.xhtml import XHTML_NS, local_name, text_of
 from extraction.cleaners import normalize_punctuation
 from state.models import ExtractMode, Segment, SegmentMetadata
 
-SIMPLE_TAGS = {"p", "blockquote", "div", *{f"h{i}" for i in range(1, 7)}}
-ATOMIC_TAGS = {"ul", "ol", "dl", "table", "figure"}
+ATOMIC_TAGS = frozenset({"ul", "ol", "dl", "table", "figure"})
 
-# Tags that require smart extraction (skip structural wrappers)
-# For these tags, only extract if element has text at its own level
-# or is a leaf node (no same-tag descendants)
-SMART_EXTRACT_TAGS = {"blockquote", "div"}
+BLOCK_TAGS = frozenset(
+    {
+        "address", "article", "aside", "blockquote", "caption", "center", "dd", "details",
+        "div", "dl", "dt", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
+        "h5", "h6", "header", "hgroup", "hr", "li", "main", "nav", "ol", "p", "pre",
+        "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+    }
+)
 
-BLOCK_LEVEL_TAGS = {
-    "address",
-    "article",
-    "aside",
-    "blockquote",
-    "div",
-    "dl",
-    "figure",
-    "figcaption",
-    "footer",
-    "form",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "header",
-    "hr",
-    "li",
-    "main",
-    "nav",
-    "ol",
-    "p",
-    "pre",
-    "section",
-    "table",
-    "ul",
-}
+# Never translated, and never looked inside.
+SKIPPED_TAGS = frozenset({"svg", "math", "switch", "script", "style", "pre", "template"})
+
+# Inline wrappers dropped from the HTML sent for translation; their text stays.
+_UNWRAPPED_INLINE = ("span", "a", "font")
 
 
-def _normalize_tag(tag: str) -> str:
-    return tag.split("}")[-1].lower()
+def _is_block(element: etree._Element) -> bool:
+    return local_name(element) in BLOCK_TAGS
 
 
-def _has_atomic_ancestor(element: html.HtmlElement) -> bool:
-    parent = element.getparent()
-    while parent is not None:
-        if _normalize_tag(parent.tag) in ATOMIC_TAGS:
+def _has_block_descendant(element: etree._Element) -> bool:
+    return any(_is_block(d) for d in element.iterdescendants() if isinstance(d.tag, str))
+
+
+def _has_text(value: str | None) -> bool:
+    return bool(value and value.strip())
+
+
+def _has_own_content(element: etree._Element) -> bool:
+    """Text that belongs to ``element`` itself rather than to a block child."""
+    if _has_text(element.text):
+        return True
+    for child in element:
+        if _has_text(child.tail):
             return True
-        parent = parent.getparent()
-    return False
-
-
-def _div_is_text_only(element: html.HtmlElement) -> bool:
-    if _normalize_tag(element.tag) != "div":
-        return False
-    return not any(
-        _normalize_tag(child.tag) in BLOCK_LEVEL_TAGS
-        for child in element
-        if isinstance(child.tag, str)
-    )
-
-
-def _contains_descendant_with_tag(element: html.HtmlElement, tag: str) -> bool:
-    """Check if element contains any descendant with the specified tag.
-
-    Used to identify leaf nodes in nested same-tag structures.
-
-    Args:
-        element: Element to check
-        tag: Tag name to search for (normalized)
-
-    Returns:
-        True if any descendant has the specified tag
-    """
-    for descendant in element.iter():
-        if descendant is element:  # Skip self
-            continue
-        if isinstance(descendant.tag, str) and _normalize_tag(descendant.tag) == tag:
+        if (
+            isinstance(child.tag, str)
+            and not _is_block(child)
+            and local_name(child) not in SKIPPED_TAGS
+            and _has_text(text_of(child))
+        ):
             return True
     return False
 
 
-def _has_direct_text_content(element: html.HtmlElement, exclude_tag: str) -> bool:
-    """Check if element has text content at its own level.
-
-    Returns True if element would still have text after removing all
-    same-tag descendants. This identifies elements with meaningful content
-    vs. pure structural wrappers.
-
-    Example:
-        <blockquote>
-          Own text here             ← has direct text: True
-          <blockquote>Child</blockquote>
-        </blockquote>
-
-        <blockquote>
-          <blockquote>Only child</blockquote>
-        </blockquote>                ← has direct text: False
-
-    Args:
-        element: Element to check
-        exclude_tag: Tag to exclude when checking text (normalized)
-
-    Returns:
-        True if element has text outside same-tag descendants
-    """
-    # Clone to avoid modifying original
-    clone = deepcopy(element)
-
-    # Remove all same-tag descendants. lxml's remove() also drops the element's
-    # tail, which is text belonging to the *parent* — losing it made wrappers with
-    # meaningful text after a nested element look like pure structural wrappers.
-    for desc in list(clone.iter()):
-        if desc is clone:
+def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, ExtractMode]]:
+    """Yield (element, mode) for every unit below ``container``, in document order."""
+    for child in container:
+        if not isinstance(child.tag, str):
             continue
-        if isinstance(desc.tag, str) and _normalize_tag(desc.tag) == exclude_tag:
-            # Remove the descendant
-            parent = desc.getparent()
-            if parent is not None:
-                tail = desc.tail
-                if tail:
-                    previous = desc.getprevious()
-                    if previous is not None:
-                        previous.tail = (previous.tail or "") + tail
-                    else:
-                        parent.text = (parent.text or "") + tail
-                parent.remove(desc)
-
-    # Check if remaining element has any text
-    text = clone.text_content().strip()
-    return bool(text)
-
-
-def _extract_text(element: html.HtmlElement) -> str:
-    text = " ".join(element.text_content().split())
-    return normalize_punctuation(text)
-
-
-def _clean_html_copy(element: html.HtmlElement) -> html.HtmlElement:
-    clone = html.fromstring(html.tostring(element, encoding="unicode"))
-    # Remove all attributes (id, class, style, etc.) except src for images
-    for node in clone.iter():
-        if isinstance(node.tag, str):
-            tag = _normalize_tag(node.tag)
-            if tag in {"img", "image"}:
-                # Preserve src attribute for images
-                src = (
-                    node.get("src")
-                    or node.get("href")
-                    or node.get("{http://www.w3.org/1999/xlink}href")
-                )
-                node.attrib.clear()
-                if src:
-                    node.set("src", src)
+        name = local_name(child)
+        if name in SKIPPED_TAGS:
+            continue
+        if name in ATOMIC_TAGS:
+            yield child, ExtractMode.HTML
+        elif _has_block_descendant(child):
+            # A container, whatever its tag: converted books often wrap lists and
+            # paragraphs in a <span>, which is invalid HTML but common.
+            if _has_own_content(child):
+                yield child, ExtractMode.HTML
             else:
-                node.attrib.clear()
-    for bad_tag in list(clone.iter()):
-        if isinstance(bad_tag.tag, str) and bad_tag.tag.lower() in {"span", "a", "font"}:
-            bad_tag.drop_tag()
+                yield from iter_units(child)
+        elif _is_block(child):
+            yield child, ExtractMode.TEXT
+        # Inline content directly in a container that is walked is that
+        # container's own text; a container with any is a unit itself above.
+
+
+def body_of(root: etree._Element) -> etree._Element | None:
+    return root.find(f"{{{XHTML_NS}}}body")
+
+
+def _extract_text(element: etree._Element) -> str:
+    return normalize_punctuation(" ".join(text_of(element).split()))
+
+
+def _plain_copy(element: etree._Element) -> etree._Element:
+    """A copy with XHTML names un-namespaced and attributes dropped, except image sources."""
+    clone = deepcopy(element)
+    for node in clone.iter():
+        if not isinstance(node.tag, str):
+            continue
+        qname = etree.QName(node)
+        if qname.namespace == XHTML_NS:
+            node.tag = qname.localname
+        source = None
+        if qname.localname in ("img", "image"):
+            source = (
+                node.get("src") or node.get("href") or node.get("{http://www.w3.org/1999/xlink}href")
+            )
+        node.attrib.clear()
+        if source:
+            node.set("src", source)
+    etree.strip_tags(clone, *_UNWRAPPED_INLINE)
+    etree.cleanup_namespaces(clone)
     return clone
 
 
-def _extract_inner_html(element: html.HtmlElement) -> str:
-    clone = _clean_html_copy(element)
-    parts: list[str] = [clone.text or ""]
+def _extract_inner_html(element: etree._Element) -> str:
+    clone = _plain_copy(element)
+    parts = [clone.text or ""]
     for child in clone:
-        if isinstance(child.tag, str):
-            parts.append(html.tostring(child, encoding="unicode"))
-        else:
-            # Comments and processing instructions have a callable tag. Serializing
-            # them keeps their tail text; yielding the node itself used to reach
-            # "".join() as a non-string and raise TypeError, aborting extraction.
-            parts.append(html.tostring(child, encoding="unicode"))
+        parts.append(etree.tostring(child, encoding="unicode", with_tail=True))
     return "".join(parts).strip()
 
 
-def _build_segment_id(file_path: Path, xpath: str) -> str:
-    """Legacy segment id: file stem plus a hash of the xpath alone.
-
-    Deliberately unchanged. It can collide — two files with the same basename in
-    different directories produce the same id for the same xpath — but rewriting
-    the scheme outright would re-key every existing workspace and strand all
-    completed translations and synthesised audio. Collisions are instead resolved
-    after extraction by resolve_segment_id_collisions(), so the overwhelming
-    majority of segments keep the id they already have.
-    """
-    digest = hashlib.sha1(xpath.encode()).hexdigest()[:12]
-    return f"{file_path.stem}-{digest}"
+def unit_id(file_path: Path, order: int) -> str:
+    """Unique per book: the full EPUB path is hashed, so equal file names in
+    different folders no longer collide."""
+    digest = hashlib.sha1(file_path.as_posix().encode("utf-8")).hexdigest()[:8]
+    return f"{file_path.stem}-{digest}-{order}"
 
 
-def _disambiguated_segment_id(file_path: Path, xpath: str) -> str:
-    """Collision-safe id, derived from the full EPUB-relative path and the xpath."""
-    payload = f"{file_path.as_posix()}\0{xpath}"
-    digest = hashlib.sha1(payload.encode()).hexdigest()[:12]
-    return f"{file_path.stem}-v2-{digest}"
-
-
-def resolve_segment_id_collisions(segments: list[Segment]) -> tuple[list[Segment], list[str]]:
-    """Give every member of a colliding id group a unique, path-derived id.
-
-    Segments whose legacy id is already unique are returned untouched, so an
-    existing workspace still matches after re-extraction. Only the segments that
-    were genuinely ambiguous — and whose shared state record was therefore
-    already corrupt — are re-keyed.
-
-    Returns the segments and the list of legacy ids that had to be replaced.
-    """
-    by_id: dict[str, list[Segment]] = defaultdict(list)
-    for segment in segments:
-        by_id[segment.segment_id].append(segment)
-
-    colliding = {sid: group for sid, group in by_id.items() if len(group) > 1}
-    if not colliding:
-        return segments, []
-
-    for group in colliding.values():
-        for segment in group:
-            segment.segment_id = _disambiguated_segment_id(segment.file_path, segment.xpath)
-
-    # Two segments sharing both file path and xpath cannot be told apart at all;
-    # that is an extraction defect, not a naming collision.
-    final_ids = [segment.segment_id for segment in segments]
-    if len(set(final_ids)) != len(final_ids):
-        duplicates = {sid for sid in final_ids if final_ids.count(sid) > 1}
-        raise ValueError(
-            f"Segment ids still collide after disambiguation: {sorted(duplicates)}. "
-            f"Two segments share both file path and xpath."
-        )
-
-    return segments, sorted(colliding)
+def source_of(element: etree._Element, mode: ExtractMode) -> str:
+    return _extract_text(element) if mode == ExtractMode.TEXT else _extract_inner_html(element)
 
 
 def iter_segments(
-    tree: html.HtmlElement,
+    tree: etree._Element,
     file_path: Path,
     spine_index: int,
 ) -> Iterator[Segment]:
-    order_counter = count(1)
+    body = body_of(tree)
+    if body is None:
+        return
     root_tree = tree.getroottree()
-    for element in tree.iter():
-        if not isinstance(element.tag, str):
+    order = 0
+    for element, mode in iter_units(body):
+        content = source_of(element, mode)
+        if not content:
             continue
-        tag = _normalize_tag(element.tag)
-        if tag in ATOMIC_TAGS:
-            if _has_atomic_ancestor(element):
-                continue
-            extract_mode = ExtractMode.HTML
-        elif tag in SIMPLE_TAGS:
-            # A simple element inside an atomic one is already carried by that
-            # atomic element's HTML segment; extracting it again duplicates the
-            # content and produces overlapping injections.
-            if _has_atomic_ancestor(element):
-                continue
-            if tag == "div" and not _div_is_text_only(element):
-                continue
-
-            # Smart extraction for tags that commonly have nested structures
-            # Skip if element is just a structural wrapper (no own text, only descendants)
-            if tag in SMART_EXTRACT_TAGS:
-                has_same_tag_descendants = _contains_descendant_with_tag(element, tag)
-                if has_same_tag_descendants:
-                    # Has nested same-tag elements: only extract if this level has own text
-                    if not _has_direct_text_content(element, tag):
-                        continue  # Skip - pure structural wrapper
-
-            extract_mode = ExtractMode.TEXT
-        else:
-            continue
-
-        xpath = root_tree.getpath(element)
-        segment_id = _build_segment_id(file_path, xpath)
-
-        if extract_mode == ExtractMode.TEXT:
-            content = _extract_text(element)
-            if not content:
-                continue
-        else:
-            content = _extract_inner_html(element)
-            if not content:
-                continue
-
-        # Take the order number only once the element is known to yield a segment;
-        # advancing it earlier left gaps and could leave no segment at order 1.
-        order_idx = next(order_counter)
-
-        metadata = SegmentMetadata(
-            element_type=tag,
-            spine_index=spine_index,
-            order_in_file=order_idx,
-        )
-
+        order += 1
         yield Segment(
-            segment_id=segment_id,
+            segment_id=unit_id(file_path, order),
             file_path=file_path,
-            xpath=xpath,
-            extract_mode=extract_mode,
+            xpath=root_tree.getpath(element),  # for diagnosis only; never used to locate
+            extract_mode=mode,
             source_content=content,
-            metadata=metadata,
+            metadata=SegmentMetadata(
+                element_type=local_name(element), spine_index=spine_index, order_in_file=order
+            ),
         )
+
+
+def locate_units(
+    tree: etree._Element, file_path: Path
+) -> dict[int, tuple[etree._Element, ExtractMode, str]]:
+    """Map order_in_file to (element, mode, source text) for a parsed document.
+
+    Uses exactly the enumeration iter_segments used, so a stored segment's order
+    finds its element; callers compare the source text before trusting it.
+    """
+    body = body_of(tree)
+    if body is None:
+        return {}
+    found: dict[int, tuple[etree._Element, ExtractMode, str]] = {}
+    order = 0
+    for element, mode in iter_units(body):
+        content = source_of(element, mode)
+        if not content:
+            continue
+        order += 1
+        found[order] = (element, mode, content)
+    return found
+
+
+def loose_body_text(tree: etree._Element) -> int:
+    """Count runs of text that sit directly in <body>, outside any block.
+
+    There is no element to translate them in place, so they stay untranslated;
+    extraction reports them rather than dropping them silently. Rare: in a
+    19-book corpus it was mostly a dictionary's index of links.
+    """
+    body = body_of(tree)
+    if body is None:
+        return 0
+    runs = 1 if _has_text(body.text) else 0
+    for child in body:
+        if _has_text(child.tail):
+            runs += 1
+        if (
+            isinstance(child.tag, str)
+            and local_name(child) not in SKIPPED_TAGS
+            and local_name(child) not in ATOMIC_TAGS
+            and not _is_block(child)
+            and not _has_block_descendant(child)
+            and _has_text(text_of(child))
+        ):
+            runs += 1
+    return runs

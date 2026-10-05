@@ -3,10 +3,12 @@ from __future__ import annotations
 import html
 import logging
 import re
+from copy import deepcopy
 
-from lxml import etree
 from lxml import html as lxml_html
 
+from epub_io.xhtml import local_name, text_of
+from extraction.segments import locate_units
 from state.models import ExtractMode, Segment
 
 logger = logging.getLogger(__name__)
@@ -258,52 +260,63 @@ def _is_noteref(link) -> bool:
     # linked formula, ordinal or citation — content, not a note marker.
     return False
 
-def _reextract_filtered(segment: Segment, reader) -> str:
-    """Re-extract element from EPUB with footnote filtering.
+def _locate(segment: Segment, reader):
+    """The segment's element in the book, or None when it cannot be trusted.
 
-    Args:
-        segment: Segment to re-extract
-        reader: EpubReader instance
-
-    Returns:
-        Filtered text content without footnote references
+    Units are found by the same enumeration that produced them, and only if the
+    source text still matches; stored xpaths are not used. Located units are
+    cached per document on the reader, because narration looks one up for every
+    segment it holds.
     """
-    # Load the document
-    doc = reader.read_document_by_path(segment.file_path)
+    document = reader.read_document_by_path(segment.file_path)
+    if document.tree is None:
+        return None
+    cache = reader.unit_cache
+    units = cache.get(segment.file_path)
+    if units is None:
+        units = cache[segment.file_path] = locate_units(document.tree, segment.file_path)
+    entry = units.get(segment.metadata.order_in_file)
+    if entry is None or entry[2] != segment.source_content:
+        logger.warning(
+            "Segment %s no longer matches %s; narrating its stored text",
+            segment.segment_id,
+            segment.file_path,
+        )
+        return None
+    return entry[0]
 
-    # Find element by xpath
-    elements = doc.tree.xpath(segment.xpath)
-    if not elements:
-        raise ValueError(f"Element not found at xpath: {segment.xpath}")
 
-    element = elements[0]
+def _reextract_filtered(segment: Segment, reader) -> str | None:
+    """The segment's text with note references removed, or None if not located."""
+    element = _locate(segment, reader)
+    if element is None:
+        return None
+    clone = deepcopy(element)
 
-    # Clone to avoid modifying original
-    clone = lxml_html.fromstring(lxml_html.tostring(element, encoding="unicode"))
-
-    # Remove footnote references (a tags with sup/sub children).
-    # A superscript link is not automatically a footnote — linked formulas,
-    # ordinals and citations use the same markup — so require an actual
-    # note-reference signal before deleting content.
-    # Preserve tail text before removing the element
-    for link in clone.xpath('.//a[sup or sub]'):
+    # Remove note references (a links wrapping sup or sub). A superscript link
+    # is not automatically a note: linked formulas, ordinals and citations use
+    # the same markup, so an actual note-reference signal is required. The text
+    # after a removed link stays.
+    links = [
+        node
+        for node in clone.iter()
+        if local_name(node) == "a" and any(local_name(c) in ("sup", "sub") for c in node)
+    ]
+    for link in links:
         if not _is_noteref(link):
             continue
         parent = link.getparent()
-        if parent is not None:
-            # Preserve the tail text (text after the link element)
-            if link.tail:
-                # Find the previous sibling or use parent.text
-                prev = link.getprevious()
-                if prev is not None:
-                    prev.tail = (prev.tail or "") + link.tail
-                else:
-                    parent.text = (parent.text or "") + link.tail
-            parent.remove(link)
+        if parent is None:
+            continue
+        if link.tail:
+            previous = link.getprevious()
+            if previous is not None:
+                previous.tail = (previous.tail or "") + link.tail
+            else:
+                parent.text = (parent.text or "") + link.tail
+        parent.remove(link)
 
-    # Extract text
-    text = " ".join(clone.text_content().split())
-    return text
+    return " ".join(text_of(clone).split())
 
 
 FOOTNOTE_DEF_HINTS = ("footnote", "endnote", "rearnote", "ftn", "fn", "note")
@@ -336,23 +349,9 @@ def _element_is_footnote_definition(segment: Segment, reader) -> bool:
     EPUB 3 marks definitions with ``epub:type="footnote"`` / ``"endnote"`` or ARIA
     ``role="doc-footnote"``; older books rely on id/class naming.
     """
-    doc = reader.read_document_by_path(segment.file_path)
-    try:
-        elements = doc.tree.xpath(segment.xpath)
-    except etree.XPathEvalError as exc:
-        # Namespaced elements such as epub:switch give paths the HTML parser
-        # cannot evaluate. The segment is narrated from its stored text.
-        logger.warning(
-            "Cannot locate %s in %s (%s); footnote filtering skipped for it",
-            segment.xpath,
-            segment.file_path,
-            exc,
-        )
+    node = _locate(segment, reader)
+    if node is None:
         return False
-    if not elements:
-        return False
-
-    node = elements[0]
     while node is not None:
         get = getattr(node, "get", None)
         if get is None:
@@ -393,17 +392,9 @@ def segment_to_text(segment: Segment, reader=None) -> str | None:
 
     # If reader provided, re-extract with footnote filtering
     if reader is not None:
-        try:
-            content = _reextract_filtered(segment, reader)
-        except (etree.XPathEvalError, ValueError) as exc:
-            # The element cannot be located again; narrate the stored text, which
-            # may still carry note markers, and say so.
-            logger.warning(
-                "Re-extraction failed for %s in %s (%s); using stored text",
-                segment.xpath,
-                segment.file_path,
-                exc,
-            )
+        content = _reextract_filtered(segment, reader)
+        if content is None:
+            # Not located again (see _locate); narrate the stored text.
             if segment.extract_mode == ExtractMode.HTML:
                 content = _html_to_text(segment.source_content, segment.metadata.element_type)
             else:

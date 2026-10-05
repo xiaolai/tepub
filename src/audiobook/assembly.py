@@ -27,6 +27,7 @@ from console_singleton import get_console
 from epub_io.reader import EpubReader
 from epub_io.resources import get_item_by_href
 from epub_io.toc_utils import parse_toc_to_dict
+from epub_io.xhtml import document_title
 from state.models import Segment
 from state.store import load_segments
 
@@ -123,15 +124,7 @@ def _document_titles(reader: EpubReader) -> dict[str, str]:
         tree = document.tree
         if tree is None:
             continue
-        candidates = tree.xpath("//h1")
-        title = ""
-        if candidates:
-            title = (candidates[0].text_content() or "").strip()
-        if not title:
-            title_nodes = tree.xpath("//title")
-            if title_nodes:
-                title = (title_nodes[0].text_content() or "").strip()
-        titles[document.path.as_posix()] = title or document.path.stem
+        titles[document.path.as_posix()] = document_title(tree) or document.path.stem
     return titles
 
 

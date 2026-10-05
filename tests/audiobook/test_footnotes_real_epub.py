@@ -14,6 +14,7 @@ import pytest
 from audiobook.preprocess import segment_to_text
 from config import AppSettings
 from epub_io.reader import EpubReader
+from epub_io.xhtml import local_name
 from extraction.segments import iter_segments
 from tests.epub_builder import build_epub
 
@@ -87,4 +88,4 @@ def test_files_named_like_notes_are_spoken(book) -> None:
 def test_reader_finds_a_document_by_path(book) -> None:
     reader, _ = book
     document = reader.read_document_by_path(Path("ch1.xhtml"))
-    assert document.tree.xpath("//aside")
+    assert any(local_name(e) == "aside" for e in document.tree.iter())

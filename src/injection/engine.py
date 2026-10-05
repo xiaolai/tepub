@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from copy import deepcopy
 from pathlib import Path, PurePosixPath
-
-from lxml import etree, html
 
 from config import AppSettings
 from console_singleton import get_console
 from epub_io.reader import EpubReader
 from epub_io.writer import write_updated_epub
+from epub_io.xhtml import local_name, serialize_xhtml, text_of
+from extraction.segments import locate_units
 from logging_utils.logger import get_logger
 from state.models import ExtractMode, Segment, SegmentStatus
 from state.store import load_segments, load_state, save_state
@@ -46,68 +45,48 @@ def _group_translated_segments(settings: AppSettings) -> dict[Path, list[tuple[S
 HEADING_TAGS = {"h1", "h2", "h3", "h4"}
 
 
-def _restore_document_structure(document, raw_html: bytes) -> None:
-    try:
-        original_root = html.fromstring(raw_html)
-    except Exception:  # pragma: no cover - malformed markup fallback
-        return
-
-    new_root = document.tree
-
-    original_head = original_root.find("head")
-    new_head = new_root.find("head")
-    if original_head is not None and new_head is not None:
-        new_head.attrib.clear()
-        new_head.attrib.update(original_head.attrib)
-        new_head[:] = [deepcopy(child) for child in original_head]
-
-    original_body = original_root.find("body")
-    new_body = new_root.find("body")
-    if original_body is not None and new_body is not None:
-        new_body.attrib.clear()
-        new_body.attrib.update(original_body.attrib)
-
-
 def _apply_translations_to_document(
     document,
     segments: list[tuple[Segment, str]],
     mode: str,
     title_updates: defaultdict[PurePosixPath, dict[str | None, str]],
 ) -> tuple[bool, list[str]]:
-    updated = False
+    """Inject translations, finding each unit by its place in the document.
+
+    Every unit is located before anything changes, by running the same
+    segmentation that produced the segments, and is trusted only if its source
+    text still matches. Positional xpaths were stored instead, and broke on any
+    parser change, on prefixed names such as epub:switch, and on edits.
+    """
+    units = locate_units(document.tree, document.path)
+    located = []
     failed_ids: list[str] = []
-    tree = document.tree
-    root_tree = tree.getroottree()
-    for segment, translation in sorted(
-        segments,
-        key=lambda item: item[0].metadata.order_in_file,
-        reverse=True,
-    ):
-        nodes = root_tree.xpath(segment.xpath)
-        if not nodes:
-            logger.warning("XPath not found for segment %s", segment.segment_id)
+    for segment, translation in segments:
+        entry = units.get(segment.metadata.order_in_file)
+        if entry is None or entry[2] != segment.source_content:
+            logger.warning(
+                "Segment %s no longer matches %s; it was not injected. Re-run extraction "
+                "if the book changed.",
+                segment.segment_id,
+                document.path,
+            )
             failed_ids.append(segment.segment_id)
             continue
-        original = nodes[0]
+        located.append((entry[0], segment, translation))
+
+    for original, segment, translation in located:
         if mode == "translated_only":
             _replace_with_translation(original, segment, translation)
             _record_heading_title(segment.file_path, original, title_updates)
         else:
             prepare_original(original)
-            translation_element = build_translation_element(original, segment, translation)
-            try:
-                insert_translation_after(original, translation_element)
-            except ValueError as exc:
-                logger.warning("Failed to insert translation for %s: %s", segment.segment_id, exc)
-                failed_ids.append(segment.segment_id)
-                continue
-        updated = True
-    return updated, failed_ids
+            insert_translation_after(
+                original, build_translation_element(original, segment, translation)
+            )
+    return bool(located), failed_ids
 
 
-def _replace_with_translation(
-    original: html.HtmlElement, segment: Segment, translation: str
-) -> None:
+def _replace_with_translation(original, segment: Segment, translation: str) -> None:
     original.attrib.pop("data-lang", None)
     if segment.extract_mode == ExtractMode.TEXT:
         _set_text_only(original, translation)
@@ -117,13 +96,12 @@ def _replace_with_translation(
 
 def _record_heading_title(
     file_path: Path,
-    element: html.HtmlElement,
+    element,
     title_updates: defaultdict[PurePosixPath, dict[str | None, str]],
 ) -> None:
-    tag = (element.tag or "").lower()
-    if tag not in HEADING_TAGS:
+    if local_name(element) not in HEADING_TAGS:
         return
-    text = element.text_content().strip()
+    text = " ".join(text_of(element).split())
     if not text:
         return
     key = PurePosixPath(file_path.as_posix())
@@ -177,24 +155,18 @@ def apply_translations(
             logger.warning("Document %s missing from EPUB", file_path)
             missing_documents.append(file_path)
             continue
+        if document.xhtml is None:
+            # Not well-formed XML: copied into the output untranslated (D3).
+            missing_documents.append(file_path)
+            continue
         updated, failures = _apply_translations_to_document(
             document, segments, effective_mode, title_updates
         )
         failed_segments.extend(failures)
         if updated:
-            # Restore head/body structure for *this* document before serialising.
-            # This ran once after the loop using the final loop variable, so it
-            # applied to a single document — and to a tree that had already been
-            # serialised, making it a no-op for the output. It also raised
-            # NameError when every document was missing and the loop never ran.
-            _restore_document_structure(document, document.raw_html)
-            # XML serialisation: the writer copies these bytes into the book as
-            # they are, and HTML serialisation leaves void elements unclosed,
-            # which is not well-formed XHTML.
-            html_bytes = etree.tostring(
-                document.tree.getroottree(), encoding="utf-8", method="xml", xml_declaration=True
-            )
-            updated_html[file_path] = html_bytes
+            # Written back with its own XML declaration and DOCTYPE; the head was
+            # never touched, so its title and stylesheet links are kept.
+            updated_html[file_path] = serialize_xhtml(document.xhtml)
 
     if missing_documents:
         console.print(

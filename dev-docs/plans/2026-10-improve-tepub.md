@@ -270,21 +270,21 @@ the package identifier they depend on is never edited.
 **Done when:** the WI-4.0 round-trip test passes, and epubcheck on every committed fixture's bilingual and translated outputs reports no errors that the input did not already have.
 
 ### WI-4.2 Parse content documents as XML (E4, E5, E6)
-**Status:** open
+**Status:** DONE 2026-10-05. `src/epub_io/xhtml.py`; the reader now takes each document's bytes from the zip and parses them as XML. Measured: all 10,589 content documents in the 19-book corpus are well-formed XML, so D3 was revised: a document that is not is left untranslated, copied unchanged and named in a warning, rather than repaired by an HTML5 parser (`html5-parser` needs compiling against system libraries; `html5lib` drops `xml:lang` and mangles prefixed names). Found on the way: ebooklib's `get_content()` returns a rebuilt document with an empty `<head>`, so every translated chapter had lost its title and stylesheet links; the translating gate now asserts every `<title>` and `<link>` survives.
 **Depends:** WI-4.1
 **Files:** `src/epub_io/reader.py`, `src/epub_io/xhtml.py` (new)
 **Do:** parse with the XML parser, preserving declaration and doctype, resolving HTML named entities first. If XML parsing fails, fall back to the HTML parser, log the file name as a warning, and still serialize as well-formed XHTML.
 **Test first:** probes P7 and P8 from the research appendix, rewritten as assertions: `viewBox` survives, `epub:switch` content is extracted and injected without error, output parses as XML.
 
 ### WI-4.3 One segmentation rule (E7, E8, F04)
-**Status:** open
+**Status:** DONE 2026-10-05, rule D1. Verified: `tests/extraction/test_unit_coverage.py`, run over the corpus too: every text node in all 10,583 body documents is in exactly one unit, deliberately skipped, or reported. Not as planned: any element with block descendants is a container whatever its tag, because Calibre output nests lists inside `<span>`; text placed directly in `<body>` (mostly one dictionary's index) has no element to translate and is reported per document at extraction. Two old tests that expected a paragraph inside a blockquote to be extracted twice were changed to expect it once.
 **Depends:** WI-4.2
 **Files:** `src/extraction/segments.py`
 **Do:** a block element is a unit if it has no block descendants; `table`, `ul`, `ol`, `dl` and `figure` are units as a whole and nothing inside them is. Delete the smart-extraction special cases this replaces.
 **Test first:** P1 and P6 as assertions; a property test that no two units overlap and every text node in a body block belongs to exactly one unit.
 
 ### WI-4.4 Stable unit ids and a workspace importer (E12, E13, F21)
-**Status:** open
+**Status:** DONE 2026-10-05, rule D2. Unit ids hash the full EPUB path plus document order. Not as planned: no `data-tepub-id` attributes; injection and narration re-run the same segmentation on the same document and trust a unit only if its source text still matches, which also catches a changed book. Importer `src/extraction/migrate.py` maps by file and whitespace-free text, ties by order, for translation and audio state, after backing both up. Verified: `tests/extraction/test_migrate.py` (the review's A, A, B case), and a real 0.3.3 workspace of a 1,623-segment book: all 1,623 finished translations carried to units with the same text.
 **Depends:** WI-4.3
 **Files:** `src/extraction/segments.py`, `src/injection/engine.py`, `src/state/migrate.py` (new)
 **Do:** each unit gets an id derived from the full EPUB-relative path plus its order, written into the working copy of the document as a `data-tepub-id` attribute, never into the output. Injection finds units by id, so reverse-order insertion is no longer needed. The importer maps a legacy workspace by file path plus `order_in_file`, copies completed translations, refuses to run twice, and reports anything it could not map.
