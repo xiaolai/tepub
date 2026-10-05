@@ -31,3 +31,19 @@ def test_unknown_language_falls_back_to_english():
 
 def test_empty_text_returns_empty_list():
     assert split_sentences("", language="en") == []
+
+
+def test_cjk_split_keeps_decimals_and_abbreviations_whole():
+    """An ASCII full stop inside CJK text is not a sentence end unless a space follows.
+
+    Splitting on every "." turned 3.5 into "3." + "5..." and U.S.A. into three
+    one-letter sentences, each spoken with a pause.
+    """
+    text = "版本3.5发布了。价格是3.5元；U.S.A.很大。Done. 最后一句！"
+    assert split_sentences(text, language="zh") == [
+        "版本3.5发布了。",
+        "价格是3.5元；",
+        "U.S.A.很大。",
+        "Done.",
+        "最后一句！",
+    ]

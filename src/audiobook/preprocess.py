@@ -420,7 +420,10 @@ PUNKT_LANGUAGES = {
 }
 
 # Punkt has no model for CJK, which does not separate sentences with whitespace.
-CJK_SENTENCE_RE = re.compile(r"(?<=[。？！…；.!?])\s*")
+# Full-width terminators, and ASCII ! and ?, always end a sentence. An ASCII full
+# stop ends one only before whitespace or the end of the text: splitting on every
+# "." broke 3.5 and U.S.A. into fragments, each spoken after a pause.
+CJK_SENTENCE_RE = re.compile(r"(?<=[。？！…；!?])\s*|(?<=\.)(?:\s+|$)")
 
 
 def _split_cjk(text: str) -> list[str]:
