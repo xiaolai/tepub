@@ -76,3 +76,15 @@ def test_a_word_found_mostly_inside_a_longer_name_is_left_out() -> None:
     text = "Voice of Democracy said. Voice of Democracy wrote. Voice of Democracy again. Democracy."
     found = dict(candidates([], text, known=set(), min_count=2))
     assert "Voice of Democracy" in found and "Democracy" not in found
+
+
+def test_nationality_words_and_section_headings_are_left_out() -> None:
+    from glossary.candidates import _nationality_words
+
+    names = ["China", "Chinese", "Cambodia", "Cambodian", "Thailand", "Thai", "Philippines",
+             "Philippine", "Taiwan", "Taiwanese", "Japan", "Jordan", "Duterte", "Russian"]
+    assert _nationality_words(names) == {
+        "Chinese", "Cambodian", "Thai", "Philippine", "Taiwanese",
+    }
+    text = "Chapter One. In Chapter Two, the Chapter Three. Introduction here, Introduction there."
+    assert dict(candidates([], text, known=set(), min_count=2)) == {}

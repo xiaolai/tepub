@@ -87,7 +87,9 @@ def render_proposals(proposals: list[Proposal], target_language: str) -> str:
         "# Proposed by `tepub glossary build`. Review every entry: correct or fill in",
         "# each target, delete the terms you do not want held to one rendering, then",
         "# save the file as glossary.yaml. An entry without a target is not used.",
-        "# A target equal to the source keeps the term untranslated.",
+        "# A target equal to the source keeps the term untranslated. Delete terms whose",
+        "# rendering rightly depends on the sentence; renderings come from a model and",
+        "# can be wrong, names of people especially.",
         f"target_language: {_quoted(target_language)}",
         "terms:",
     ]

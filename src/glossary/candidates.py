@@ -28,8 +28,36 @@ _TRAILING = re.compile(r"(?:['’]s?|-)+$")
 # Capitalised everywhere in English, yet never glossary terms.
 _NEVER_TERMS = frozenset(
     "January February March April May June July August September October November "
-    "December Monday Tuesday Wednesday Thursday Friday Saturday Sunday I Mr Mrs Ms Dr".split()
+    "December Monday Tuesday Wednesday Thursday Friday Saturday Sunday I Mr Mrs Ms Dr "
+    "Chapter Part Introduction Conclusion Preface Foreword Epilogue Prologue Notes Index "
+    "Acknowledgements Acknowledgments Contents Figure Table Appendix".split()
 )
+_DEMONYM_ENDINGS = ("ese", "ian", "ish", "an", "i", "e")
+
+
+def _nationality_words(names: list[str]) -> set[str]:
+    """Words naming a nationality or language, derived from a place in the list.
+
+    Their rendering depends on the sentence (Chinese: 中国, 中文, 华人), so
+    holding them to one would be wrong. Cambodian derives from Cambodia, Thai
+    from Thailand, Philippine from Philippines, Chinese from China.
+    """
+    singles = [name for name in names if " " not in name]
+    derived = set()
+    for word in singles:
+        if not word.endswith(_DEMONYM_ENDINGS):
+            continue
+        for place in singles:
+            if place == word:
+                continue
+            if (
+                word.startswith(place)
+                or (place.startswith(word) and place[len(word):] in ("land", "s", "es"))
+                or (word[:4] == place[:4] and word.endswith(("ese", "ian", "ish")))
+            ):
+                derived.add(word)
+                break
+    return derived
 _QUALIFIER = re.compile(r"\s*\([^)]*\)")
 _INVERTED_NAME = re.compile(r"^([A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+)?), ([A-Z][\w'’.-]+(?: [A-Z][\w'’.]+)*)$")
 _NAME = re.compile(r"\b[A-Z][a-zA-Z'’-]+(?:\s+(?:of\s+|de\s+|van\s+|von\s+|al-)?[A-Z][a-zA-Z'’-]+)*")
@@ -149,5 +177,7 @@ def candidates(
         if " " not in source and len(pattern.findall(outside_phrases)) < count / 2:
             continue
         counted.append((source, count))
+    nationality = _nationality_words([source for source, _ in counted])
+    counted = [item for item in counted if item[0] not in nationality]
     counted.sort(key=lambda item: (-item[1], item[0].casefold()))
     return counted[:limit]
