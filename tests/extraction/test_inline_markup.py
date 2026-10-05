@@ -101,3 +101,22 @@ def test_a_bare_link_element_is_presentational() -> None:
 def test_a_paragraph_whose_only_markup_is_a_bare_link_is_text() -> None:
     (unit,) = _units('<p>Plain words<a class="x"/> only.</p>')
     assert unit.extract_mode == ExtractMode.TEXT
+
+
+def test_leading_text_of_an_html_unit_is_escaped() -> None:
+    """The text before a unit's first child was copied unescaped: a code sample
+    showing "<html" made a source starting "<html<br/>", which crashed the
+    fragment parser, and "AT&T" made output that no longer parsed."""
+    from lxml import etree
+
+    from epub_io.xhtml import XHTML_NS, parse_fragment
+    from extraction.segments import ExtractMode, source_of
+
+    element = etree.fromstring(
+        f'<p xmlns="{XHTML_NS}">&lt;html&gt; and AT&amp;T<br/>&lt;/html&gt; <a href="#x">link</a></p>'
+    )
+    source = source_of(element, ExtractMode.HTML)
+    assert source.startswith("&lt;html&gt; and AT&amp;T<br/>")
+    etree.fromstring(f'<w xmlns="{XHTML_NS}">{source}</w>'.encode())  # well-formed
+    text, children = parse_fragment(source)
+    assert text == "<html> and AT&T"

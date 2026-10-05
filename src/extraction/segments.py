@@ -20,6 +20,8 @@ again by running it on the same document and checking the unit's source text.
 
 from __future__ import annotations
 
+import html
+
 import hashlib
 from collections.abc import Iterator
 from copy import deepcopy
@@ -222,7 +224,10 @@ _EPUB_DECLARATION = ' xmlns:epub="http://www.idpf.org/2007/ops"'
 
 def _extract_inner_html(element: etree._Element) -> str:
     clone = _plain_copy(element)
-    parts = [clone.text or ""]
+    # The leading text is escaped like the rest: copied raw, a code sample
+    # showing "<html" made a source starting "<html<br/>", which crashed the
+    # fragment parser, and an "&" made output that no longer parsed.
+    parts = [html.escape(clone.text or "", quote=False)]
     for child in clone:
         parts.append(etree.tostring(child, encoding="unicode", with_tail=True))
     # Each serialised child repeats the epub: declaration it needs; the parser
