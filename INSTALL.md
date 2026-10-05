@@ -12,6 +12,9 @@ Before installing TEPUB, make sure you have:
 
 - **A computer** with at least 2 GB of free memory (4 GB is better)
 - **About 500 MB of free disk space** for the software
+- **For translating on your own computer (the default)**: about 9 GB more disk
+  space for the translation model, and 16 GB of memory or a graphics card with
+  10 GB or more
 - **An internet connection** to download files
 - **20-30 minutes** of your time
 
@@ -323,31 +326,36 @@ You should see lots of green text and "passed" messages. If you see errors, some
 
 ## Set Up Your Translation Service
 
-To translate books, you need an account with a translation service. Here's how:
+TEPUB translates on your own computer by default: free, private, and with no
+account or API key. It uses Ollama, a program that runs AI models locally, with
+TranslateGemma 12B, a translation model of 8.1 GB.
 
-### Choose a Service
+### The Default: Ollama (Free, Local)
 
-**For beginners, we recommend OpenAI:**
+1. Download and install Ollama from [ollama.com](https://ollama.com/)
+2. Start it (open the Ollama app, or run `ollama serve`)
+3. Download the translation model:
+```bash
+ollama pull translategemma:12b
+```
 
-1. Go to [platform.openai.com](https://platform.openai.com/)
-2. Create an account
-3. Add $5-10 to your account (this translates many books)
-4. Go to API Keys section
-5. Click "Create new secret key"
-6. Copy the key (starts with `sk-`)
+That's all. Before translating, TEPUB checks that Ollama is running and has the
+model, and tells you what to do if not.
 
-**OpenAI provides:**
-- Translation via ChatGPT (~$0.50-$2.00 per book)
-- Premium audiobook voices (~$11-22 per 300-page book)
+### Or: A Cloud Service (Costs Money)
 
-**Other options:**
-- [Anthropic Claude](https://console.anthropic.com/) – Great for literature translation
-- [Ollama](https://ollama.com/) – Free local translation (no internet needed)
-- **Edge TTS** – Free audiobooks with 57+ voices (no API key needed, installed by default)
+Cloud services such as OpenAI can be faster on a modest computer. To use one,
+tell TEPUB which service in `~/.tepub/config.yaml`:
 
-### Tell TEPUB About Your Key
+```yaml
+primary_provider:
+  name: openai
+  model: gpt-4o
+```
 
-Create a file named `.env` in the tepub folder:
+Then get a key (OpenAI: [platform.openai.com](https://platform.openai.com/),
+API Keys, "Create new secret key"; it starts with `sk-`) and create a file named
+`.env` in the tepub folder:
 
 **Mac/Linux:**
 ```bash
@@ -361,7 +369,12 @@ Create a file called `.env` in the `tepub` folder using Notepad and add this lin
 OPENAI_API_KEY=sk-your-actual-key-here
 ```
 
-Replace `sk-your-actual-key-here` with your real API key.
+Replace `sk-your-actual-key-here` with your real API key. Other services:
+[Anthropic Claude](https://console.anthropic.com/) (`name: anthropic`,
+`ANTHROPIC_API_KEY`), Google Gemini, xAI Grok and DeepL.
+
+**Audiobooks** use Edge TTS by default: 57+ voices, free, no key needed.
+OpenAI's premium voices (~$11-22 per 300-page book) need an OpenAI key.
 
 ### Try Translating a Book
 
@@ -457,6 +470,15 @@ chmod +x install.sh
 ```
 
 **Don't use `sudo`** – this can cause problems.
+
+### "Cannot reach Ollama" or "does not have the model" Error
+
+**Problem:** Ollama, the default translator, is not running, or the model is not
+installed.
+
+**Solution:** Open the Ollama app (or run `ollama serve`), then run
+`ollama pull translategemma:12b`. To use a cloud service instead, see
+[Set Up Your Translation Service](#set-up-your-translation-service).
 
 ### "API key not working" Error
 

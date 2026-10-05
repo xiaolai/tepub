@@ -443,8 +443,9 @@ translation_workers: 3             # Number of parallel translation workers
 
 # Primary translation provider
 primary_provider:
-  name: openai                     # openai, anthropic, gemini, grok, deepl, ollama
-  model: gpt-4o                    # Model name for the provider
+  name: ollama                     # ollama (local, free), openai, anthropic, gemini, grok, deepl
+  model: translategemma:12b        # Install with: ollama pull translategemma:12b
+  # base_url: http://localhost:11434   # Ollama on another machine: its address
 
 # ============================================================
 # Audiobook Settings

@@ -71,7 +71,9 @@ class AppSettings(BaseModel):
     target_language: str = Field(default="Simplified Chinese")
 
     primary_provider: ProviderConfig = Field(
-        default_factory=lambda: ProviderConfig(name="openai", model="gpt-4o")
+        # Local by default: a book is translated on the user's own machine, at no
+        # cost per word, with nothing sent to a third party.
+        default_factory=lambda: ProviderConfig(name="ollama", model="translategemma:12b")
     )
 
     skip_rules: list[SkipRule] = Field(

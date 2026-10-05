@@ -14,7 +14,7 @@ TEPUB is a comprehensive toolkit for processing EPUB files. Translate books into
 
 ### 📖 **Translation**
 - **Multi-language support**: Translate to/from any language
-- **AI-powered**: OpenAI GPT-4, Anthropic Claude, Google Gemini, xAI Grok, DeepL, or Ollama
+- **Local by default**: translates on your own computer with Ollama and TranslateGemma; OpenAI, Anthropic Claude, Google Gemini, xAI Grok and DeepL are supported too
 - **Dual output modes**:
   - **Bilingual**: Original and translation side-by-side (perfect for learning)
   - **Translation-only**: Professional translated edition
@@ -61,14 +61,35 @@ See [INSTALL.md](INSTALL.md) for detailed platform-specific instructions.
 
 ### Translation Setup
 
-**1. Get an API key** from your preferred provider:
-- [OpenAI](https://platform.openai.com/) (Recommended: GPT-4, ~$0.50-2.00/book)
-- [Anthropic](https://console.anthropic.com/) (Claude, great for literature)
-- [Ollama](https://ollama.com/) (Free, runs locally)
+By default TEPUB translates on your own computer: free, private, and with no
+API key. It uses [Ollama](https://ollama.com/) with TranslateGemma 12B, a
+translation model of 8.1 GB:
 
-**2. Configure TEPUB:**
 ```bash
-# Create .env file with your API key
+# Install Ollama from https://ollama.com, then:
+ollama pull translategemma:12b
+```
+
+TEPUB checks before translating that Ollama answers and has the model, and
+says how to fix it if not. If Ollama runs on another machine, point TEPUB at
+it in `~/.tepub/config.yaml`:
+
+```yaml
+primary_provider:
+  name: ollama
+  model: translategemma:12b
+  base_url: http://other-machine:11434
+```
+
+**To use a cloud service instead**, set `primary_provider` and its API key:
+
+```yaml
+primary_provider:
+  name: openai        # or anthropic, gemini, grok, deepl
+  model: gpt-4o
+```
+
+```bash
 echo 'OPENAI_API_KEY=sk-your-key-here' > .env
 ```
 
@@ -112,10 +133,17 @@ tepub pipeline book.epub --to Spanish --epub
 tepub pipeline book.epub --to French --epub
 ```
 
-**Choose translation provider:**
-```bash
-tepub translate book.epub --to Spanish --provider anthropic
-tepub translate book.epub --to Spanish --provider ollama
+**Choose translation provider:** set `primary_provider` in `~/.tepub/config.yaml`
+(all books) or in the book's `config.yaml` (one book); see [Configuration](#configuration).
+
+**Reasoning models on Ollama:** models that think before answering, such as
+Qwen 3, can take minutes per paragraph. `think: false` turns that off:
+
+```yaml
+primary_provider:
+  name: ollama
+  model: qwen3.5:9b
+  think: false
 ```
 
 **Translation-only output (smaller file):**
@@ -209,8 +237,8 @@ target_language: Simplified Chinese
 translation_workers: 3
 
 primary_provider:
-  name: openai
-  model: gpt-4o
+  name: ollama                  # the default; or openai, anthropic, gemini, grok, deepl
+  model: translategemma:12b
 
 # Audiobook
 audiobook_tts_provider: edge    # or: openai
@@ -344,9 +372,9 @@ tepub debug show-skip-list          # What was skipped
 ## Cost Estimates
 
 ### Translation (300-page book)
+- **Ollama (local, the default)**: Free; speed depends on your hardware
 - **OpenAI GPT-4o**: ~$0.50-2.00
 - **Anthropic Claude**: ~$0.30-1.50
-- **Ollama (local)**: Free (requires powerful computer)
 
 ### Audiobook (300-page book, ~750,000 characters)
 - **Edge TTS**: Free
@@ -354,13 +382,18 @@ tepub debug show-skip-list          # What was skipped
 - **OpenAI tts-1-hd**: ~$22.50
 
 ### Recommendations
+- **Free and private (the default)**: Ollama + Edge TTS
 - **Best Quality**: OpenAI GPT-4 + OpenAI TTS-1-HD (~$25 total)
-- **Best Value**: OpenAI GPT-4 + Edge TTS (~$1.50 total)
-- **Free**: Ollama + Edge TTS (requires local GPU)
+- **Best Value with a cloud service**: OpenAI GPT-4 + Edge TTS (~$1.50 total)
 
 ---
 
 ## Troubleshooting
+
+### "Cannot reach Ollama" or "does not have the model"
+Ollama is the default translation provider. Start it (`ollama serve`, or open
+the Ollama app) and install the model with `ollama pull translategemma:12b`, or
+set `primary_provider` to another service in `~/.tepub/config.yaml`.
 
 ### "API key not found"
 ```bash

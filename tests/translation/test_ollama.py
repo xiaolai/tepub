@@ -1,4 +1,4 @@
-"""Ollama: the preflight check and the think option."""
+"""Ollama, the default provider: the preflight check and the think option."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 import requests
 
 from cli.errors import handle_provider_errors
-from config import ProviderConfig
+from config import AppSettings, ProviderConfig
 from translation.providers import ProviderFatalError, create_provider
 from translation.providers import ollama as ollama_module
 
@@ -24,6 +24,12 @@ def _tags(monkeypatch, *names: str) -> None:
     monkeypatch.setattr(
         ollama_module.requests, "get", lambda url, timeout: SimpleNamespace(json=lambda: body)
     )
+
+
+def test_the_default_provider_is_local() -> None:
+    provider = AppSettings().primary_provider
+    assert (provider.name, provider.model) == ("ollama", "translategemma:12b")
+    assert _ollama().config.base_url == "http://localhost:11434/api/generate"
 
 
 def test_an_unreachable_server_stops_the_run_with_the_fix(monkeypatch) -> None:

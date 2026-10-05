@@ -40,6 +40,9 @@ def test_dotenv_keys_reach_the_environment(name: str) -> None:
 
 def test_the_openai_provider_sends_the_dotenv_key(monkeypatch: pytest.MonkeyPatch) -> None:
     Path(".env").write_text('OPENAI_API_KEY="sk-from-dotenv"\n', encoding="utf-8")
+    config = Path.home() / ".tepub" / "config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("primary_provider:\n  name: openai\n  model: gpt-4o\n", encoding="utf-8")
     settings = load_settings()
     sent: dict = {}
 

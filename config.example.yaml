@@ -80,45 +80,43 @@ output_mode: bilingual   # Options: bilingual, translated_only
 # ============================================================
 # Translation Service (AI Provider)
 # ============================================================
-# Which AI service to use for translation
-# Uncomment and edit the section for your preferred service
+# Which AI service to use for translation. Only primary_provider is read:
+# keep one of the options below, and comment out the others.
 
-# Option 1: OpenAI (ChatGPT) - Best quality, costs money
-# Recommended for most users
+# Option 1: Ollama - the default. Free, runs on your computer, no API key
+# Install Ollama (https://ollama.com), then: ollama pull translategemma:12b
 primary_provider:
-  name: openai
-  model: gpt-4o              # Options: gpt-4o, gpt-4o-mini, gpt-4-turbo
-  # api_key: ${OPENAI_API_KEY}   # Reads from environment variable
+  name: ollama
+  model: translategemma:12b
+  # base_url: http://localhost:11434   # Ollama on another machine: its address
+  # think: false   # For reasoning models (e.g. qwen3.5:9b): skip the thinking,
+  #                # which otherwise costs minutes per paragraph
 
-# Option 2: Anthropic (Claude) - Great for literature
-# anthropic_provider:
+# Option 2: OpenAI (ChatGPT) - costs money; key in OPENAI_API_KEY
+# primary_provider:
+#   name: openai
+#   model: gpt-4o
+
+# Option 3: Anthropic (Claude) - key in ANTHROPIC_API_KEY
+# primary_provider:
 #   name: anthropic
-#   model: claude-3-5-sonnet-20241022
-#   # api_key: ${ANTHROPIC_API_KEY}
+#   model: claude-sonnet-5-5
 
-# Option 3: Google Gemini
-# gemini_provider:
+# Option 4: Google Gemini - key in GEMINI_API_KEY
+# primary_provider:
 #   name: gemini
 #   model: gemini-1.5-flash
-#   # api_key: ${GEMINI_API_KEY}
 
-# Option 4: xAI Grok
-# grok_provider:
+# Option 5: xAI Grok - key in GROK_API_KEY
+# primary_provider:
 #   name: grok
 #   model: grok-beta
-#   # api_key: ${GROK_API_KEY}
 
-# Option 5: DeepL - Translation specialist
+# Option 6: DeepL - translation specialist; key in DEEPL_API_KEY
 # Note: DeepL uses language codes like "ZH" instead of "Simplified Chinese"
-# deepl_provider:
-#   name: deepl
-#   # api_key: ${DEEPL_API_KEY}
-
-# Option 6: Ollama - Free, runs on your computer (no internet needed)
 # primary_provider:
-#   name: ollama
-#   model: qwen2.5:14b-instruct   # Good free model for translation
-#   base_url: http://localhost:11434/api/generate
+#   name: deepl
+#   model: deepl
 
 # ============================================================
 # Skip Rules - What NOT to Translate
