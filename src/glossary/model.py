@@ -37,12 +37,21 @@ class Term(BaseModel):
     # help review, never read.
     count: int | None = None
 
-    @field_validator("source")
+    @field_validator("source", "target")
     @classmethod
-    def _not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("source must not be blank")
-        return value.strip()
+    def _not_blank(cls, value: str | None) -> str | None:
+        # A blank target would pass every reply, a blank variant match every
+        # paragraph, and a blank avoid fail every reply.
+        if value is not None and not value.strip():
+            raise ValueError("must not be blank; leave the target out for an undecided term")
+        return value.strip() if value is not None else None
+
+    @field_validator("variants", "avoid")
+    @classmethod
+    def _no_blank_entries(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value.strip() for value in values):
+            raise ValueError("entries must not be blank")
+        return tuple(value.strip() for value in values)
 
     @cached_property
     def pattern(self) -> re.Pattern[str]:
@@ -54,25 +63,74 @@ class Term(BaseModel):
         return self.target == self.source
 
 
+def _spaced(char: str) -> bool:
+    """Whether the character belongs to a script that separates words with spaces."""
+    return char.isalnum() and not (
+        "\u2e80" <= char <= "\u9fff" or "\uac00" <= char <= "\ud7af" or "\uf900" <= char <= "\ufaff"
+    )
+
+
+def _plural(word: str) -> str:
+    """The word with an optional English plural ending: rate(s), box(es), part(y|ies)."""
+    if word.endswith(("s", "x", "z", "ch", "sh")):
+        return f"{re.escape(word)}(?:es)?"
+    if len(word) > 2 and word.endswith("y") and word[-2] not in "aeiou":
+        return f"{re.escape(word[:-1])}(?:y|ies)"
+    return f"{re.escape(word)}s?"
+
+
 def _form_pattern(form: str) -> str:
-    body = r"\s+".join(re.escape(word) for word in form.split())
+    words = form.split()
     if form == form.lower() and form[-1:].isalpha():
-        # A lowercase term: any initial case, and its plural.
-        body = f"(?i:{body}(?:e?s)?)"
-    # Word boundaries only where the term starts or ends with a Latin letter or
-    # digit; a term in a script written without spaces has none. Only a letter
-    # continues a word: a note number follows its word directly in a unit's
-    # text ("compound1"), and must not hide the term.
-    start = r"(?<![^\W\d_])(?<!-)" if form[:1].isascii() and form[:1].isalnum() else ""
-    end = r"(?![^\W\d_])" if form[-1:].isascii() and form[-1:].isalnum() else ""
+        # A lowercase term: each word lowercase or capitalised (a sentence or a
+        # title may start with it), never all capitals ("us" is not "US"), and
+        # an English plural.
+        parts = [re.escape(word) for word in words[:-1]] + [_plural(words[-1])]
+        parts = [
+            f"[{part[0]}{part[0].upper()}]{part[1:]}" if part[:1].isalpha() else part
+            for part in parts
+        ]
+    else:
+        parts = [re.escape(word) for word in words]
+    body = r"\s+".join(parts)
+    # Word boundaries only where the term starts or ends in a script with
+    # spaces. Only a letter continues a word: a note number follows its word
+    # directly ("compound1") and must not hide it; a hyphen and a letter do
+    # ("art-work" is not "art").
+    start = r"(?<![^\W\d_])(?<![^\W\d_]-)" if _spaced(form[:1]) else ""
+    end = r"(?![^\W\d_])(?!-[^\W\d_])" if _spaced(form[-1:]) else ""
     return f"{start}{body}{end}"
 
 
+_NOTE_REFERENCE = re.compile(r"^[\W\d_]*$")
+
+
 def plain_text(content: str) -> str:
-    """A unit's text: its markup removed when it has any."""
+    """A unit's text, as a reader sees its words.
+
+    Markup goes; a line break reads as a space ("scam<br/>compound"), and note
+    references, a <sup> or a link whose text is only a number, are dropped, so
+    that "scam<a>1</a> compound" still holds the phrase.
+    """
     if "<" not in content:
         return content
-    return lxml_html.fragment_fromstring(content, create_parent="div").text_content()
+    root = lxml_html.fragment_fromstring(content, create_parent="div")
+    for element in list(root.iter()):
+        if element is root or not isinstance(element.tag, str):
+            continue
+        tag = element.tag.split("}")[-1].lower()
+        if tag == "br":
+            element.tail = " " + (element.tail or "")
+        elif tag == "sup" or (tag == "a" and _NOTE_REFERENCE.match(element.text_content())):
+            element.drop_tree()  # keeps its tail
+    return root.text_content()
+
+
+def _contains(text: str, compact: str, rendering: str) -> bool:
+    if _spaced(rendering[:1]) and _spaced(rendering[-1:]):
+        words = r"\s+".join(re.escape(word) for word in rendering.split())
+        return re.search(rf"(?<![^\W\d_]){words}(?![^\W\d_])", text) is not None
+    return _compact(rendering) in compact
 
 
 def _compact(text: str) -> str:
@@ -89,12 +147,12 @@ class Glossary(BaseModel):
 
     @model_validator(mode="after")
     def _each_term_once(self) -> Glossary:
-        seen: set[str] = set()
-        for term in self.terms:
-            key = term.source.casefold()
-            if key in seen:
-                raise ValueError(f"the term {term.source!r} is listed twice")
-            seen.add(key)
+        """No two entries for the same words: "compound" also matches
+        "Compound", so both cannot be listed; "us" does not match "US"."""
+        for index, term in enumerate(self.terms):
+            for other in self.terms[index + 1 :]:
+                if term.source == other.source or term.pattern.fullmatch(other.source) or other.pattern.fullmatch(term.source):
+                    raise ValueError(f"the term {other.source!r} is listed twice")
         return self
 
     @property
@@ -105,17 +163,46 @@ class Glossary(BaseModel):
         return [term for term in self.terms if term.target]
 
     def terms_in(self, content: str) -> list[Term]:
+        """The decided terms in a unit, each where a longer term does not cover it.
+
+        "learning" inside "machine learning" belongs to the longer term; holding
+        it to its own rendering too would demand two renderings of one phrase.
+        """
         text = plain_text(content)
-        return [term for term in self.decided() if term.pattern.search(text)]
+        spans = {
+            term.source: [match.span() for match in term.pattern.finditer(text)]
+            for term in self.decided()
+        }
+        found = []
+        for term in self.decided():
+            covered_by_longer = [
+                span
+                for other, other_spans in spans.items()
+                if other != term.source
+                for span in other_spans
+            ]
+            if any(
+                not any(a <= start and end <= b and b - a > end - start for a, b in covered_by_longer)
+                for start, end in spans[term.source]
+            ):
+                found.append(term)
+        return found
 
     def problems(self, terms: list[Term], translation: str) -> list[str]:
-        """What the translation got wrong about these terms; empty when nothing."""
-        text = _compact(plain_text(translation))
+        """What the translation got wrong about these terms; empty when nothing.
+
+        A rendering in Latin letters must appear as a whole word ("cat" is not in
+        "education"); one in Chinese or Japanese anywhere. A rendering to avoid
+        counts only when the approved one is missing: "诈骗园区不是集中营" may
+        rightly name both.
+        """
+        text = plain_text(translation)
+        compact = _compact(text)
         found = []
         for term in terms:
-            avoided = [word for word in term.avoid if _compact(word) in text]
-            if _compact(term.target or "") in text and not avoided:
+            if _contains(text, compact, term.target or ""):
                 continue
+            avoided = [word for word in term.avoid if _contains(text, compact, word)]
             if term.kept:
                 found.append(f'"{term.source}" must stay {term.target}')
             elif avoided:
