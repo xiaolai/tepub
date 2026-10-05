@@ -45,19 +45,19 @@ phase 0.
 ## Phase 0: baseline
 
 ### WI-0.1 Get onto current code
-**Status:** open
+**Status:** DONE 2026-10-05. `main` fast-forwarded to `01e7360`; work on `improve/0.3.4`; scratch worktrees removed, `git worktree list` shows one entry.
 **Do:** fast-forward local `main` to `origin/main`; create branch `improve/0.3.4`; remove stale worktrees under `/tmp`.
 **Done when:** `git rev-parse main` equals `git rev-parse origin/main`, and `git worktree list` shows one entry.
 
 ### WI-0.2 Isolate tests from the user's machine
-**Status:** open
+**Status:** DONE 2026-10-05, `99d8764`. Verified: `tests/test_isolation.py` (11 tests). Not as planned: rather than vendoring NLTK data, the fixture finds `punkt_tab` where a developer or CI already put it and pins `NLTK_DATA` there; with none present the three sentence tests skip with the install command, so real and empty HOME give the same failures and differ only in those named skips. CI downloads the data before the test step. The same commit set also pinned the publish action (`474a3f8`), flagged by a security review while editing the workflow.
 **Files:** `tests/conftest.py`
 **Do:** an autouse fixture that points `HOME` and `TEPUB_WORK_ROOT` at a temporary directory and clears provider keys from the environment. A second fixture provides NLTK `punkt_tab` from a vendored copy under `tests/fixtures/`, or skips with a named reason when absent; never a network download inside a test.
 **Test first:** a test that writes a broken `~/.tepub/config.yaml` into the real-HOME location it would have read, and asserts `load_settings()` does not see it.
 **Done when:** `HOME=/tmp/empty python -m pytest -q --no-cov` and the same run with the real HOME report identical results.
 
 ### WI-0.3 A baseline gate script
-**Status:** open
+**Status:** DONE 2026-10-05, `d1f82da`. Verified: on the tree before WI-1.1 the script stopped at the test step with the chapter-marker test as the only failure. Also moved ruff's `select`/`ignore` under `[tool.ruff.lint]`, which ruff had deprecated.
 **Files:** `scripts/verify.sh` (new)
 **Do:** one script running ruff (F, E9), the test suite, and, once phase 4 exists, epubcheck over the fixture outputs. It exits non-zero on the first failure and prints which step failed.
 **Done when:** the script exits 1 on today's tree, naming the chapter-marker test, and that is the only failure.
