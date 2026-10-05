@@ -383,3 +383,19 @@ def test_a_small_container_with_its_own_text_stays_whole() -> None:
 
     body = etree.fromstring(f'<body xmlns="{XHTML_NS}"><div>Lead text<p>A paragraph.</p></div></body>')
     assert [(etree.QName(e).localname, m.value) for e, m in iter_units(body)] == [("div", "html")]
+
+
+def test_a_figure_with_a_drawing_is_walked_so_its_caption_is_the_unit() -> None:
+    """Whole, one book's figures sent up to 340,000 characters of SVG chart."""
+    from lxml import etree
+
+    from epub_io.xhtml import XHTML_NS
+    from extraction.segments import iter_units
+
+    body = etree.fromstring(
+        f'<body xmlns="{XHTML_NS}"><figure><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
+        "<figcaption>Figure 1. Income shares.</figcaption></figure>"
+        '<figure><img src="a.png" alt=""/><figcaption>Figure 2.</figcaption></figure></body>'
+    )
+    units = [(etree.QName(e).localname, m.value) for e, m in iter_units(body)]
+    assert units == [("figcaption", "text"), ("figure", "html")]

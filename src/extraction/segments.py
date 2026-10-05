@@ -75,6 +75,12 @@ def _has_block_descendant(element: etree._Element) -> bool:
     return any(_is_block(d) for d in element.iterdescendants() if isinstance(d.tag, str))
 
 
+def _holds_skipped(element: etree._Element) -> bool:
+    return any(
+        isinstance(d.tag, str) and local_name(d) in SKIPPED_TAGS for d in element.iterdescendants()
+    )
+
+
 def _has_text(value: str | None) -> bool:
     return bool(value and value.strip())
 
@@ -108,8 +114,13 @@ def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, Extr
             # Measured on what is sent: lists of links ran to 15,000 characters
             # of markup around 1,300 of text, and stayed whole when the text
             # alone was measured.
-            if name in _SPLITTABLE and len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS:
+            if (name in _SPLITTABLE and len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS) or (
+                name == "figure" and _holds_skipped(child)
+            ):
                 # Items, rows and cells are blocks: the walk makes them units.
+                # A figure holding an SVG chart or a formula is walked too, so
+                # its caption is the unit: whole, one book's figures sent
+                # 340,000 characters of drawing to the model.
                 yield from iter_units(child)
             else:
                 yield child, ExtractMode.HTML
