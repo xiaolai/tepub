@@ -110,3 +110,25 @@ def test_a_translated_copy_does_not_repeat_page_markers(tmp_path: Path) -> None:
     assert len(breaks) == 1 and breaks[0].get("id") == "page_v"
     copy = next(p for p in tree.iter(f"{XHTML}p") if "tepub-translation" in (p.get("class") or ""))
     assert "after" in "".join(copy.itertext())
+
+
+def test_a_blockquote_filled_with_text_holds_it_in_a_paragraph(tmp_path: Path) -> None:
+    """<blockquote><font>…</font></blockquote>: translated, the <font> went and
+    the text stood loose in the blockquote, invalid in EPUB 2."""
+    from tests.epub_builder import build_epub
+
+    book = build_epub(
+        tmp_path / "b.epub",
+        [("c.xhtml", "C", "<blockquote><span>ME: Um, not really, no.</span></blockquote>")],
+        version=2,
+    )
+    settings = _extract(book, tmp_path)
+    _translate_everything(settings)
+    out = tmp_path / "out.epub"
+    run_injection(settings, book, out, mode="bilingual")
+
+    quotes = list(_tree(out, "c.xhtml").iter(f"{XHTML}blockquote"))
+    copy = next(q for q in quotes if "tepub-translation" in (q.get("class") or ""))
+    assert not (copy.text or "").strip()
+    assert [child.tag for child in copy] == [f"{XHTML}p"]
+    assert "Um, not really" in "".join(copy.itertext())

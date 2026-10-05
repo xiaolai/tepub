@@ -34,9 +34,37 @@ def _clear_children(element: etree._Element) -> None:
         element.remove(child)
 
 
+# Elements whose content must be blocks in XHTML 1.1 (EPUB 2).
+_BLOCKS_ONLY = frozenset({"blockquote", "form"})
+
+
+def _blocks_where_required(element: etree._Element) -> None:
+    """Wrap inline content in a <p> where only blocks may stand.
+
+    Converted books put <font> straight inside <blockquote>; filled with a
+    translation, the presentational wrappers went and the text stood loose in
+    the blockquote, an epubcheck error in EPUB 2. A <p> is valid in every
+    version and looks the same.
+    """
+    from extraction.segments import BLOCK_TAGS
+
+    if local_name(element) not in _BLOCKS_ONLY:
+        return
+    if any(isinstance(child.tag, str) and local_name(child) in BLOCK_TAGS for child in element):
+        return
+    if not (element.text or "").strip() and not len(element):
+        return
+    paragraph = etree.Element(f"{{{XHTML_NS}}}p")
+    paragraph.text, element.text = element.text, None
+    for child in list(element):
+        paragraph.append(child)
+    element.append(paragraph)
+
+
 def _set_text_only(element: etree._Element, text: str) -> None:
     _clear_children(element)
     element.text = text
+    _blocks_where_required(element)
 
 
 def _set_html_content(element: etree._Element, markup: str) -> None:
@@ -53,6 +81,7 @@ def _set_html_content(element: etree._Element, markup: str) -> None:
     element.text = text or None
     for child in children:
         element.append(child)
+    _blocks_where_required(element)
 
 
 _OPS_TYPE = "{http://www.idpf.org/2007/ops}type"
