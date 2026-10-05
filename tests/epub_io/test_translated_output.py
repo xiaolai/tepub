@@ -69,6 +69,44 @@ def _assert_heads_kept(source: Path, output: Path) -> None:
                 assert _head_of(out.read(name)) == _head_of(src.read(name)), name
 
 
+def _links_resolve(output: Path) -> list[str]:
+    """In-book links whose target file or anchor does not exist in the output."""
+    import posixpath
+    from urllib.parse import unquote
+
+    from lxml import etree
+
+    with zipfile.ZipFile(output) as archive:
+        documents = {
+            name: etree.fromstring(archive.read(name))
+            for name in archive.namelist()
+            if name.endswith(".xhtml")
+        }
+    ids = {
+        name: {e.get("id") for e in root.iter() if isinstance(e.tag, str) and e.get("id")}
+        for name, root in documents.items()
+    }
+    broken = []
+    for name, root in documents.items():
+        for link in root.iter("{http://www.w3.org/1999/xhtml}a"):
+            href = link.get("href") or ""
+            if not href or "://" in href or href.startswith("mailto:"):
+                continue
+            path, _, fragment = href.partition("#")
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(path))) if path else name
+            if target not in ids or (fragment and fragment not in ids[target]):
+                broken.append(f"{name}: {href}")
+    return broken
+
+
+def _noterefs(output: Path) -> int:
+    with zipfile.ZipFile(output) as archive:
+        text = "".join(
+            archive.read(n).decode("utf-8") for n in archive.namelist() if n.endswith(".xhtml")
+        )
+    return text.count('epub:type="noteref"')
+
+
 def _error_counts(findings) -> collections.Counter:
     return collections.Counter(f.code for f in epubcheck.errors(findings))
 
@@ -96,5 +134,9 @@ def test_translated_output_adds_no_epubcheck_errors(name: str, mode: str, tmp_pa
 
     assert updated, "nothing was injected"
     _assert_heads_kept(book, out)
+    assert _links_resolve(out) == []
+    # Footnote references survive translation in both modes; translated-only
+    # output used to replace each paragraph with bare text, dropping them.
+    assert _noterefs(out) >= _noterefs(book)
     added = _error_counts(epubcheck.check(out)) - _error_counts(epubcheck.check(book))
     assert not added, {f.code: f.message for f in epubcheck.errors(epubcheck.check(out))}

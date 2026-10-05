@@ -45,8 +45,16 @@ BLOCK_TAGS = frozenset(
 # Never translated, and never looked inside.
 SKIPPED_TAGS = frozenset({"svg", "math", "switch", "script", "style", "pre", "template"})
 
-# Inline wrappers dropped from the HTML sent for translation; their text stays.
-_UNWRAPPED_INLINE = ("span", "a", "font")
+# Presentational wrappers dropped from the HTML sent for translation; their
+# text stays. Links are kept: they carry footnote references.
+_UNWRAPPED_INLINE = ("span", "font")
+
+OPS_TYPE = "{http://www.idpf.org/2007/ops}type"
+XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
+
+# Attributes the translation must carry back unchanged: link targets, anchors,
+# images and note semantics. Classes and styles are noise to a model.
+_KEPT_ATTRIBUTES = frozenset({"href", "src", "id", "alt", "title", "role", OPS_TYPE})
 
 
 def _is_block(element: etree._Element) -> bool:
@@ -96,9 +104,22 @@ def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, Extr
             else:
                 yield from iter_units(child)
         elif _is_block(child):
-            yield child, ExtractMode.TEXT
+            mode = ExtractMode.HTML if _has_inline_markup(child) else ExtractMode.TEXT
+            yield child, mode
         # Inline content directly in a container that is walked is that
         # container's own text; a container with any is a unit itself above.
+
+
+def _has_inline_markup(element: etree._Element) -> bool:
+    """True when a leaf block holds markup a translation must keep.
+
+    Sent as plain text, such a paragraph lost its links, footnote references,
+    emphasis and images in translated-only output.
+    """
+    return any(
+        isinstance(node.tag, str) and local_name(node) not in _UNWRAPPED_INLINE
+        for node in element.iterdescendants()
+    )
 
 
 def body_of(root: etree._Element) -> etree._Element | None:
@@ -110,7 +131,7 @@ def _extract_text(element: etree._Element) -> str:
 
 
 def _plain_copy(element: etree._Element) -> etree._Element:
-    """A copy with XHTML names un-namespaced and attributes dropped, except image sources."""
+    """A copy with XHTML names un-namespaced and only meaningful attributes kept."""
     clone = deepcopy(element)
     for node in clone.iter():
         if not isinstance(node.tag, str):
@@ -118,17 +139,18 @@ def _plain_copy(element: etree._Element) -> etree._Element:
         qname = etree.QName(node)
         if qname.namespace == XHTML_NS:
             node.tag = qname.localname
-        source = None
-        if qname.localname in ("img", "image"):
-            source = (
-                node.get("src") or node.get("href") or node.get("{http://www.w3.org/1999/xlink}href")
-            )
+        kept = {name: value for name, value in node.attrib.items() if name in _KEPT_ATTRIBUTES}
+        if qname.localname == "image" and XLINK_HREF in node.attrib:
+            kept["src"] = node.get(XLINK_HREF)
         node.attrib.clear()
-        if source:
-            node.set("src", source)
+        for name, value in kept.items():
+            node.set(name, value)
     etree.strip_tags(clone, *_UNWRAPPED_INLINE)
     etree.cleanup_namespaces(clone)
     return clone
+
+
+_EPUB_DECLARATION = ' xmlns:epub="http://www.idpf.org/2007/ops"'
 
 
 def _extract_inner_html(element: etree._Element) -> str:
@@ -136,7 +158,9 @@ def _extract_inner_html(element: etree._Element) -> str:
     parts = [clone.text or ""]
     for child in clone:
         parts.append(etree.tostring(child, encoding="unicode", with_tail=True))
-    return "".join(parts).strip()
+    # Each serialised child repeats the epub: declaration it needs; the parser
+    # that reads translations back declares it once instead.
+    return "".join(parts).replace(_EPUB_DECLARATION, "").strip()
 
 
 def unit_id(file_path: Path, order: int) -> str:

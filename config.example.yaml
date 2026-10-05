@@ -207,7 +207,11 @@ back_matter_threshold: 0.7
 #   - "Translate from English into Simplified Chinese."
 #   - "Detect the source language automatically and translate it into Spanish."
 # - {mode_instruction}: Technical instructions based on content type
-#   - For HTML: "Preserve HTML structure in the translation."
+#   - For HTML: "The source is an HTML fragment. Translate only its text. Keep every
+#     tag, and every href, src and id value, exactly as given; inline elements may
+#     move to follow the translated wording."
+#   Keep {mode_instruction} in a custom prompt: replies that change the markup are
+#   retried once and then marked as errors.
 #   - For text: "Return a faithful translation of the prose without adding explanations."
 
 # Example customizations:

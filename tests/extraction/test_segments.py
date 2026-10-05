@@ -230,8 +230,9 @@ def test_iter_segments_handles_complex_markup():
     assert heading.extract_mode == ExtractMode.TEXT
     assert heading.source_content == "Preface & Overview"
 
-    assert first_para.extract_mode == ExtractMode.TEXT
-    assert first_para.source_content == "This preface has links & inline elements."
+    # The link makes it HTML: sent as text, the link was lost from the output.
+    assert first_para.extract_mode == ExtractMode.HTML
+    assert first_para.source_content == 'This preface has <a href="#">links</a> &amp; inline elements.'
 
     assert blurb_div.extract_mode == ExtractMode.TEXT
     assert blurb_div.source_content == "Solo text block."

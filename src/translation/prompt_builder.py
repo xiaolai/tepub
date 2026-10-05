@@ -43,7 +43,9 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
         Complete prompt with system instructions and source content
     """
     mode_instruction = (
-        "Preserve HTML structure in the translation."
+        "The source is an HTML fragment. Translate only its text. Keep every tag, and "
+        "every href, src and id value, exactly as given; inline elements may move to "
+        "follow the translated wording."
         if segment.extract_mode == ExtractMode.HTML
         else "Return a faithful translation of the prose without adding explanations."
     )
@@ -81,4 +83,8 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
             mode_instruction=mode_instruction,
         ).strip()
 
+    note = segment.metadata.notes
+    if note:
+        # Set when a previous reply broke the markup contract; see the controller.
+        intro = f"{intro}\n\nNOTE: {note}"
     return f"{intro}\n\nSOURCE:\n{segment.source_content}"

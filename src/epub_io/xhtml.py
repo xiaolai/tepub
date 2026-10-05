@@ -128,7 +128,9 @@ def parse_fragment(markup: str) -> tuple[str, list[etree._Element]]:
     unclosed <br>, a bare &), it is parsed as HTML and its elements moved into
     the XHTML namespace, so they never land in the book in no namespace.
     """
-    wrapped = f'<wrapper xmlns="{XHTML_NS}">{markup}</wrapper>'.encode("utf-8")
+    wrapped = f'<wrapper xmlns="{XHTML_NS}" xmlns:epub="{OPS_NS}">{markup}</wrapper>'.encode(
+        "utf-8"
+    )
     try:
         wrapper = etree.fromstring(_replace_html_entities(wrapped), parser=secure_xml_parser())
     except etree.XMLSyntaxError:

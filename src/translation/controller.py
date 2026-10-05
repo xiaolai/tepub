@@ -16,10 +16,11 @@ from config import AppSettings
 from console_singleton import get_console
 from exceptions import ArtifactMismatchError
 from logging_utils.logger import get_logger
-from state.models import SegmentStatus
+from state.models import ExtractMode, SegmentStatus
 from state.store import backup_state, ensure_state, load_segments, load_state
 from state.writer import StateWriter, exclusive_run
 from translation.languages import describe_language
+from translation.markup import markup_mismatch
 from translation.polish import polish_translation
 from translation.providers import ProviderError, ProviderFatalError, create_provider
 from translation.refusal_filter import looks_like_refusal
@@ -127,6 +128,50 @@ class TranslationResult:
         self.model_name = model_name
 
 
+def _reply(segment, provider, source_language: str, target_language: str) -> str:
+    """One provider call, refused if it declines the task, polished if not."""
+    text = provider.translate(
+        segment, source_language=source_language, target_language=target_language
+    )
+    # A refusal is not a translation. This check used to run only in the debug
+    # purge command, so refusals were stored as COMPLETED and exported. A source
+    # that itself reads like a refusal is translated as normal.
+    if looks_like_refusal(text) and not looks_like_refusal(segment.source_content):
+        preview = " ".join(text.split())[:80]
+        raise ProviderError(f"Provider refused segment {segment.segment_id}: {preview!r}")
+    return polish_translation(text)
+
+
+def _translate_checked(segment, provider, source_language: str, target_language: str) -> str:
+    """Translate, and hold an HTML unit's reply to the markup contract (D6).
+
+    A reply that changed the markup is retried once with the problem named in
+    the prompt; a second such reply is an error. The check runs after polishing,
+    which rewrites the whole string.
+    """
+    text = _reply(segment, provider, source_language, target_language)
+    if segment.extract_mode != ExtractMode.HTML:
+        return text
+    problem = markup_mismatch(segment.source_content, text)
+    if problem is None:
+        return text
+    note = (
+        f"Your previous translation changed the markup ({problem}). Keep every tag "
+        "and every href, src and id value exactly as in the source; translate only "
+        "the text."
+    )
+    retry = segment.model_copy(
+        update={"metadata": segment.metadata.model_copy(update={"notes": note})}
+    )
+    text = _reply(retry, provider, source_language, target_language)
+    problem = markup_mismatch(segment.source_content, text)
+    if problem is not None:
+        raise ProviderError(
+            f"Translation of segment {segment.segment_id} changed the markup twice: {problem}"
+        )
+    return text
+
+
 def _translate_segment(
     segment,
     provider,
@@ -161,21 +206,7 @@ def _translate_segment(
         if ensure_supported is not None:
             ensure_supported(segment)
 
-        translation_text = provider.translate(
-            segment,
-            source_language=source_language,
-            target_language=target_language,
-        )
-        # A refusal is not a translation. This check used to run only in the debug
-        # purge command, so refusals were stored as COMPLETED and exported. A
-        # source that itself reads like a refusal is translated as normal.
-        if looks_like_refusal(translation_text) and not looks_like_refusal(
-            segment.source_content
-        ):
-            preview = " ".join(translation_text.split())[:80]
-            raise ProviderError(f"Provider refused segment {segment.segment_id}: {preview!r}")
-        # Apply polish immediately
-        polished_text = polish_translation(translation_text)
+        polished_text = _translate_checked(segment, provider, source_language, target_language)
         return TranslationResult(
             segment_id=segment.segment_id,
             translation=polished_text,

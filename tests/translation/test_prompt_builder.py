@@ -29,4 +29,4 @@ def test_build_prompt_handles_auto_detection() -> None:
     segment = _make_segment("<p>Hello</p>", ExtractMode.HTML)
     prompt = build_prompt(segment, source_language="auto", target_language="fr")
     assert "Detect the source language automatically" in prompt
-    assert "Preserve HTML structure" in prompt
+    assert "Keep every tag" in prompt

@@ -115,3 +115,61 @@ def test_a_complete_openai_reply_passes(monkeypatch) -> None:
     body = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": "Fine."}]}]}
     monkeypatch.setattr(openai_module, "post_json", lambda *a, **k: body)
     assert _provider("openai").translate(_segment(), "fr", "en") == "Fine."
+
+
+def _html_segment() -> Segment:
+    return Segment(
+        segment_id="h1",
+        file_path=Path("c.xhtml"),
+        xpath="/x",
+        extract_mode=ExtractMode.HTML,
+        source_content='Une affirmation<a href="notes.xhtml#n1"><sup>1</sup></a> claire.',
+        metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=1),
+    )
+
+
+class Replies:
+    name = "fake"
+    model = "fake-1"
+
+    def __init__(self, *replies: str):
+        self.replies = list(replies)
+        self.prompts_notes: list[str | None] = []
+
+    def translate(self, segment, *, source_language, target_language):
+        self.prompts_notes.append(segment.metadata.notes)
+        return self.replies.pop(0)
+
+
+GOOD = 'A clear claim<a href="notes.xhtml#n1"><sup>1</sup></a>.'
+DROPPED = "A clear claim."
+
+
+def test_a_reply_that_keeps_the_markup_is_used() -> None:
+    result = _translate_segment(_html_segment(), Replies(GOOD), "fr", "en")
+    assert result.error is None and result.translation == GOOD
+
+
+def test_changed_markup_is_retried_once_with_the_problem_named() -> None:
+    provider = Replies(DROPPED, GOOD)
+    result = _translate_segment(_html_segment(), provider, "fr", "en")
+    assert result.error is None and result.translation == GOOD
+    assert provider.prompts_notes[0] is None
+    assert "notes.xhtml#n1" in provider.prompts_notes[1]
+
+
+def test_markup_changed_twice_is_an_error() -> None:
+    result = _translate_segment(_html_segment(), Replies(DROPPED, DROPPED), "fr", "en")
+    assert result.translation is None
+    assert isinstance(result.error, ProviderError) and "markup" in str(result.error)
+
+
+def test_the_retry_note_reaches_the_prompt() -> None:
+    from translation.prompt_builder import build_prompt
+
+    segment = _html_segment()
+    noted = segment.model_copy(
+        update={"metadata": segment.metadata.model_copy(update={"notes": "keep the link"})}
+    )
+    assert "keep the link" in build_prompt(noted, "fr", "en")
+    assert "keep the link" not in build_prompt(segment, "fr", "en")

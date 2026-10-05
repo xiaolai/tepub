@@ -198,7 +198,7 @@ original wording of WI-4.2 to WI-4.6 where they disagree.
 | 3 | Falling back to lxml's HTML parser keeps the SVG case damage (`viewBox` to `viewbox`, reproduced in the grill) | Accepted | D3 |
 | 4 | Entities, DOCTYPE and external-entity safety have no contract | Accepted | D4 |
 | 5 | Bilingual copies duplicate ids, so links can land on the wrong copy | Accepted | D5 |
-| 6 | The inline-markup check is too narrow (src, structure) and too strict (reordering, ruby) | Accepted in part: failures stay ERROR, rates are measured | D6 |
+| 6 | The inline-markup check is too narrow (src, structure) and too strict (reordering, ruby) | Accepted in part: failures stay ERROR, rates were measured, and emphasis was then exempted on the measurement | D6 |
 | 7 | TOC editing must update both nav and NCX and resolve hrefs properly | Accepted | D7 |
 | 8 | ZIP edge cases: duplicate or case-colliding names, obfuscated fonts | Accepted in part: the contract is entry order, names, content and compression type, not raw headers | D8 |
 | 9 | The reader, audiobook, web and markdown code still use ebooklib, XPath and `text_content()` | Accepted | WI-4.7 |
@@ -291,7 +291,7 @@ the package identifier they depend on is never edited.
 **Test first:** P2 as an assertion; a legacy workspace fixture imported with zero unmapped completed translations.
 
 ### WI-4.5 Inline markup survives translation (E9, E10, F05)
-**Status:** open
+**Status:** DONE 2026-10-05. A leaf block containing elements other than `span` or `font` is sent as inner HTML keeping `href`, `src`, `id`, `alt`, `title`, `role` and `epub:type`; links are no longer unwrapped. `translation/markup.py` checks the polished reply; one retry names the mismatch in the prompt, then ERROR. Measured with TranslateGemma 12B on 30 real paragraphs, English into Chinese: 24 kept the markup first time and 26 after a retry, and all four failures were only a dropped or added `<em>`. D6 was revised: emphasis-style tags (`em`, `i`, `b`, `strong`, `u`, `small`, `mark`, `cite`, `q`, `s`) are exempt with ruby; re-measured, 30 of 30 on the first reply. Verified: `tests/translation/test_markup_contract.py`, the controller retry tests, and the translating gate's new assertions that every in-book link resolves and footnote references survive in both modes; forcing plain-text mode back makes the gate fail on the broken backlinks.
 **Depends:** WI-4.4
 **Files:** `src/extraction/segments.py`, `src/translation/prompt_builder.py`, `src/translation/validate.py` (new), `src/injection/html_ops.py`
 **Do:** every unit is sent as inner HTML. The response must contain the same multiset of inline tags with the same `href` and `id` values. A mismatch is retried once with the mismatch named in the prompt, then marked ERROR. Translated-only output keeps every child id and note reference.

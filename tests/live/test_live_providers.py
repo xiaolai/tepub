@@ -110,3 +110,26 @@ def test_chat_truncation_is_refused(monkeypatch) -> None:
     )
     with pytest.raises(ProviderError, match="truncated"):
         provider.translate(_segment(), source_language="en", target_language="Simplified Chinese")
+
+
+def test_a_real_model_keeps_a_footnote_reference() -> None:
+    """The markup contract (D6) against a real model, through the controller."""
+    from translation.controller import _translate_segment
+
+    segment = Segment(
+        segment_id="live-html",
+        file_path=Path("c.xhtml"),
+        xpath="/x",
+        extract_mode=ExtractMode.HTML,
+        source_content=(
+            'The treaty was signed in 1898<a epub:type="noteref" id="r4" '
+            'href="notes.xhtml#n4"><sup>4</sup></a>, and the islands changed hands.'
+        ),
+        metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=1),
+    )
+    provider = create_provider(
+        ProviderConfig(name="ollama", model=MODEL, base_url=f"{BASE_URL}/api/generate")
+    )
+    result = _translate_segment(segment, provider, "en", "Simplified Chinese")
+    assert result.error is None, result.error
+    assert 'href="notes.xhtml#n4"' in result.translation and CJK.search(result.translation)
