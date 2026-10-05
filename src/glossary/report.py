@@ -47,3 +47,18 @@ def mark_for_retranslation(state: StateDocument, segment_ids: set[str]) -> State
                 update={"status": SegmentStatus.PENDING, "error_message": None}
             )
     return state
+
+
+def untranslated_with_terms(
+    segments: Iterable[Segment], state: StateDocument, glossary: Glossary
+) -> int:
+    """Units holding a glossary term that are not translated yet; after
+    --retranslate these are the outstanding work, which a list of misses in
+    finished units would not show."""
+    return sum(
+        1
+        for segment in segments
+        if (record := state.segments.get(segment.segment_id)) is not None
+        and record.status in (SegmentStatus.PENDING, SegmentStatus.ERROR)
+        and glossary.terms_in(segment.source_content)
+    )

@@ -15,10 +15,11 @@ from epub_io.reader import EpubReader
 from glossary import GLOSSARY_FILE, GlossaryError, glossary_for, load_glossary, plain_text
 from glossary.build import PROPOSED_FILE, propose, render_proposals
 from glossary.candidates import candidates
-from glossary.report import find_misses, mark_for_retranslation
+from glossary.report import find_misses, mark_for_retranslation, untranslated_with_terms
 from state.models import ExtractMode, Segment, SegmentMetadata
 from state.store import load_segments, load_state
 from state.writer import update_state_atomic
+from translation.controller import select_for_translation
 
 console = get_console()
 
@@ -65,7 +66,12 @@ def build(
         raise click.ClickException(f"{output} exists; review it, or pass --force to replace it.")
     target = target_language or settings.target_language
     segments_doc = load_segments(settings.segments_file)
-    text = "\n".join(plain_text(segment.source_content) for segment in segments_doc.segments)
+    # Counted in the units that get translated: an index's own entries would
+    # otherwise count once more for every term.
+    text = "\n".join(
+        plain_text(segment.source_content)
+        for segment in select_for_translation(segments_doc.segments, settings)
+    )
 
     book_glossary = settings.work_dir / GLOSSARY_FILE
     known = {t.source for t in load_glossary(book_glossary).terms} if book_glossary.exists() else set()
@@ -145,7 +151,15 @@ def check(ctx: click.Context, input_epub: Path, retranslate: bool) -> None:
             f"No {GLOSSARY_FILE} in {settings.work_dir} or {settings.work_root}; "
             "create one with `tepub glossary build`."
         )
-    misses = find_misses(load_segments(settings.segments_file).segments, state, book_glossary)
+    # The units translate works on; the index, say, is never translated.
+    segments = select_for_translation(load_segments(settings.segments_file).segments, settings)
+    misses = find_misses(segments, state, book_glossary)
+    waiting = untranslated_with_terms(segments, state, book_glossary)
+    if waiting:
+        console.print(
+            f"[yellow]{waiting} unit(s) with glossary terms are not translated yet; "
+            "run `tepub translate`.[/yellow]"
+        )
     if not misses:
         console.print(f"[green]Every finished unit follows the glossary "
                       f"({len(book_glossary.decided())} terms).[/green]")

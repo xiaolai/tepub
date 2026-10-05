@@ -84,6 +84,11 @@ def test_check_lists_misses_and_marks_them_for_retranslation(tmp_path: Path) -> 
     statuses = [load_state(work / "state.json").segments[s.segment_id].status for s in segments]
     assert statuses == [SegmentStatus.COMPLETED, SegmentStatus.PENDING, SegmentStatus.PENDING]
 
+    # The marked units are outstanding work, not a clean bill.
+    result = _run(runner, tmp_path / "work", "check", str(book))
+    output = " ".join(result.output.split())
+    assert "2 unit(s) with glossary terms are not translated yet" in output
+
 
 def test_check_without_a_glossary_says_how_to_make_one(tmp_path: Path) -> None:
     runner, book, _work = _workspace(tmp_path)

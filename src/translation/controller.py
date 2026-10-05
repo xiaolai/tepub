@@ -143,6 +143,15 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
     return polish_translation(text)
 
 
+def select_for_translation(segments: list, settings: AppSettings) -> list:
+    """The units a translate run works on: those in the book config's
+    translation_files when it has the list, otherwise those not skipped."""
+    if settings.translation_files is not None:
+        allowed_files = set(settings.translation_files)
+        return [seg for seg in segments if seg.file_path.as_posix() in allowed_files]
+    return [seg for seg in segments if seg.skip_reason is None]
+
+
 def _translate_checked(
     segment, provider, source_language: str, target_language: str, glossary=None
 ) -> str:
@@ -292,21 +301,7 @@ def run_translation(
 
     # Filter segments based on translation_files inclusion list or skip metadata
     original_count = len(segments_doc.segments)
-    if settings.translation_files is not None:
-        # Explicit inclusion list takes precedence
-        allowed_files = set(settings.translation_files)
-        segments_doc.segments = [
-            seg
-            for seg in segments_doc.segments
-            if seg.file_path.as_posix() in allowed_files
-        ]
-    else:
-        # No inclusion list: filter out segments with skip metadata
-        segments_doc.segments = [
-            seg
-            for seg in segments_doc.segments
-            if seg.skip_reason is None
-        ]
+    segments_doc.segments = select_for_translation(segments_doc.segments, settings)
 
     filtered_count = original_count - len(segments_doc.segments)
     if filtered_count > 0:
