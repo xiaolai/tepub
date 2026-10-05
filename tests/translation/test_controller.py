@@ -357,3 +357,53 @@ def test_a_stopped_run_resumes_where_it_left_off(monkeypatch, settings, tmp_path
     assert sorted(Counting.seen) == sorted(set(f"c-{i}" for i in range(1, 6)) - done_first)
     final = load_state(settings.state_file)
     assert {r.status for r in final.segments.values()} == {SegmentStatus.COMPLETED}
+
+
+class RejectsEveryReply:
+    """Answers every time, but each reply is refused for its content."""
+
+    name = "dummy"
+    model = "dummy-model"
+
+    def preflight(self):
+        pass
+
+    def translate(self, segment, source_language, target_language):
+        from translation.providers import ReplyRejectedError
+
+        raise ReplyRejectedError(f"Translation of segment {segment.segment_id} changed the markup twice")
+
+
+def test_rejected_replies_do_not_start_a_cooldown(monkeypatch, settings, tmp_path):
+    """Three replies in a row that changed their markup once stopped a run for
+    30 minutes; the provider was answering fine, so waiting could not help."""
+    from state.models import SegmentsDocument
+
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    segments = [
+        Segment(
+            segment_id=f"r-{i}",
+            file_path=Path("Text/c.xhtml"),
+            xpath=f"/html/body/p[{i}]",
+            extract_mode=ExtractMode.TEXT,
+            source_content=f"Sentence number {i}.",
+            metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=i),
+        )
+        for i in range(1, 6)
+    ]
+    save_segments(
+        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        settings.segments_file,
+    )
+    settings = settings.model_copy(update={"translation_workers": 1})
+    slept: list[float] = []
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: RejectsEveryReply())
+    monkeypatch.setattr("translation.controller.console", Console(record=True))
+    monkeypatch.setattr("translation.controller._sleep", slept.append)
+
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+
+    state = load_state(settings.state_file)
+    assert {r.status for r in state.segments.values()} == {SegmentStatus.ERROR}
+    assert slept == [], "no cooldown for replies rejected on content"

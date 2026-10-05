@@ -3,7 +3,7 @@ from __future__ import annotations
 from config import ProviderConfig
 
 from .anthropic import AnthropicProvider
-from .base import BaseProvider, ProviderError, ProviderFatalError
+from .base import BaseProvider, ProviderError, ProviderFatalError, ReplyRejectedError
 from .deepl import DeepLProvider
 from .gemini import GeminiProvider
 from .grok import GrokProvider
@@ -31,5 +31,6 @@ __all__ = [
     "BaseProvider",
     "ProviderError",
     "ProviderFatalError",
+    "ReplyRejectedError",
     "create_provider",
 ]

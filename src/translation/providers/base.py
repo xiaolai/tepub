@@ -14,6 +14,12 @@ class ProviderFatalError(ProviderError):
     """Fatal provider error that should abort the translation run."""
 
 
+class ReplyRejectedError(ProviderError):
+    """The provider answered, but the reply was refused for its content: it
+    changed the markup twice, or declined the task. Says nothing about the
+    provider's health, so it does not count toward a cooldown."""
+
+
 # Statuses after which every remaining segment would fail the same way: a key the
 # provider rejects, or a model or endpoint that does not exist.
 FATAL_STATUSES = frozenset({401, 403, 404})

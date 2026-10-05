@@ -23,7 +23,12 @@ from state.writer import StateWriter, exclusive_run
 from translation.languages import describe_language
 from translation.markup import markup_mismatch, protect, restore
 from translation.polish import polish_translation
-from translation.providers import ProviderError, ProviderFatalError, create_provider
+from translation.providers import (
+    ProviderError,
+    ProviderFatalError,
+    ReplyRejectedError,
+    create_provider,
+)
 from translation.refusal_filter import looks_like_refusal
 
 from .prefilter import should_auto_copy
@@ -139,7 +144,7 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
     # that itself reads like a refusal is translated as normal.
     if looks_like_refusal(text) and not looks_like_refusal(segment.source_content):
         preview = " ".join(text.split())[:80]
-        raise ProviderError(f"Provider refused segment {segment.segment_id}: {preview!r}")
+        raise ReplyRejectedError(f"Provider refused segment {segment.segment_id}: {preview!r}")
     return polish_translation(text)
 
 
@@ -208,7 +213,7 @@ def _translate_checked(
             # the first reply is a usable translation that missed a term.
             _log_missed(segment, first_missed)
             return first
-        raise ProviderError(
+        raise ReplyRejectedError(
             f"Translation of segment {segment.segment_id} changed the markup twice: {markup}"
         )
     _log_missed(segment, missed)
@@ -553,8 +558,13 @@ def run_translation(
                                     preview_lines[preview_index] = f"[red]{error_msg}[/red]"
                                     pass_failures.append(result.segment_id)
 
-                                    # Track consecutive failures and trigger cooldown if needed
-                                    consecutive = writer.consecutive_failures + 1
+                                    # Track consecutive failures and trigger cooldown if
+                                    # needed. A reply rejected for its content is not a
+                                    # sign of an unwell provider: three in a row once
+                                    # stopped a local model for 30 minutes to no purpose.
+                                    consecutive = writer.consecutive_failures + (
+                                        0 if isinstance(result.error, ReplyRejectedError) else 1
+                                    )
                                     writer.consecutive_failures = consecutive
 
                                     if consecutive >= FAILURES_BEFORE_COOLDOWN:
