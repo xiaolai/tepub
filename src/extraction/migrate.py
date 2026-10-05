@@ -10,6 +10,11 @@ same normalised source text; among equal texts, document order breaks the tie.
 Matching by order alone assigns translations to the wrong paragraphs as soon as
 the unit set changes, so nothing else is matched. Unmatched work is translated
 or synthesised again, and the report says how much.
+
+A translation is carried in the form its new unit takes. When a unit changed
+between text and HTML, its translation is converted, and one that became HTML
+must then meet the markup contract a fresh translation meets, or it is
+translated again: a plain translation cannot carry a link the unit now keeps.
 """
 
 from __future__ import annotations
@@ -19,11 +24,15 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import html
+
 from lxml import html as lxml_html
 
+from extraction.segments import clean_markup
 from state.base import atomic_write
 from state.models import ExtractMode, Segment, SegmentStatus
 from state.store import backup_state, load_state, save_state
+from translation.markup import markup_mismatch
 
 # 3: bare <a/> elements are no longer part of a unit's source.
 SEGMENTS_FORMAT = 3
@@ -37,10 +46,25 @@ class ImportReport:
     backups: list[Path] = field(default_factory=list)
 
 
+def _plain_text(markup: str) -> str:
+    return lxml_html.fragment_fromstring(markup, create_parent="div").text_content()
+
+
+def _carried_translation(translation: str, old: Segment, new: Segment) -> str | None:
+    """The translation in its new unit's form, or None if it must be redone."""
+    if new.extract_mode == ExtractMode.TEXT:
+        return _plain_text(translation) if old.extract_mode == ExtractMode.HTML else translation
+    if old.extract_mode == ExtractMode.TEXT:
+        converted = html.escape(translation, quote=False)
+        return None if markup_mismatch(new.source_content, converted) else converted
+    # Both HTML: drop what the new rule no longer sends, such as bare <a/>.
+    return clean_markup(translation)
+
+
 def _match_key(segment: Segment) -> tuple[str, str]:
     text = segment.source_content
     if segment.extract_mode == ExtractMode.HTML:
-        text = lxml_html.fragment_fromstring(text, create_parent="div").text_content()
+        text = _plain_text(text)
     # Whitespace is ignored: old and new serialisations of the same HTML unit
     # differ only in the spacing between tags.
     return segment.file_path.as_posix(), "".join(text.split())
@@ -64,20 +88,26 @@ def import_legacy_workspace(
 ) -> ImportReport:
     mapping = legacy_mapping(old, new)
     report = ImportReport(mapped=len(mapping))
+    old_by_id = {segment.segment_id: segment for segment in old}
+    new_by_id = {segment.segment_id: segment for segment in new}
 
     if state_file.exists():
         report.backups.append(backup_state(state_file))
         state = load_state(state_file)
-        report.finished_not_carried = sum(
-            1
-            for old_id, record in state.segments.items()
-            if record.status == SegmentStatus.COMPLETED and old_id not in mapping
-        )
-        state.segments = {
-            mapping[old_id]: record.model_copy(update={"segment_id": mapping[old_id]})
-            for old_id, record in state.segments.items()
-            if old_id in mapping
-        }
+        carried = {}
+        for old_id, record in state.segments.items():
+            new_id = mapping.get(old_id)
+            update: dict = {"segment_id": new_id}
+            if new_id is not None and record.translation is not None:
+                update["translation"] = _carried_translation(
+                    record.translation, old_by_id[old_id], new_by_id[new_id]
+                )
+            if new_id is None or ("translation" in update and update["translation"] is None):
+                if record.status == SegmentStatus.COMPLETED:
+                    report.finished_not_carried += 1
+                continue
+            carried[new_id] = record.model_copy(update=update)
+        state.segments = carried
         save_state(state, state_file)
 
     for audio_state in sorted(work_dir.glob("audiobook*/audio_state.json")):

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from epub_io.xhtml import XHTML_NS, local_name, text_of
+from epub_io.xhtml import XHTML_NS, local_name, parse_fragment, text_of
 from extraction.cleaners import normalize_punctuation
 from state.models import ExtractMode, Segment, SegmentMetadata
 
@@ -217,6 +217,16 @@ def _extract_inner_html(element: etree._Element) -> str:
     # Each serialised child repeats the epub: declaration it needs; the parser
     # that reads translations back declares it once instead.
     return "".join(parts).replace(_EPUB_DECLARATION, "").strip()
+
+
+def clean_markup(markup: str) -> str:
+    """Markup cleaned by the rule that builds a unit's source: presentational
+    wrappers and links with no target or anchor are unwrapped."""
+    text, elements = parse_fragment(markup)
+    holder = etree.Element(f"{{{XHTML_NS}}}div")
+    holder.text = text
+    holder.extend(elements)
+    return _extract_inner_html(holder)
 
 
 def unit_id(file_path: Path, order: int) -> str:

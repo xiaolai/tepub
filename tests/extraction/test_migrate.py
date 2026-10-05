@@ -97,3 +97,44 @@ def test_workspaces_from_0_4_0_are_carried_over_too() -> None:
     old = [_segment("o", 1, "Before<a/> after <a href='#n'>1</a>.", ExtractMode.HTML)]
     new = [_segment("n", 1, 'Before after <a href="#n">1</a>.', ExtractMode.HTML)]
     assert legacy_mapping(old, new) == {"o": "n"}
+
+
+def _carry(tmp_path: Path, old: Segment, new: Segment, translation: str):
+    state_file = tmp_path / "state.json"
+    record = TranslationRecord(
+        segment_id=old.segment_id, translation=translation, status=SegmentStatus.COMPLETED
+    )
+    save_state(StateDocument(segments={old.segment_id: record}), state_file)
+    report = import_legacy_workspace(tmp_path, state_file, [old], [new])
+    carried = load_state(state_file).segments.get(new.segment_id)
+    return (carried.translation if carried else None), report
+
+
+def test_a_unit_that_became_text_loses_the_tags_of_its_translation(tmp_path: Path) -> None:
+    """0.4.0 sent a paragraph with a bare <a> as HTML; it is text now, and a
+    tag left in its translation would be shown to the reader as text."""
+    old = _segment("o", 1, "Before <a>word</a> after.", ExtractMode.HTML)
+    new = _segment("n", 1, "Before word after.")
+    assert _carry(tmp_path, old, new, "之前<a>词</a>之后。")[0] == "之前词之后。"
+
+
+def test_a_unit_that_became_html_keeps_a_translation_that_meets_the_contract(tmp_path: Path) -> None:
+    old = _segment("o", 1, "A & B.")
+    new = _segment("n", 1, "A <em>&amp;</em> B.", ExtractMode.HTML)
+    assert _carry(tmp_path, old, new, "甲 & 乙。")[0] == "甲 &amp; 乙。"
+
+
+def test_a_unit_that_became_html_with_a_link_is_translated_again(tmp_path: Path) -> None:
+    """A plain translation cannot carry the link the unit now must keep."""
+    old = _segment("o", 1, "See note 1.")
+    new = _segment("n", 1, 'See note <a href="#n1">1</a>.', ExtractMode.HTML)
+    translation, report = _carry(tmp_path, old, new, "见注释 1。")
+    assert translation is None
+    assert report.finished_not_carried == 1
+
+
+def test_bare_links_left_in_an_html_translation_are_unwrapped(tmp_path: Path) -> None:
+    old = _segment("o", 1, 'Before<a/> <a>x</a> and <a href="#n">1</a>.', ExtractMode.HTML)
+    new = _segment("n", 1, 'Before x and <a href="#n">1</a>.', ExtractMode.HTML)
+    translation = _carry(tmp_path, old, new, '之前<a/> <a>x</a> 和 <a href="#n">1</a>。')[0]
+    assert translation == '之前 x 和 <a href="#n">1</a>。'
