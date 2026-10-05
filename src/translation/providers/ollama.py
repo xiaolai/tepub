@@ -57,6 +57,7 @@ def _installed(model: str, names: set[str]) -> bool:
 
 class OllamaProvider(BaseProvider):
     supports_html = True
+    local = True
 
     def __init__(self, config: ProviderConfig):
         super().__init__(config)

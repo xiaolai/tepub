@@ -450,3 +450,85 @@ def test_one_language_spelled_two_ways_is_not_a_change(monkeypatch, settings, tm
 
     assert list(settings.state_file.parent.glob("state.*.json")) == []
     assert load_state(settings.state_file).segments[segment.segment_id].translation == "你好"
+
+
+class LocalServer:
+    """A local provider whose requests time out; its health check answers
+    while ``up`` is True."""
+
+    name = "dummy"
+    model = "dummy-model"
+    local = True
+
+    def __init__(self, up_after_start: bool):
+        self.checks = 0
+        self.up_after_start = up_after_start
+
+    def preflight(self):
+        self.checks += 1
+        if self.checks > 1 and not self.up_after_start:
+            from translation.providers import ProviderFatalError
+
+            raise ProviderFatalError("Cannot reach Ollama at http://localhost:11434")
+
+    def translate(self, segment, source_language, target_language):
+        from translation.providers import ProviderError
+
+        raise ProviderError("Ollama request failed after 3 attempts: Read timed out")
+
+
+def _five_segments(settings, input_epub):
+    from state.models import SegmentsDocument
+
+    segments = [
+        Segment(
+            segment_id=f"l-{i}",
+            file_path=Path("Text/c.xhtml"),
+            xpath=f"/html/body/p[{i}]",
+            extract_mode=ExtractMode.TEXT,
+            source_content=f"Sentence number {i}.",
+            metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=i),
+        )
+        for i in range(1, 6)
+    ]
+    save_segments(
+        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        settings.segments_file,
+    )
+
+
+def test_a_local_server_that_answers_is_not_waited_for(monkeypatch, settings, tmp_path):
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    _five_segments(settings, input_epub)
+    settings = settings.model_copy(update={"translation_workers": 1})
+    server = LocalServer(up_after_start=True)
+    slept: list[float] = []
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: server)
+    monkeypatch.setattr("translation.controller.console", Console(record=True))
+    monkeypatch.setattr("translation.controller._sleep", slept.append)
+
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+
+    assert slept == []
+    assert server.checks >= 2  # checked once at start, again when failures piled up
+    assert {r.status for r in load_state(settings.state_file).segments.values()} == {SegmentStatus.ERROR}
+
+
+def test_a_local_server_that_is_down_stops_the_run_with_the_fix(monkeypatch, settings, tmp_path):
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    _five_segments(settings, input_epub)
+    settings = settings.model_copy(update={"translation_workers": 1})
+    console = Console(record=True)
+    slept: list[float] = []
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: LocalServer(up_after_start=False))
+    monkeypatch.setattr("translation.controller.console", console)
+    monkeypatch.setattr("translation.controller._sleep", slept.append)
+
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+
+    assert slept == []
+    assert "Cannot reach Ollama" in console.export_text()
+    statuses = [r.status for r in load_state(settings.state_file).segments.values()]
+    assert statuses.count(SegmentStatus.ERROR) == 3 and statuses.count(SegmentStatus.PENDING) == 2

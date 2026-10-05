@@ -84,6 +84,12 @@ class BaseProvider(abc.ABC):
     #: notes in it can change its reply. DeepL translates the text alone.
     follows_instructions: bool = True
 
+    #: A provider on the user's own machine or network. When its failures pile
+    #: up, the run checks its health instead of cooling down: such a server is
+    #: either answering, so waiting gains nothing, or down until someone
+    #: restarts it, which no wait fixes.
+    local: bool = False
+
     def ensure_segment_supported(self, segment: Segment) -> None:
         """Raise when this provider cannot faithfully handle the segment."""
         if segment.extract_mode == ExtractMode.HTML and not self.supports_html:

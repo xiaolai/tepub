@@ -575,7 +575,29 @@ def run_translation(
                                     consecutive = writer.consecutive_failures + int(counted)
                                     writer.consecutive_failures = consecutive
 
-                                    if counted and consecutive >= FAILURES_BEFORE_COOLDOWN:
+                                    if (
+                                        counted
+                                        and consecutive >= FAILURES_BEFORE_COOLDOWN
+                                        and getattr(provider, "local", False)
+                                    ):
+                                        # A local server: ask it rather than wait. If it
+                                        # answers, carry on at once; if not, stop and say
+                                        # how to start it.
+                                        try:
+                                            provider.preflight()
+                                        except ProviderFatalError as exc:
+                                            fatal_error = exc
+                                            for queued in future_to_segment:
+                                                if not queued.done():
+                                                    queued.cancel()
+                                            console.print(f"[red]{exc}[/red]")
+                                            console.print(
+                                                "[yellow]Stopping run; completed translations "
+                                                "are saved and the run can be resumed.[/yellow]"
+                                            )
+                                            break
+                                        writer.consecutive_failures = 0
+                                    elif counted and consecutive >= FAILURES_BEFORE_COOLDOWN:
                                         in_cooldown = True
                                         cooled_down_this_pass = True
                                         cooldowns_taken += 1
