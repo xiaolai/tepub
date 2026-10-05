@@ -29,6 +29,7 @@ from epub_io.toc_utils import parse_toc_to_dict
 from state.models import Segment
 from state.store import load_segments
 
+from .concat import concat_audio, write_silence
 from .cover import find_spine_cover_candidate
 from .models import AudioSegmentStatus, AudioSessionConfig
 from .mp4chapters import write_chapter_markers
@@ -461,18 +462,6 @@ def _tag_audiobook(
             ) from exc
 
 
-def _concat_entry(path: Path) -> str:
-    """Format one line of an ffmpeg concat demuxer list.
-
-    The demuxer treats a single quote as the string terminator, so a path
-    containing an apostrophe (common in book titles) truncated the filename and
-    ffmpeg failed on a perfectly valid workspace. The documented escape is to
-    close the quote, emit an escaped quote, and reopen it.
-    """
-    escaped = str(path.absolute()).replace("'", "'\\''")
-    return f"file '{escaped}'\n"
-
-
 def chapter_is_current(chapter_path: Path, segments: list[Segment], audio_state) -> bool:
     """True when a cached chapter is newer than, and built from, these segments.
 
@@ -624,7 +613,9 @@ def assemble_audiobook(
 
         with progress:
             combine_task = progress.add_task("chapter-mix", total=len(sorted_chapters))
-            for title, chapter_path, file_path, segments in expected_chapters:
+            for chapter_number, (title, chapter_path, file_path, segments) in enumerate(
+                expected_chapters, start=1
+            ):
                 # Stable across processes; hash() on a path is salted per process.
                 rng = random.Random(
                     int.from_bytes(
@@ -651,57 +642,31 @@ def assemble_audiobook(
                 chapter_temp_dir = chapters_dir / f"temp_{title[:20]}"
                 chapter_temp_dir.mkdir(parents=True, exist_ok=True)
 
-                # Build concat list with segments and silence
-                concat_list_path = chapter_temp_dir / "concat_list.txt"
-
-                with open(concat_list_path, "w", encoding="utf-8") as f:
-                    for idx, segment_path in enumerate(available_segment_paths):
-                        f.write(_concat_entry(segment_path))
-
-                        # Add pause between segments (except after last segment)
-                        if idx < len(available_segment_paths) - 1:
-                            pause_seconds = rng.uniform(*segment_pause_range)
-                            pause_path = chapter_temp_dir / f"pause_{idx}.m4a"
-                            pause_silence = AudioSegment.silent(duration=int(pause_seconds * 1000))
-                            pause_silence.export(
-                                pause_path,
-                                format="mp4",
-                                codec="aac",
-                                parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
+                # Segments with pauses between them, then the gap before the next
+                # chapter. Silence is written in the speech's own format; see
+                # audiobook/concat.py for why that matters.
+                like = available_segment_paths[0]
+                parts: list[Path] = []
+                for idx, segment_path in enumerate(available_segment_paths):
+                    parts.append(segment_path)
+                    if idx < len(available_segment_paths) - 1:
+                        pause_seconds = rng.uniform(*segment_pause_range)
+                        parts.append(
+                            write_silence(
+                                chapter_temp_dir / f"pause_{idx}.m4a", pause_seconds, like=like
                             )
-                            f.write(_concat_entry(pause_path))
+                        )
 
-                # Add chapter gap at the end (except for last chapter)
-                index = expected_chapters.index((title, chapter_path, file_path, segments)) + 1
-                if index < len(sorted_chapters):
-                    chapter_gap_rng = random.Random(0xA10D10 + index)
+                if chapter_number < len(sorted_chapters):
+                    chapter_gap_rng = random.Random(0xA10D10 + chapter_number)
                     chapter_gap_seconds = chapter_gap_rng.uniform(2.0, 4.0)
-                    gap_path = chapter_temp_dir / "chapter_gap.m4a"
-                    gap_silence = AudioSegment.silent(duration=int(chapter_gap_seconds * 1000))
-                    gap_silence.export(
-                        gap_path,
-                        format="mp4",
-                        codec="aac",
-                        parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
+                    parts.append(
+                        write_silence(
+                            chapter_temp_dir / "chapter_gap.m4a", chapter_gap_seconds, like=like
+                        )
                     )
-                    with open(concat_list_path, "a", encoding="utf-8") as f:
-                        f.write(_concat_entry(gap_path))
 
-                # Use ffmpeg to concatenate M4A files without re-encoding
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-f", "concat",
-                        "-safe", "0",
-                        "-i", str(concat_list_path),
-                        "-vn",  # Ignore video streams (cover art)
-                        "-c:a", "copy",
-                        "-y",
-                        str(chapter_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
+                concat_audio(parts, chapter_path)
 
                 # Clean up temp directory
                 shutil.rmtree(chapter_temp_dir, ignore_errors=True)
@@ -746,88 +711,41 @@ def assemble_audiobook(
     final_name = f"{_slugify(book_title)}@{provider_suffix}.m4a"
     workspace_path = audiobook_dir / final_name
 
-    # Create concat file list for ffmpeg
-    concat_file = audiobook_dir / "concat_list.txt"
     chapter_markers: list[tuple[int, str]] = []
     current_position_seconds = 0.0  # Use float for precision
+    parts: list[Path] = []
+    like = chapter_audios[0][1]
 
-    with open(concat_file, "w", encoding="utf-8") as f:
-        # Add opening statement if available
-        if opening_audio_path and opening_audio_path.exists():
-            f.write(f"file '{opening_audio_path.absolute()}'\n")
+    if opening_audio_path and opening_audio_path.exists():
+        opening_silence_path = write_silence(
+            audiobook_dir / "opening_silence.m4a",
+            random.Random(0xDEADBEEF).uniform(2.0, 4.0),
+            like=like,
+        )
+        parts += [opening_audio_path, opening_silence_path]
+        # Durations come from the files themselves, so markers match the audio.
+        current_position_seconds += _get_audio_duration(opening_audio_path)
+        current_position_seconds += _get_audio_duration(opening_silence_path)
 
-            # Add silence after opening
-            opening_silence_path = audiobook_dir / "opening_silence.m4a"
-            planned_silence_duration = random.Random(0xDEADBEEF).uniform(2.0, 4.0)
-            opening_silence = AudioSegment.silent(duration=int(planned_silence_duration * 1000))
-            opening_silence.export(
-                opening_silence_path,
-                format="mp4",
-                codec="aac",
-                parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
-            )
-            f.write(f"file '{opening_silence_path.absolute()}'\n")
+    for idx, (title, chapter_path, duration_seconds) in enumerate(chapter_audios):
+        safe_title = title.strip() if isinstance(title, str) else ""
+        if not safe_title:
+            safe_title = f"Chapter {idx + 1}"
+        chapter_markers.append((int(current_position_seconds * 1000), safe_title))
+        parts.append(chapter_path)
+        # The chapter's own duration already includes the gap at its end.
+        current_position_seconds += duration_seconds
 
-            # Read actual durations from files using ffprobe (accurate for M4A)
-            try:
-                opening_duration_seconds = _get_audio_duration(opening_audio_path)
-                actual_silence_duration = _get_audio_duration(opening_silence_path)
+    if closing_audio_path and closing_audio_path.exists():
+        closing_silence_path = write_silence(
+            audiobook_dir / "closing_silence.m4a",
+            random.Random(0xC105ED).uniform(2.0, 4.0),
+            like=like,
+        )
+        parts += [closing_silence_path, closing_audio_path]
 
-                current_position_seconds += opening_duration_seconds + actual_silence_duration
-            except Exception as exc:
-                logger.warning(f"Could not load opening statement duration, chapter timestamps may be offset: {exc}")
-
-        for idx, (title, chapter_path, duration_seconds) in enumerate(chapter_audios):
-            safe_title = title.strip() if isinstance(title, str) else ""
-            if not safe_title:
-                safe_title = f"Chapter {idx + 1}"
-
-            # Record chapter marker at current position (convert to ms only here)
-            chapter_markers.append((int(current_position_seconds * 1000), safe_title))
-
-            # Add chapter file to concat list
-            f.write(f"file '{chapter_path.absolute()}'\n")
-
-            # Update position with chapter duration (already includes silence at end)
-            current_position_seconds += duration_seconds
-
-        # Add closing statement if available
-        if closing_audio_path and closing_audio_path.exists():
-            # Add 2-4 seconds silence before closing
-            # (This silence is added as a separate silent M4A)
-            silence_path = audiobook_dir / "closing_silence.m4a"
-            silence_duration = random.Random(0xC105ED).uniform(2.0, 4.0)
-            silence_segment = AudioSegment.silent(duration=int(silence_duration * 1000))
-            silence_segment.export(
-                silence_path,
-                format="mp4",
-                codec="aac",
-                parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
-            )
-            f.write(f"file '{silence_path.absolute()}'\n")
-
-            f.write(f"file '{closing_audio_path.absolute()}'\n")
-
-    # Use ffmpeg to concatenate M4A files without re-encoding
-    # All input files are already M4A/AAC, so we can use -c:a copy for instant concat
     console.print("[cyan]Creating final M4A audiobook…[/cyan]")
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-vn",  # Ignore video streams (cover art)
-            "-c:a", "copy",  # Copy audio stream without re-encoding (instant!)
-            "-y",  # Overwrite output file
-            str(workspace_path),
-        ],
-        check=True,
-        capture_output=True,
-    )
-
-    # Clean up concat file
-    concat_file.unlink()
+    concat_audio(parts, workspace_path)
 
     # Clean up statement audio files (already included in final audiobook)
     if opening_audio_path and opening_audio_path.exists():
