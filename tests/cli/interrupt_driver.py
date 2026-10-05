@@ -78,6 +78,10 @@ import faulthandler  # noqa: E402
 import signal  # noqa: E402
 
 faulthandler.register(signal.SIGUSR1, all_threads=True)
+# A suite started in the background (`pytest &`) runs with Ctrl-C ignored, and
+# the child inherits that: the run then could not be interrupted at all, and
+# this test failed though tepub was fine. Python's own handler is restored.
+signal.signal(signal.SIGINT, signal.default_int_handler)
 
 if guarded:
     from cli.main import run_guarded
