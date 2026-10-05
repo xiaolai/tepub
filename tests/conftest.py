@@ -48,6 +48,9 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "needs_punkt: requires NLTK's punkt_tab data, which tests never download"
     )
+    config.addinivalue_line(
+        "markers", "live: calls a real model server named by TEPUB_LIVE_BASE_URL; opt-in only"
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

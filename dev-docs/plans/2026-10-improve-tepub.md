@@ -63,8 +63,8 @@ phase 0.
 **Done when:** the script exits 1 on today's tree, naming the chapter-marker test, and that is the only failure.
 
 ### WI-0.4 Opt-in live model tests
-**Status:** open, pending the model deployment
-**Files:** `tests/live/` (new), `pyproject.toml` pytest markers
+**Status:** DONE 2026-10-05. A TranslateGemma 12B model on a self-hosted Ollama server is the live endpoint. Verified: without `TEPUB_LIVE_BASE_URL` the 5 tests skip with that reason; with it all 5 pass: translation through the Ollama native, chat-completions and Responses shapes, and truncation refused on the real `done_reason: length` and `finish_reason: length` signals. The Responses shape's truncation signal stays unconfirmed: Ollama ignores `max_output_tokens`. Python's HTTP client sees no proxy for the host, so the Mac's system proxy is not in the path.
+**Files:** `tests/live/` (new), `tests/conftest.py` marker
 **Do:** tests marked `live` run only when `TEPUB_LIVE_BASE_URL` is set, against any OpenAI-compatible endpoint. They never run in CI or in the default suite. They exist to measure what fakes cannot: refusal and truncation signals (WI-2.3), the error classes (WI-2.4), and whether a real model keeps the inline-markup contract (WI-4.5).
 **Done when:** `python -m pytest -m live` skips with a named reason when the variable is unset, and passes against the live endpoint when it is set.
 
