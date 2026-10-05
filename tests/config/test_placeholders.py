@@ -61,6 +61,7 @@ def test_a_statement_with_a_stray_brace_renders(monkeypatch, tmp_path) -> None:
 
     def fake_generate(text, session, output_path):
         captured["text"] = text
+        output_path.write_bytes(b"audio")  # the real generator writes the file
         return output_path
 
     monkeypatch.setattr(assembly, "_generate_statement_audio", fake_generate)

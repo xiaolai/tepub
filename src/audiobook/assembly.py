@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import random
 import re
@@ -391,16 +392,34 @@ def _render_statement(
             "narrator_name": _extract_narrator_name(session.voice),
         },
     )
-    audio_path = output_root / f"{label}_statement.m4a"
+    if not text.strip():
+        return None
+    # Cached under everything that shapes the audio. It used to be synthesised
+    # on every assembly, a cover-only rebuild included, and deleted afterwards,
+    # so a paid voice was paid again each time.
+    key = hashlib.sha256(
+        json.dumps(
+            [text, session.tts_provider, session.voice, session.tts_model,
+             session.tts_speed, session.rate, session.volume]
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    audio_path = output_root / "statements" / f"{label}-{key}.m4a"
+    if audio_path.exists() and audio_path.stat().st_size > 0:
+        return audio_path
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = audio_path.with_name(audio_path.stem + ".partial.m4a")
     # A configured statement that cannot be rendered stops assembly. Logging and
     # carrying on produced a book silently missing its opening or closing.
     try:
-        rendered = _generate_statement_audio(text, session, audio_path)
+        rendered = _generate_statement_audio(text, session, partial)
     except Exception as exc:
+        partial.unlink(missing_ok=True)
         raise RuntimeError(f"Could not render the {label} statement: {exc}") from exc
-    if rendered:
-        console.print(f"[cyan]Generated {label} statement audio[/cyan]")
-    return rendered
+    if rendered is None:
+        return None
+    partial.replace(audio_path)
+    console.print(f"[cyan]Generated {label} statement audio[/cyan]")
+    return audio_path
 
 
 def _tag_audiobook(
@@ -729,18 +748,9 @@ def assemble_audiobook(
     console.print("[cyan]Creating final M4A audiobook…[/cyan]")
     concat_audio(parts, workspace_path)
 
-    # Clean up statement audio files (already included in final audiobook)
-    if opening_audio_path and opening_audio_path.exists():
-        opening_audio_path.unlink()
-        opening_silence_path = audiobook_dir / "opening_silence.m4a"
-        if opening_silence_path.exists():
-            opening_silence_path.unlink()
-
-    if closing_audio_path and closing_audio_path.exists():
-        closing_audio_path.unlink()
-        closing_silence_path = audiobook_dir / "closing_silence.m4a"
-        if closing_silence_path.exists():
-            closing_silence_path.unlink()
+    # The silences are cheap to make again; the statements stay cached.
+    for name in ("opening_silence.m4a", "closing_silence.m4a"):
+        (audiobook_dir / name).unlink(missing_ok=True)
 
     _tag_audiobook(workspace_path, book_title, authors, cover_path, chapter_markers)
 
