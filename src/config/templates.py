@@ -204,9 +204,9 @@ prompt_preamble: |
 
   Instructions:
     1. Return the translated text only — no explanations, commentary, or additional notes.
-    2. If the source contains HTML tags, preserve them and adapt the translation to fit naturally within those tags.
-    3. Ensure that all returned HTML is valid and properly formatted.
-    4. Translate faithfully from {{source_language}} into {{target_language}} while maintaining the style and tone of the original.
+    2. Translate faithfully from {{source_language}} into {{target_language}} while maintaining the style and tone of the original.
+
+  {{mode_instruction}}
 
 # --- Alternative Prompt Styles (uncomment to replace the above) ---
 #

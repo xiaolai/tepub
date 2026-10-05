@@ -208,7 +208,8 @@ back_matter_threshold: 0.7
 #   - For HTML: "The source is an HTML fragment. Translate only its text. Keep every
 #     tag, and every href, src and id value, exactly as given; inline elements may
 #     move to follow the translated wording."
-#   Keep {mode_instruction} in a custom prompt: replies that change the markup are
+#   A custom prompt without {mode_instruction} gets it added at the end: it is
+#   what keeps links and notes intact, and replies that change the markup are
 #   retried once and then marked as errors.
 #   - For text: "Return a faithful translation of the prose without adding explanations."
 

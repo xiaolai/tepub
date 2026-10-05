@@ -69,7 +69,13 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
         language_instruction = f"Translate from {display_source} into {display_target}."
 
     # Use custom prompt if configured, otherwise use default
-    if _PROMPT_PREAMBLE:
+    preamble = _PROMPT_PREAMBLE
+    if preamble and "{mode_instruction}" not in preamble:
+        # The mode instruction is what tells the model to keep markers and tags.
+        # The per-book template tepub wrote left it out, so on a whole book the
+        # model, never told, dropped note-link markers in most long paragraphs.
+        preamble = f"{preamble}\n{{mode_instruction}}"
+    if preamble:
         # {language_instruction} is documented as an available placeholder in both
         # README.md and config.example.yaml, but was never passed here, so any
         # custom prompt_preamble using it failed with KeyError.
@@ -77,7 +83,7 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
         # left alone (see config.placeholders).
         intro = dedent(
             fill_placeholders(
-                _PROMPT_PREAMBLE,
+                preamble,
                 {
                     "source_language": display_source,
                     "target_language": display_target,

@@ -30,3 +30,26 @@ def test_build_prompt_handles_auto_detection() -> None:
     prompt = build_prompt(segment, source_language="auto", target_language="fr")
     assert "Detect the source language automatically" in prompt
     assert "Keep every tag" in prompt
+
+
+def test_a_custom_prompt_without_the_mode_instruction_still_gets_it() -> None:
+    """The per-book template omitted {mode_instruction}, so a whole book went
+    to the model without being told to keep its markers."""
+    segment = _make_segment("A claim⟦1⟧2⟦/1⟧.")
+    configure_prompt("You translate {book} faithfully into {target_language}.")
+    try:
+        prompt = build_prompt(segment, "en", "zh")
+    finally:
+        configure_prompt(None)
+    assert "Keep every marker exactly once" in prompt
+    assert prompt.count("Keep every marker") == 1
+
+
+def test_the_book_template_uses_the_mode_instruction(tmp_path: Path) -> None:
+    import yaml
+
+    from config.templates import create_book_config_template
+
+    create_book_config_template(tmp_path, "book.epub", {"title": "A Book"})
+    preamble = yaml.safe_load((tmp_path / "config.yaml").read_text())["prompt_preamble"]
+    assert "{mode_instruction}" in preamble and "A Book" in preamble
