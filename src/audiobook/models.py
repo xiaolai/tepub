@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -21,7 +21,7 @@ class AudioSegmentState(BaseModel):
     audio_path: Path | None = None
     duration_seconds: float | None = None
     last_error: str | None = None
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AudioSessionConfig(BaseModel):

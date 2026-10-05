@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from console_singleton import get_console
@@ -166,7 +166,7 @@ def update_segment_state(
             segment = AudioSegmentState(segment_id=segment_id)
         updated = updater(segment)
         state.segments[segment_id] = updated
-        state.segments[segment_id].updated_at = datetime.utcnow()
+        state.segments[segment_id].updated_at = datetime.now(timezone.utc)
         save_generic_state(state, state_path)
         return updated
 
@@ -235,7 +235,7 @@ def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None)
             if segment.status == AudioSegmentStatus.ERROR:
                 segment.status = AudioSegmentStatus.PENDING
                 segment.attempts = 0
-                segment.updated_at = datetime.utcnow()
+                segment.updated_at = datetime.now(timezone.utc)
                 state.segments[seg_id] = segment
                 reset_ids.append(seg_id)
                 changed = True

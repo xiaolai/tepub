@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.console import Group
@@ -560,9 +560,9 @@ class AudiobookRunner:
                                         for queued in future_to_seg_id:
                                             if not queued.done():
                                                 queued.cancel()
-                                        cooldown_until = datetime.utcnow() + timedelta(minutes=30)
+                                        cooldown_until = datetime.now(timezone.utc) + timedelta(minutes=30)
                                         set_cooldown(self.state_path, cooldown_until)
-                                        remaining = (cooldown_until - datetime.utcnow()).total_seconds()
+                                        remaining = (cooldown_until - datetime.now(timezone.utc)).total_seconds()
                                         while remaining > 0:
                                             mins = int(remaining // 60)
                                             secs = int(remaining % 60)
@@ -570,7 +570,7 @@ class AudiobookRunner:
                                             live.update(Group(render_panel(), progress))
                                             sleep_for = min(5, remaining)
                                             time.sleep(sleep_for)
-                                            remaining = (cooldown_until - datetime.utcnow()).total_seconds()
+                                            remaining = (cooldown_until - datetime.now(timezone.utc)).total_seconds()
                                         set_cooldown(self.state_path, None)
                                         set_consecutive_failures(self.state_path, 0)
                                         in_cooldown = False
