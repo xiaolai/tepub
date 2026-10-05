@@ -85,3 +85,19 @@ def test_anchor_and_page_break_spans_are_kept() -> None:
 def test_unwrapping_keeps_text_in_order() -> None:
     (unit,) = _units("<p>a<span>b<em>c</em>d</span>e<span>f</span></p>")
     assert unit.source_content == "ab<em>c</em>def"
+
+
+def test_a_bare_link_element_is_presentational() -> None:
+    """Converted books leave <a> elements whose only attributes were styling.
+
+    Stripped of those, a bare <a/> was still sent to the model and counted by
+    the markup check, so a model that dropped it, reasonably, failed the
+    paragraph: 5 of 20 sampled paragraphs of one real book.
+    """
+    (unit,) = _units('<p>Before<a class="calibre5"/> after <a href="notes.xhtml#n1">1</a>.</p>')
+    assert unit.source_content == 'Before after <a href="notes.xhtml#n1">1</a>.'
+
+
+def test_a_paragraph_whose_only_markup_is_a_bare_link_is_text() -> None:
+    (unit,) = _units('<p>Plain words<a class="x"/> only.</p>')
+    assert unit.extract_mode == ExtractMode.TEXT

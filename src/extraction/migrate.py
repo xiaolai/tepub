@@ -25,7 +25,8 @@ from state.base import atomic_write
 from state.models import ExtractMode, Segment, SegmentStatus
 from state.store import backup_state, load_state, save_state
 
-SEGMENTS_FORMAT = 2
+# 3: bare <a/> elements are no longer part of a unit's source.
+SEGMENTS_FORMAT = 3
 
 
 @dataclass

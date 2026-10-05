@@ -58,7 +58,7 @@ class SkippedDocument(BaseModel):
 class SegmentsDocument(BaseModel):
     # 1: units keyed by file stem plus an xpath hash (files written before the
     # format was recorded). 2: units from the current segmentation rule, keyed by
-    # file path and document order.
+    # file path and document order. 3: as 2, without bare <a/> elements.
     format_version: int = 1
     epub_path: Path
     # SHA-256 of the EPUB extracted from; identifies the book wherever it moves.

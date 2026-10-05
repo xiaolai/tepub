@@ -87,3 +87,13 @@ def test_import_moves_translations_and_audio(tmp_path: Path) -> None:
     audio = json.loads((audio_dir / "audio_state.json").read_text(encoding="utf-8"))
     assert audio["segments"] == {"new-2": {"segment_id": "new-2", "audio_path": "b.m4a"}}
     assert len(report.backups) == 2 and all(p.exists() for p in report.backups)
+
+
+def test_workspaces_from_0_4_0_are_carried_over_too() -> None:
+    """Format 2 sources still held bare <a/> elements; matching ignores markup."""
+    from extraction.migrate import SEGMENTS_FORMAT
+
+    assert SEGMENTS_FORMAT >= 3
+    old = [_segment("o", 1, "Before<a/> after <a href='#n'>1</a>.", ExtractMode.HTML)]
+    new = [_segment("n", 1, 'Before after <a href="#n">1</a>.', ExtractMode.HTML)]
+    assert legacy_mapping(old, new) == {"o": "n"}

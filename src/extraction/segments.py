@@ -46,8 +46,10 @@ BLOCK_TAGS = frozenset(
 SKIPPED_TAGS = frozenset({"svg", "math", "switch", "script", "style", "pre", "template"})
 
 # Presentational wrappers dropped from the HTML sent for translation; their
-# text stays. Links are kept: they carry footnote references.
-_UNWRAPPED_INLINE = ("span", "font")
+# text stays. A link is kept when it has a target or an anchor (footnote
+# references do); converted books also leave <a class="..."/> elements that
+# carry nothing once styling goes, and those are unwrapped like spans.
+_UNWRAPPED_INLINE = ("span", "font", "a")
 
 OPS_TYPE = "{http://www.idpf.org/2007/ops}type"
 
@@ -122,12 +124,12 @@ def _has_inline_markup(element: etree._Element) -> bool:
     )
 
 
-_ANCHOR_ATTRIBUTES = ("id", OPS_TYPE, "role")
+_ANCHOR_ATTRIBUTES = ("id", OPS_TYPE, "role", "href")
 
 
 def _is_anchor(node: etree._Element) -> bool:
-    """A span or font that something points at or reads: an endnote target, a
-    print page-break marker. Real books carry both on empty spans."""
+    """A span, font or link that points somewhere, or that something points at
+    or reads: a link, an endnote target, a print page-break marker."""
     return any(node.get(name) is not None for name in _ANCHOR_ATTRIBUTES)
 
 
@@ -191,7 +193,7 @@ def _plain_copy(element: etree._Element) -> etree._Element:
         node.attrib.clear()
         for name, value in kept.items():
             node.set(name, value)
-    # Presentational wrappers go; spans that carry an anchor stay.
+    # Presentational wrappers go; ones with a target or an anchor stay.
     for node in list(clone.iter()):
         if (
             node is not clone
