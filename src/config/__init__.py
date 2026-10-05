@@ -9,7 +9,7 @@ from __future__ import annotations
 # Import workspace module to attach methods to AppSettings
 import config.workspace  # noqa: F401
 from config.loader import load_settings, load_settings_from_cli
-from config.models import AppSettings, ProviderConfig, RateLimitConfig, RetryConfig, SkipRule
+from config.models import AppSettings, ProviderConfig, SkipRule
 from config.templates import create_book_config_template
 from config.workspace import build_workspace_name
 
@@ -18,8 +18,6 @@ __all__ = [
     "AppSettings",
     "ProviderConfig",
     "SkipRule",
-    "RetryConfig",
-    "RateLimitConfig",
     # Loaders
     "load_settings",
     "load_settings_from_cli",

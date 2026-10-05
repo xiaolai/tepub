@@ -190,7 +190,7 @@ def validate(ctx: click.Context, input_epub: Path | None, use_global: bool, conf
             "cover_image_path"
         ],
         "Provider Settings": [
-            "primary_provider", "fallback_provider", "providers"
+            "primary_provider", "providers"
         ],
         "Skip Rules": [
             "skip_rules", "skip_after_back_matter"
@@ -445,11 +445,6 @@ translation_workers: 3             # Number of parallel translation workers
 primary_provider:
   name: openai                     # openai, anthropic, gemini, grok, deepl, ollama
   model: gpt-4o                    # Model name for the provider
-
-# Optional fallback provider (if primary fails)
-# fallback_provider:
-#   name: anthropic
-#   model: claude-3-5-sonnet-20241022
 
 # ============================================================
 # Audiobook Settings

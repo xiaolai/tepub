@@ -8,17 +8,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class RetryConfig(BaseModel):
-    max_attempts: int = Field(3, ge=1)
-    backoff_seconds: float = Field(1.5, gt=0)
-    jitter: float = Field(0.1, ge=0)
-
-
-class RateLimitConfig(BaseModel):
-    requests_per_minute: int | None = Field(None, gt=0)
-    concurrency: int = Field(1, ge=1)
-
-
 class ProviderConfig(BaseModel):
     name: str = Field(..., description="Provider identifier, e.g. openai or ollama")
     model: str = Field(..., description="Model name used for translation")
@@ -73,12 +62,6 @@ class AppSettings(BaseModel):
     primary_provider: ProviderConfig = Field(
         default_factory=lambda: ProviderConfig(name="openai", model="gpt-4o")
     )
-    fallback_provider: ProviderConfig | None = Field(
-        default_factory=lambda: ProviderConfig(name="ollama", model="qwen2.5:14b-instruct")
-    )
-
-    retry: RetryConfig = Field(default_factory=RetryConfig)
-    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
     skip_rules: list[SkipRule] = Field(
         default_factory=lambda: [

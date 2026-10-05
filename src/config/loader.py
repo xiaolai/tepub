@@ -99,8 +99,6 @@ def _prepare_provider_credentials(settings: AppSettings) -> AppSettings:
     if ollama_url:
         if settings.primary_provider.name == "ollama":
             settings.primary_provider.base_url = ollama_url
-        if settings.fallback_provider and settings.fallback_provider.name == "ollama":
-            settings.fallback_provider.base_url = ollama_url
     return settings
 
 
@@ -177,6 +175,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     if "output_mode" in payload:
         payload["output_mode"] = str(payload["output_mode"]).replace("-", "_").strip().lower()
 
+    # Unknown keys used to be dropped without a word, so a misspelt setting, or
+    # one tepub no longer has, looked accepted.
+    unknown = sorted(set(payload) - set(AppSettings.model_fields))
+    if unknown:
+        logger.warning("Ignoring settings tepub does not use: %s", ", ".join(unknown))
     settings = AppSettings(**payload)
     configured = _prepare_provider_credentials(settings)
     try:

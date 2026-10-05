@@ -145,7 +145,7 @@ Each of these reports success while producing wrong output.
 **Test first:** completed state, switch model; assert translations kept. Switch target language; assert backup exists and the message names the count.
 
 ### WI-2.6 Remove configuration that does nothing (C9)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/config/test_unused_keys.py`. `retry`, `rate_limit` and `fallback_provider` are gone from the model, loader, `config` command template and `config.example.yaml`; a test holds the example to real settings, and loading warns about any key tepub does not use.
 **Files:** `src/config/models.py`, `config.example.yaml`, `src/config/templates.py`
 **Do:** delete `retry`, `rate_limit` and `fallback_provider`, or wire them; the default is delete. An unknown key in a user's config produces a warning naming it.
 **Done when:** `grep -rn "rate_limit\|fallback_provider" src` finds nothing, and a test asserts the warning.

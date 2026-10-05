@@ -115,37 +115,10 @@ primary_provider:
 #   # api_key: ${DEEPL_API_KEY}
 
 # Option 6: Ollama - Free, runs on your computer (no internet needed)
-fallback_provider:
-  name: ollama
-  model: qwen2.5:14b-instruct   # Good free model for translation
-  base_url: http://localhost:11434
-
-# ============================================================
-# Backup Service (Fallback Provider)
-# ============================================================
-# If your main service fails, TEPUB automatically switches to this one
-# Uncomment to set a backup:
-# fallback_provider:
+# primary_provider:
 #   name: ollama
-#   model: qwen2.5:14b-instruct
+#   model: qwen2.5:14b-instruct   # Good free model for translation
 #   base_url: http://localhost:11434
-
-# ============================================================
-# Retry Settings
-# ============================================================
-# What to do if translation fails temporarily (network issues, etc.)
-# retry:
-#   max_attempts: 3          # Try up to 3 times before giving up
-#   backoff_seconds: 1.5     # Wait 1.5 seconds between retries
-#   jitter: 0.1              # Add random delay to avoid overwhelming server
-
-# ============================================================
-# Rate Limiting
-# ============================================================
-# Control how fast TEPUB sends requests to avoid hitting API limits
-# rate_limit:
-#   requests_per_minute: 60   # Maximum requests per minute
-#   concurrency: 1            # How many requests at the same time
 
 # ============================================================
 # Skip Rules - What NOT to Translate

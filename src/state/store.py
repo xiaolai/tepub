@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import shutil
 import threading
 from collections.abc import Iterable
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
