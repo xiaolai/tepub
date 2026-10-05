@@ -91,8 +91,18 @@ def _nltk():
     """
     import os
 
-    os.environ.setdefault("NLTK_DISABLE_IMPORT_SECURITY", "1")
-    import nltk
+    # Scoped to the import: setting it for the whole process also switched the
+    # guard off for any program that imports tepub as a library. NLTK's later
+    # tokenizer loads were checked from the home directory with the guard back on.
+    variable = "NLTK_DISABLE_IMPORT_SECURITY"
+    previous = os.environ.get(variable)
+    if previous is None:
+        os.environ[variable] = "1"
+    try:
+        import nltk
+    finally:
+        if previous is None:
+            os.environ.pop(variable, None)
 
     return nltk
 
