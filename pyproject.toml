@@ -72,7 +72,7 @@ all-providers = [
 ]
 
 [project.scripts]
-tepub = "cli.main:app"
+tepub = "cli.main:run"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

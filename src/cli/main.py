@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import click
@@ -105,5 +109,46 @@ register_commands(app)
 register_debug_commands(app)
 
 
+# The shell's convention for a process ended by Ctrl-C (128 + SIGINT).
+EXIT_INTERRUPTED = 130
+
+
+def run_guarded(func: Callable[[], object]) -> object:
+    """Run ``func``; on Ctrl-C, exit at once with code 130.
+
+    Commands save their state while the interrupt unwinds through them. What
+    remained was Python waiting, at exit, for worker threads still inside a
+    network call or a retry sleep: up to minutes of apparent hang after
+    "Progress saved". Nothing is left to protect by then, so the process ends
+    without waiting for them.
+    """
+    try:
+        return func()
+    except (KeyboardInterrupt, click.exceptions.Abort):
+        get_console().print("[yellow]Interrupted. Progress is saved.[/yellow]")
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(EXIT_INTERRUPTED)
+
+
+def run() -> None:
+    """Console-script entry point for ``tepub``."""
+
+    def invoke() -> object:
+        # standalone_mode=False lets Ctrl-C reach run_guarded instead of being
+        # turned into click's "Aborted!" and exit code 1.
+        return app.main(standalone_mode=False)
+
+    try:
+        result = run_guarded(invoke)
+    except click.exceptions.Exit as exc:
+        sys.exit(exc.exit_code)
+    except click.ClickException as exc:
+        exc.show()
+        sys.exit(exc.exit_code)
+    sys.exit(result if isinstance(result, int) else 0)
+
+
 if __name__ == "__main__":
-    app()
+    run()

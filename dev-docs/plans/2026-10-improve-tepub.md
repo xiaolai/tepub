@@ -162,7 +162,7 @@ Each of these reports success while producing wrong output.
 **Done when:** the measured per-segment overhead on the 5000-record file falls from about 400 ms to under 5 ms.
 
 ### WI-3.2 Interrupt exits promptly and non-zero (A7, A8)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/cli/test_interrupt.py` sends SIGINT to a real process while a translation call is blocked; it exits with 130 in under 2 s and the finished translations are on disk. Measured before the change: the same run hung 30.7 s, the length of the blocked call. Not as planned: worker threads are not signalled; `tepub` now enters through `cli.main:run`, which lets the interrupt unwind (each command saves state on the way out) and then ends the process without waiting for threads still in a network call. The audiobook command's `sys.exit(0)` on interrupt is gone. One result finished but not yet recorded at the moment of Ctrl-C can still be lost and is translated again next run.
 **Files:** `src/audiobook/controller.py`, `src/translation/controller.py`
 **Do:** Ctrl-C cancels queued work, signals in-flight workers through an event they check instead of `time.sleep`, flushes state, and exits 130.
 **Test first:** a subprocess test that sends SIGINT mid-run and asserts exit within 2 s with code 130 and state flushed.

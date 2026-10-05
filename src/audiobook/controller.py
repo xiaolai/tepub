@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -651,7 +650,8 @@ class AudiobookRunner:
             console.print(
                 "[yellow]Progress saved; resume later with tepub audiobook.[/yellow]"
             )
-            sys.exit(0)
+            # Exiting 0 here told any calling script that the book was finished.
+            raise
 
 
 def run_audiobook(
