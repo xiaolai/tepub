@@ -6,9 +6,22 @@ for use in TEPUB's translation pipeline.
 
 from __future__ import annotations
 
-from cjk_text_formatter.polish import CHINESE_RE, polish_text
+import re
+
+from cjk_text_formatter.polish import CHINESE_RE
+from cjk_text_formatter.polish import polish_text as _format
 
 from state.models import SegmentStatus, StateDocument
+
+# Full-width punctuation carries its own spacing. Models translating English
+# keep the space that followed each English full stop, giving "改善。 那个";
+# cjk-text-formatter has no rule for it.
+_SPACE_AROUND_FULLWIDTH = re.compile(r"[ \t\u3000]*([。，、；：？！])[ \t\u3000]*")
+
+
+def polish_text(text: str) -> str:
+    return _SPACE_AROUND_FULLWIDTH.sub(r"\1", _format(text))
+
 
 # Alias for backward compatibility
 polish_translation = polish_text

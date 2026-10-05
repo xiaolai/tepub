@@ -100,3 +100,11 @@ def test_polish_handles_mixed_ellipsis_and_chinese_rules():
     assert polish_translation("学习 . . . machine learning") == "学习... machine learning"
     # Ellipsis + dash formatting
     assert polish_translation("文字 . . . 中文--英文") == "文字... 中文 —— 英文"
+
+
+def test_polish_drops_spaces_beside_fullwidth_punctuation():
+    assert polish_translation("没有改善。 那个女孩说： 好 ，走吧！ Facebook") == (
+        "没有改善。那个女孩说：好，走吧！Facebook"
+    )
+    assert polish_translation("Hello. World, again") == "Hello. World, again"
+    assert polish_translation("段落。\n下一段") == "段落。\n下一段"
