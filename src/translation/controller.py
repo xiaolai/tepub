@@ -17,16 +17,8 @@ from console_singleton import get_console
 from exceptions import ArtifactMismatchError
 from logging_utils.logger import get_logger
 from state.models import SegmentStatus
-from state.store import (
-    backup_state,
-    ensure_state,
-    load_segments,
-    load_state,
-    mark_status,
-    reset_error_segments,
-    set_consecutive_failures,
-    set_cooldown,
-)
+from state.store import backup_state, ensure_state, load_segments, load_state
+from state.writer import StateWriter, exclusive_run
 from translation.languages import describe_language
 from translation.polish import polish_translation
 from translation.providers import ProviderError, ProviderFatalError, create_provider
@@ -109,7 +101,14 @@ _sleep = time.sleep
 class TranslationResult:
     """Result of translating a single segment."""
 
-    __slots__ = ("segment_id", "translation", "error", "is_auto_copy", "provider_name", "model_name")
+    __slots__ = (
+        "segment_id",
+        "translation",
+        "error",
+        "is_auto_copy",
+        "provider_name",
+        "model_name",
+    )
 
     def __init__(
         self,
@@ -266,321 +265,331 @@ def run_translation(
             console.print("[yellow]No segments to translate. All segments were skipped.[/yellow]")
         return
 
-    provider = create_provider(settings.primary_provider)
+    # One run per workspace: a second process used to translate every segment
+    # again, and the last to save won.
+    with exclusive_run(settings.state_file):
+        provider = create_provider(settings.primary_provider)
 
-    # Translations into another language do not carry over. Keep a copy and say
-    # how much is being reset; this used to happen silently inside ensure_state,
-    # which left the message that should have announced it unreachable.
-    if settings.state_file.exists():
-        previous = load_state(settings.state_file)
-        if (previous.source_language, previous.target_language) != (
+        # Translations into another language do not carry over. Keep a copy and say
+        # how much is being reset; this used to happen silently inside ensure_state,
+        # which left the message that should have announced it unreachable.
+        if settings.state_file.exists():
+            previous = load_state(settings.state_file)
+            if (previous.source_language, previous.target_language) != (
+                source_language,
+                target_language,
+            ):
+                finished = sum(
+                    1 for r in previous.segments.values() if r.status == SegmentStatus.COMPLETED
+                )
+                backup = backup_state(settings.state_file)
+                noun = "translation" if finished == 1 else "translations"
+                console.print(
+                    f"[yellow]The languages changed: this workspace translated "
+                    f"{previous.source_language} into {previous.target_language}, and this run "
+                    f"translates {source_language} into {target_language}. Resetting "
+                    f"{finished} finished {noun}; the previous state is saved as "
+                    f"{backup.name}.[/yellow]"
+                )
+                settings.state_file.unlink()
+
+        state_doc = ensure_state(
+            settings.state_file,
+            segments_doc.segments,
+            provider.name,
+            provider.model,
             source_language,
             target_language,
-        ):
-            finished = sum(
-                1 for r in previous.segments.values() if r.status == SegmentStatus.COMPLETED
-            )
-            backup = backup_state(settings.state_file)
-            noun = "translation" if finished == 1 else "translations"
-            console.print(
-                f"[yellow]The languages changed: this workspace translated "
-                f"{previous.source_language} into {previous.target_language}, and this run "
-                f"translates {source_language} into {target_language}. Resetting "
-                f"{finished} finished {noun}; the previous state is saved as "
-                f"{backup.name}.[/yellow]"
-            )
-            settings.state_file.unlink()
+        )
 
-    state_doc = ensure_state(
-        settings.state_file,
-        segments_doc.segments,
-        provider.name,
-        provider.model,
-        source_language,
-        target_language,
-    )
+        console.print(
+            f"Translating from {describe_language(source_language)} into "
+            f"{describe_language(target_language)} using {provider.model}"
+        )
 
-    console.print(
-        f"Translating from {describe_language(source_language)} into {describe_language(target_language)} using {provider.model}"
-    )
-
-    total = sum(
-        1
-        for seg in segments_doc.segments
-        if not state_doc.segments.get(seg.segment_id)
-        or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
-    )
-    if total == 0:
-        console.print("[green]All segments already translated.[/green]")
-        return
-
-    file_totals: Counter[Path] = Counter(seg.file_path for seg in segments_doc.segments)
-    file_completed = Counter()
-    for seg in segments_doc.segments:
-        record = state_doc.segments.get(seg.segment_id)
-        if record and record.status == SegmentStatus.COMPLETED:
-            file_completed[seg.file_path] += 1
-
-    completed_segments = sum(
-        1 for record in state_doc.segments.values() if record.status == SegmentStatus.COMPLETED
-    )
-    pending_segments = total
-    skipped_files = len({doc.file_path for doc in segments_doc.skipped_documents})
-    total_files = len(file_totals)
-
-    def completed_files_count() -> int:
-        return sum(
+        total = sum(
             1
-            for path, total_required in file_totals.items()
-            if file_completed[path] >= total_required
+            for seg in segments_doc.segments
+            if not state_doc.segments.get(seg.segment_id)
+            or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
+        )
+        if total == 0:
+            console.print("[green]All segments already translated.[/green]")
+            return
+
+        file_totals: Counter[Path] = Counter(seg.file_path for seg in segments_doc.segments)
+        file_completed = Counter()
+        for seg in segments_doc.segments:
+            record = state_doc.segments.get(seg.segment_id)
+            if record and record.status == SegmentStatus.COMPLETED:
+                file_completed[seg.file_path] += 1
+
+        completed_segments = sum(
+            1 for record in state_doc.segments.values() if record.status == SegmentStatus.COMPLETED
+        )
+        pending_segments = total
+        skipped_files = len({doc.file_path for doc in segments_doc.skipped_documents})
+        total_files = len(file_totals)
+
+        def completed_files_count() -> int:
+            return sum(
+                1
+                for path, total_required in file_totals.items()
+                if file_completed[path] >= total_required
+            )
+
+
+        progress = Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=None),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            auto_refresh=False,
+        )
+        task_id = progress.add_task(
+            "Translating", total=len(segments_doc.segments), completed=completed_segments
         )
 
+        # Collect pending segments
+        pending_segments_list = [
+            seg
+            for seg in segments_doc.segments
+            if not state_doc.segments.get(seg.segment_id)
+            or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
+        ]
 
-    progress = Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=None),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        auto_refresh=False,
-    )
-    task_id = progress.add_task(
-        "Translating", total=len(segments_doc.segments), completed=completed_segments
-    )
+        max_workers = settings.translation_workers
+        active_workers = 0
 
-    # Collect pending segments
-    pending_segments_list = [
-        seg
-        for seg in segments_doc.segments
-        if not state_doc.segments.get(seg.segment_id)
-        or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
-    ]
+        # Track recent completions (one per worker slot) for display
+        preview_lines = ["waiting…"] * max_workers
+        preview_index = 0  # Round-robin index for updating preview lines
 
-    max_workers = settings.translation_workers
-    active_workers = 0
+        # Track cooldown state
+        in_cooldown = False
+        cooldown_remaining = ""
 
-    # Track recent completions (one per worker slot) for display
-    preview_lines = ["waiting…"] * max_workers
-    preview_index = 0  # Round-robin index for updating preview lines
+        def render_panel() -> Panel:
+            return _build_dashboard_panel(
+                total_files=total_files,
+                skipped_files=skipped_files,
+                completed_files=completed_files_count(),
+                total_segments=len(segments_doc.segments),
+                completed_segments=completed_segments,
+                pending_segments=pending_segments,
+                preview_lines=preview_lines,
+                progress_renderable=None,
+                active_workers=active_workers,
+                max_workers=max_workers,
+                in_cooldown=in_cooldown,
+                cooldown_remaining=cooldown_remaining,
+            )
 
-    # Track cooldown state
-    in_cooldown = False
-    cooldown_remaining = ""
-
-    def render_panel() -> Panel:
-        return _build_dashboard_panel(
-            total_files=total_files,
-            skipped_files=skipped_files,
-            completed_files=completed_files_count(),
-            total_segments=len(segments_doc.segments),
-            completed_segments=completed_segments,
-            pending_segments=pending_segments,
-            preview_lines=preview_lines,
-            progress_renderable=None,
-            active_workers=active_workers,
-            max_workers=max_workers,
-            in_cooldown=in_cooldown,
-            cooldown_remaining=cooldown_remaining,
+        cooldowns_taken = 0
+        dashboard = Live(
+            Group(render_panel(), progress), console=console, refresh_per_second=5
         )
+        with StateWriter(settings.state_file) as writer, dashboard as live:
+            try:
+                while True:
+                    # Reload state to get pending segments for this pass
+                    state_doc = writer.doc
+                    pending_segments_list = [
+                        seg
+                        for seg in segments_doc.segments
+                        if not state_doc.segments.get(seg.segment_id)
+                        or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
+                    ]
 
-    cooldowns_taken = 0
-    with Live(Group(render_panel(), progress), console=console, refresh_per_second=5) as live:
-        try:
-            while True:
-                # Reload state to get pending segments for this pass
-                state_doc = load_state(settings.state_file)
-                pending_segments_list = [
-                    seg
-                    for seg in segments_doc.segments
-                    if not state_doc.segments.get(seg.segment_id)
-                    or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
-                ]
+                    if not pending_segments_list:
+                        break
 
-                if not pending_segments_list:
-                    break
+                    pass_successes = 0
+                    pass_failures: list[str] = []
+                    fatal_error: Exception | None = None
+                    cooled_down_this_pass = False
 
-                pass_successes = 0
-                pass_failures: list[str] = []
-                fatal_error: Exception | None = None
-                cooled_down_this_pass = False
-
-                # Use parallel translation with ThreadPoolExecutor
-                # Not a `with` block: its __exit__ calls shutdown(wait=True), which
-                # negated the wait=False fast path on KeyboardInterrupt below.
-                executor = ThreadPoolExecutor(max_workers=max_workers)
-                interrupted = False
-                try:
-                    # Submit all pending segments
-                    future_to_segment = {}
-                    for segment in pending_segments_list:
-                        future = executor.submit(
-                            _translate_segment,
-                            segment,
-                            provider,
-                            source_language,
-                            target_language,
-                        )
-                        future_to_segment[future] = segment
-                        active_workers += 1
-
-                    # Process results as they complete
+                    # Use parallel translation with ThreadPoolExecutor
+                    # Not a `with` block: its __exit__ calls shutdown(wait=True), which
+                    # negated the wait=False fast path on KeyboardInterrupt below.
+                    executor = ThreadPoolExecutor(max_workers=max_workers)
+                    interrupted = False
                     try:
-                        for future in as_completed(future_to_segment):
-                            active_workers -= 1
-                            segment = future_to_segment[future]
-                            if future.cancelled():
-                                # Cancelled when cooldown began; stays pending.
-                                continue
-                            result = future.result()
+                        # Submit all pending segments
+                        future_to_segment = {}
+                        for segment in pending_segments_list:
+                            future = executor.submit(
+                                _translate_segment,
+                                segment,
+                                provider,
+                                source_language,
+                                target_language,
+                            )
+                            future_to_segment[future] = segment
+                            active_workers += 1
 
-                            # Update state based on result
-                            if result.is_auto_copy:
-                                mark_status(
-                                    settings.state_file,
-                                    result.segment_id,
-                                    SegmentStatus.COMPLETED,
-                                    translation=result.translation,
-                                    provider_name=None,
-                                    model_name=None,
-                                    error_message=None,
-                                )
-                                file_completed[segment.file_path] += 1
-                                completed_segments += 1
-                                pending_segments -= 1
-                                text = _truncate_text(_strip_tags(result.translation))
-                                preview_lines[preview_index] = f"[dim]{text}[/dim]"
-                                pass_successes += 1
-                            elif result.error:
-                                logger.error("Translation failed for %s: %s", result.segment_id, result.error)
-                                mark_status(
-                                    settings.state_file,
-                                    result.segment_id,
-                                    SegmentStatus.ERROR,
-                                    error_message=str(result.error),
-                                )
-                                if isinstance(result.error, ProviderFatalError):
-                                    # Fatal means the whole run cannot succeed — a
-                                    # rejected key or unusable model. Stop scheduling
-                                    # instead of repeating it against every remaining
-                                    # segment. The run still returns normally so
-                                    # completed work stays saved and resumable.
-                                    fatal_error = result.error
-                                    for queued in future_to_segment:
-                                        if not queued.done():
-                                            queued.cancel()
-                                    console.print(
-                                        f"[red]Fatal provider error: {result.error}[/red]"
+                        # Process results as they complete
+                        try:
+                            for future in as_completed(future_to_segment):
+                                active_workers -= 1
+                                segment = future_to_segment[future]
+                                if future.cancelled():
+                                    # Cancelled when cooldown began; stays pending.
+                                    continue
+                                result = future.result()
+
+                                # Update state based on result
+                                if result.is_auto_copy:
+                                    writer.mark(
+                                        result.segment_id,
+                                        SegmentStatus.COMPLETED,
+                                        translation=result.translation,
+                                        provider_name=None,
+                                        model_name=None,
+                                        error_message=None,
                                     )
-                                    console.print(
-                                        "[yellow]Stopping run; completed translations are "
-                                        "saved and the run can be resumed.[/yellow]"
+                                    file_completed[segment.file_path] += 1
+                                    completed_segments += 1
+                                    pending_segments -= 1
+                                    text = _truncate_text(_strip_tags(result.translation))
+                                    preview_lines[preview_index] = f"[dim]{text}[/dim]"
+                                    pass_successes += 1
+                                elif result.error:
+                                    logger.error(
+                                        "Translation failed for %s: %s",
+                                        result.segment_id,
+                                        result.error,
                                     )
-                                    break
-                                error_msg = _truncate_text(str(result.error))
-                                preview_lines[preview_index] = f"[red]{error_msg}[/red]"
-                                pass_failures.append(result.segment_id)
+                                    writer.mark(
+                                        result.segment_id,
+                                        SegmentStatus.ERROR,
+                                        error_message=str(result.error),
+                                    )
+                                    if isinstance(result.error, ProviderFatalError):
+                                        # Fatal means the whole run cannot succeed — a
+                                        # rejected key or unusable model. Stop scheduling
+                                        # instead of repeating it against every remaining
+                                        # segment. The run still returns normally so
+                                        # completed work stays saved and resumable.
+                                        fatal_error = result.error
+                                        for queued in future_to_segment:
+                                            if not queued.done():
+                                                queued.cancel()
+                                        console.print(
+                                            f"[red]Fatal provider error: {result.error}[/red]"
+                                        )
+                                        console.print(
+                                            "[yellow]Stopping run; completed translations are "
+                                            "saved and the run can be resumed.[/yellow]"
+                                        )
+                                        break
+                                    error_msg = _truncate_text(str(result.error))
+                                    preview_lines[preview_index] = f"[red]{error_msg}[/red]"
+                                    pass_failures.append(result.segment_id)
 
-                                # Track consecutive failures and trigger cooldown if needed
-                                trans_state = load_state(settings.state_file)
-                                consecutive = trans_state.consecutive_failures + 1
-                                set_consecutive_failures(settings.state_file, consecutive)
+                                    # Track consecutive failures and trigger cooldown if needed
+                                    consecutive = writer.consecutive_failures + 1
+                                    writer.consecutive_failures = consecutive
 
-                                if consecutive >= FAILURES_BEFORE_COOLDOWN:
-                                    in_cooldown = True
-                                    cooled_down_this_pass = True
-                                    cooldowns_taken += 1
-                                    # Every pending segment was already submitted, so
-                                    # without cancelling, workers kept calling the
-                                    # provider throughout the cooldown — exactly what
-                                    # the cooldown exists to prevent. Cancelled
-                                    # segments stay pending for the next pass.
-                                    for queued in future_to_segment:
-                                        if not queued.done():
-                                            queued.cancel()
-                                    cooldown_until = datetime.now(timezone.utc) + COOLDOWN
-                                    set_cooldown(settings.state_file, cooldown_until)
-                                    # Count down by the time actually slept rather than
-                                    # re-reading the clock, so the wait is bounded.
-                                    remaining = COOLDOWN.total_seconds()
-                                    while remaining > 0:
-                                        mins = int(remaining // 60)
-                                        secs = int(remaining % 60)
-                                        cooldown_remaining = f"{mins}m {secs}s"
-                                        live.update(Group(render_panel(), progress))
-                                        sleep_for = min(5, remaining)
-                                        _sleep(sleep_for)
-                                        remaining -= sleep_for
+                                    if consecutive >= FAILURES_BEFORE_COOLDOWN:
+                                        in_cooldown = True
+                                        cooled_down_this_pass = True
+                                        cooldowns_taken += 1
+                                        # Every pending segment was already submitted, so
+                                        # without cancelling, workers kept calling the
+                                        # provider throughout the cooldown — exactly what
+                                        # the cooldown exists to prevent. Cancelled
+                                        # segments stay pending for the next pass.
+                                        for queued in future_to_segment:
+                                            if not queued.done():
+                                                queued.cancel()
+                                        cooldown_until = datetime.now(timezone.utc) + COOLDOWN
+                                        writer.set_cooldown(cooldown_until)
+                                        # Count down by the time actually slept rather than
+                                        # re-reading the clock, so the wait is bounded.
+                                        remaining = COOLDOWN.total_seconds()
+                                        while remaining > 0:
+                                            mins = int(remaining // 60)
+                                            secs = int(remaining % 60)
+                                            cooldown_remaining = f"{mins}m {secs}s"
+                                            live.update(Group(render_panel(), progress))
+                                            sleep_for = min(5, remaining)
+                                            _sleep(sleep_for)
+                                            remaining -= sleep_for
 
-                                    set_cooldown(settings.state_file, None)
-                                    set_consecutive_failures(settings.state_file, 0)
-                                    in_cooldown = False
-                                    cooldown_remaining = ""
-                            else:
-                                mark_status(
-                                    settings.state_file,
-                                    result.segment_id,
-                                    SegmentStatus.COMPLETED,
-                                    translation=result.translation,
-                                    provider_name=result.provider_name,
-                                    model_name=result.model_name,
-                                    error_message=None,
-                                )
-                                file_completed[segment.file_path] += 1
-                                completed_segments += 1
-                                pending_segments -= 1
-                                text = _truncate_text(_strip_tags(result.translation))
-                                preview_lines[preview_index] = f"[green]{text}[/green]"
-                                pass_successes += 1
-                                # Reset consecutive failures on any success
-                                set_consecutive_failures(settings.state_file, 0)
+                                        writer.set_cooldown(None)
+                                        writer.consecutive_failures = 0
+                                        in_cooldown = False
+                                        cooldown_remaining = ""
+                                else:
+                                    writer.mark(
+                                        result.segment_id,
+                                        SegmentStatus.COMPLETED,
+                                        translation=result.translation,
+                                        provider_name=result.provider_name,
+                                        model_name=result.model_name,
+                                        error_message=None,
+                                    )
+                                    file_completed[segment.file_path] += 1
+                                    completed_segments += 1
+                                    pending_segments -= 1
+                                    text = _truncate_text(_strip_tags(result.translation))
+                                    preview_lines[preview_index] = f"[green]{text}[/green]"
+                                    pass_successes += 1
+                                    # Reset consecutive failures on any success
+                                    writer.consecutive_failures = 0
 
-                            # Round-robin through preview slots
-                            preview_index = (preview_index + 1) % max_workers
+                                # Round-robin through preview slots
+                                preview_index = (preview_index + 1) % max_workers
 
-                            progress.advance(task_id)
-                            live.update(Group(render_panel(), progress))
+                                progress.advance(task_id)
+                                live.update(Group(render_panel(), progress))
 
-                    except KeyboardInterrupt:
-                        interrupted = True
-                        console.print("\n[yellow]Interrupted by user. Canceling pending translations...[/yellow]")
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise
-                finally:
-                    if not interrupted:
-                        executor.shutdown(wait=True)
+                        except KeyboardInterrupt:
+                            interrupted = True
+                            console.print(
+                                "\n[yellow]Interrupted by user. "
+                                "Canceling pending translations...[/yellow]"
+                            )
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            raise
+                    finally:
+                        if not interrupted:
+                            executor.shutdown(wait=True)
 
-                if fatal_error is not None:
-                    # Retrying cannot help: the provider itself is unusable.
-                    break
-
-                # A cooldown cancelled the rest of this pass; the provider has had
-                # its rest, so start the next pass instead of judging this one. It
-                # used to count as "no progress" and end the run after the wait.
-                if cooled_down_this_pass:
-                    if cooldowns_taken >= MAX_COOLDOWNS_PER_RUN:
-                        console.print(
-                            f"[red]The provider kept failing after {cooldowns_taken} "
-                            "cooldowns; stopping. Completed translations are saved; "
-                            "run the command again to continue.[/red]"
-                        )
+                    if fatal_error is not None:
+                        # Retrying cannot help: the provider itself is unusable.
                         break
-                    preview_lines = ["waiting…"] * max_workers
-                    preview_index = 0
-                    reset_error_segments(settings.state_file, pass_failures)
-                    continue
 
-                # After each pass, check if we should retry failed segments
-                if pass_failures:
-                    if pass_successes == 0:
-                        # No progress made, stop trying
-                        break
-                    # Reset preview lines to "waiting…" for next pass
-                    preview_lines = ["waiting…"] * max_workers
-                    preview_index = 0
-                    reset_error_segments(settings.state_file, pass_failures)
-                    continue
+                    # A cooldown cancelled the rest of this pass; the provider has had
+                    # its rest, so start the next pass instead of judging this one. It
+                    # used to count as "no progress" and end the run after the wait.
+                    if cooled_down_this_pass:
+                        if cooldowns_taken >= MAX_COOLDOWNS_PER_RUN:
+                            console.print(
+                                f"[red]The provider kept failing after {cooldowns_taken} "
+                                "cooldowns; stopping. Completed translations are saved; "
+                                "run the command again to continue.[/red]"
+                            )
+                            break
+                        preview_lines = ["waiting…"] * max_workers
+                        preview_index = 0
+                        writer.reset_errors(pass_failures)
+                        continue
 
-        except KeyboardInterrupt:
-            raise
+                    # After each pass, check if we should retry failed segments
+                    if pass_failures:
+                        if pass_successes == 0:
+                            # No progress made, stop trying
+                            break
+                        # Reset preview lines to "waiting…" for next pass
+                        preview_lines = ["waiting…"] * max_workers
+                        preview_index = 0
+                        writer.reset_errors(pass_failures)
+                        continue
+
+            except KeyboardInterrupt:
+                raise
 
     # Note: Polish is now applied incrementally after each translation (see line 203)
     # No separate polish pass needed at the end

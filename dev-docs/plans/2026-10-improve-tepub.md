@@ -155,7 +155,7 @@ Each of these reports success while producing wrong output.
 ## Phase 3: state and controller
 
 ### WI-3.1 State writes in constant time per segment (P1, C10)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/state/test_state_writer.py` (7): at most 11 writes for 500 results, a crash loses at most one batch, leaving the block flushes even on interrupt, time also triggers a flush, a second run on the workspace raises `WorkspaceBusyError`. Measured: a full 5,000-segment run with an instant fake provider takes 6.2 s, 1.24 ms per segment for everything the controller does, against about 400 ms per segment for state writes alone before. The run lock is a separate `state.json.run.lock`, held from before any state reset to the end. Also shortened the five over-long lines in the controller, four of them older than this change.
 **Files:** `src/state/store.py`, `src/state/base.py`, `src/translation/controller.py`
 **Do:** the controller holds `StateDocument` in memory with a single writer; it flushes every N results or T seconds, and on exit, interrupt or error. A sidecar lock is held for the whole run, so a second process on the same workspace refuses to start.
 **Test first:** a benchmark test over 5000 fake segments asserting total state I/O stays under 5 full-file writes per 100 segments; a test that a second process is refused; a test that a kill after a flush loses at most one batch.

@@ -103,6 +103,17 @@ class WorkspaceNotFoundError(TepubError):
         super().__init__(message)
 
 
+class WorkspaceBusyError(TepubError):
+    """Raised when another tepub process is already working on this workspace."""
+
+    def __init__(self, state_path: Path):
+        self.state_path = state_path
+        super().__init__(
+            f"another tepub process is already working on {state_path.parent}. "
+            "Wait for it to finish, or stop it, then run this command again."
+        )
+
+
 class CorruptedStateError(TepubError):
     """Raised when a state file is corrupted or has invalid format."""
 

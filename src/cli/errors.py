@@ -10,6 +10,7 @@ from console_singleton import get_console
 from exceptions import (
     CorruptedStateError,
     StateFileNotFoundError,
+    WorkspaceBusyError,
     WorkspaceNotFoundError,
 )
 
@@ -36,7 +37,12 @@ def handle_state_errors(func: F) -> F:
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except (StateFileNotFoundError, WorkspaceNotFoundError, CorruptedStateError) as e:
+        except (
+            StateFileNotFoundError,
+            WorkspaceNotFoundError,
+            CorruptedStateError,
+            WorkspaceBusyError,
+        ) as e:
             console.print(f"[red]{e}[/red]")
             raise click.exceptions.Exit(1)
 
