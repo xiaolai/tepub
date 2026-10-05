@@ -465,6 +465,10 @@ def run_translation(
             Group(render_panel(), progress), console=console, refresh_per_second=5
         )
         with StateWriter(settings.state_file) as writer, dashboard as live:
+            # Failures in a row are counted within a run. The count is saved with
+            # the state, and one left at 3 by an earlier run started a 30-minute
+            # cooldown on this run's first failure.
+            writer.consecutive_failures = 0
             try:
                 while True:
                     # Reload state to get pending segments for this pass
@@ -567,12 +571,11 @@ def run_translation(
                                     # needed. A reply rejected for its content is not a
                                     # sign of an unwell provider: three in a row once
                                     # stopped a local model for 30 minutes to no purpose.
-                                    consecutive = writer.consecutive_failures + (
-                                        0 if isinstance(result.error, ReplyRejectedError) else 1
-                                    )
+                                    counted = not isinstance(result.error, ReplyRejectedError)
+                                    consecutive = writer.consecutive_failures + int(counted)
                                     writer.consecutive_failures = consecutive
 
-                                    if consecutive >= FAILURES_BEFORE_COOLDOWN:
+                                    if counted and consecutive >= FAILURES_BEFORE_COOLDOWN:
                                         in_cooldown = True
                                         cooled_down_this_pass = True
                                         cooldowns_taken += 1

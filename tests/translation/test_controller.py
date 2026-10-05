@@ -409,6 +409,27 @@ def test_rejected_replies_do_not_start_a_cooldown(monkeypatch, settings, tmp_pat
     assert slept == [], "no cooldown for replies rejected on content"
 
 
+def test_a_failure_count_left_by_an_earlier_run_starts_no_cooldown(monkeypatch, settings, tmp_path):
+    """A run restored from a backup carried consecutive_failures=3; its first
+    rejected reply started a 30-minute cooldown."""
+    from state.store import ensure_state, save_state
+
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    segment = _write_segments(settings, input_epub)
+    state = ensure_state(settings.state_file, [segment], "dummy", "dummy-model", "en", "es")
+    state.consecutive_failures = 3
+    save_state(state, settings.state_file)
+    slept: list[float] = []
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: RejectsEveryReply())
+    monkeypatch.setattr("translation.controller.console", Console(record=True))
+    monkeypatch.setattr("translation.controller._sleep", slept.append)
+
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+
+    assert slept == []
+
+
 def test_one_language_spelled_two_ways_is_not_a_change(monkeypatch, settings, tmp_path):
     """"Simplified Chinese" and "zh-CN" are one language; comparing spellings
     reset finished translations."""
