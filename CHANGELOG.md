@@ -23,7 +23,7 @@ rendering, and inline markup a local model can keep.
   says how to fix it if not.
 - **Run `tepub extract` once on each book you are working on.** Links that
   carry no target or anchor are no longer part of a unit, and long lists,
-  tables and definition lists are split into their items (segments format 4).
+  tables and definition lists are split into their items (segments format 5).
   Every translation carries over: one whose unit changed between text and HTML
   is converted to its new form, a list translated whole is distributed over its
   items, and anything that cannot be carried faithfully is translated again.
@@ -97,6 +97,21 @@ rendering, and inline markup a local model can keep.
 - **`max_tokens` reaches every provider.** It was documented as capping each
   reply, but only Anthropic sent it; OpenAI, Gemini, Grok and Ollama now do,
   and a reply cut at the limit is reported as truncated.
+
+### 🐛 Fixed — reading books
+
+Run over 1,958 real books, extraction and injection found these:
+
+- **A unit's leading text is escaped.** A code sample showing `<html` made a
+  source that crashed the book, and an `&` made output that no longer parsed.
+- **Oversized units are split** by the size of what is sent: lists of links
+  stayed whole at up to 15,000 characters, and one converted book was a
+  single unit of 5,000,000 characters.
+- **Translated copies leave out page-break markers**, which marked the same
+  printed page twice, and inline text filled into a `<blockquote>` sits in a
+  paragraph, as EPUB 2 requires.
+- **A damaged EPUB is reported plainly**, without a traceback, as are all of
+  tepub's own errors.
 
 ### 🐛 Fixed — choosing what to translate
 
