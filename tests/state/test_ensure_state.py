@@ -10,7 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from state.models import ExtractMode, Segment, SegmentMetadata, SegmentStatus
-from state.store import backup_state, ensure_state, load_state, mark_status
+from state.store import backup_state, ensure_state, load_state
+from state.writer import StateWriter
 
 
 def _segments(n: int = 3) -> list[Segment]:
@@ -29,7 +30,8 @@ def _segments(n: int = 3) -> list[Segment]:
 
 def _translated_state(path: Path) -> None:
     ensure_state(path, _segments(), "openai", "gpt-a", "en", "zh")
-    mark_status(path, "s1", SegmentStatus.COMPLETED, translation="一", provider_name="openai", model_name="gpt-a")
+    with StateWriter(path) as writer:
+        writer.mark("s1", SegmentStatus.COMPLETED, translation="一", provider_name="openai", model_name="gpt-a")
 
 
 def test_a_new_model_keeps_finished_translations(tmp_path: Path) -> None:

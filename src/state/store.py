@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .base import load_generic_state, save_generic_state, state_file_lock
+from .base import load_generic_state, save_generic_state
 from .models import (
     ResumeInfo,
     Segment,
@@ -109,32 +109,6 @@ def backup_state(path: Path) -> Path:
     return backup
 
 
-def update_translation_record(state_path: Path, segment_id: str, updater) -> TranslationRecord:
-    lock = _get_lock(state_path)
-    with lock:
-        state = load_generic_state(state_path, StateDocument)
-        record = state.segments.get(segment_id)
-        if record is None:
-            raise KeyError(f"Segment {segment_id} missing from state file")
-
-        updated = updater(record)
-        state.segments[segment_id] = updated
-        save_generic_state(state, state_path)
-        return updated
-
-
-def mark_status(
-    state_path: Path, segment_id: str, status: SegmentStatus, **fields
-) -> TranslationRecord:
-    def _updater(record: TranslationRecord) -> TranslationRecord:
-        payload = record.model_dump()
-        payload.update(fields)
-        payload["status"] = status
-        return TranslationRecord.model_validate(payload)
-
-    return update_translation_record(state_path, segment_id, _updater)
-
-
 def compute_resume_info(state: StateDocument) -> ResumeInfo:
     remaining, completed, skipped = [], [], []
     for record in state.segments.values():
@@ -149,73 +123,6 @@ def compute_resume_info(state: StateDocument) -> ResumeInfo:
         completed_segments=sorted(completed),
         skipped_segments=sorted(skipped),
     )
-
-
-def iter_pending_segments(state: StateDocument) -> Iterable[str]:
-    for segment_id, record in state.segments.items():
-        if record.status == SegmentStatus.PENDING:
-            yield segment_id
-
-
-def iter_segments_by_status(state: StateDocument, status: SegmentStatus) -> Iterable[str]:
-    for segment_id, record in state.segments.items():
-        if record.status == status:
-            yield segment_id
-
-
-def _set_state_field(state_path: Path, field: str, value) -> None:
-    """Assign one top-level state field under both locks.
-
-    set_consecutive_failures and set_cooldown were byte-identical apart from the
-    field they assigned.
-    """
-    with _get_lock(state_path), state_file_lock(state_path):
-        state = load_generic_state(state_path, StateDocument)
-        setattr(state, field, value)
-        save_generic_state(state, state_path)
-
-
-def set_consecutive_failures(state_path: Path, count: int) -> None:
-    """Set the consecutive failures counter in the state file."""
-    _set_state_field(state_path, "consecutive_failures", count)
-
-
-def set_cooldown(state_path: Path, until: datetime | None) -> None:
-    """Set the cooldown expiration timestamp in the state file."""
-    _set_state_field(state_path, "cooldown_until", until)
-
-
-def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None) -> list[str]:
-    """Reset ERROR segments to PENDING for retry.
-
-    Args:
-        state_path: Path to state file
-        segment_ids: Optional list of specific segment IDs to reset. If None, resets all ERROR segments.
-
-    Returns:
-        List of segment IDs that were reset
-    """
-    with _get_lock(state_path), state_file_lock(state_path):
-        state = load_generic_state(state_path, StateDocument)
-        changed = False
-        reset_ids: list[str] = []
-        # `if segment_ids` treats an explicit empty list as "no filter", so
-        # reset_error_segments(path, []) reset *every* errored segment.
-        target_ids = None if segment_ids is None else set(segment_ids)
-
-        for seg_id, record in state.segments.items():
-            if target_ids is not None and seg_id not in target_ids:
-                continue
-            if record.status == SegmentStatus.ERROR:
-                record.status = SegmentStatus.PENDING
-                record.error_message = None
-                changed = True
-                reset_ids.append(seg_id)
-
-        if changed:
-            save_generic_state(state, state_path)
-
-        return reset_ids
 
 
 def update_state_atomic(state_path: Path, updater) -> bool:

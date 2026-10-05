@@ -168,7 +168,7 @@ Each of these reports success while producing wrong output.
 **Test first:** a subprocess test that sends SIGINT mid-run and asserts exit within 2 s with code 130 and state flushed.
 
 ### WI-3.3 Tests for the state store and resume
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `test_a_stopped_run_resumes_where_it_left_off`, which stops a run with a fatal error after two translations and requires the next run to translate exactly the other three. Not as planned: eight store functions had no caller left after WI-3.1 and were deleted rather than tested (`update_translation_record`, `mark_status`, `iter_pending_segments`, `iter_segments_by_status`, `_set_state_field`, `set_consecutive_failures`, `set_cooldown`, `reset_error_segments`).
 **Files:** `tests/state/test_store.py` (new)
 **Do:** cover `ensure_state`, `mark_status`, `reset_error_segments`, resume after an interrupted run, and the retry pass.
 

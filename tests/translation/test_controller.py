@@ -259,13 +259,15 @@ def test_cooldowns_are_capped(monkeypatch, settings, tmp_path):
 
 
 def test_a_language_change_backs_up_and_says_so(monkeypatch, settings, tmp_path):
-    from state.store import ensure_state, mark_status
+    from state.store import ensure_state
+    from state.writer import StateWriter
 
     input_epub = tmp_path / "book.epub"
     input_epub.write_text("stub", encoding="utf-8")
     segment = _write_segments(settings, input_epub)
     ensure_state(settings.state_file, [segment], "dummy", "dummy-model", "en", "fr")
-    mark_status(settings.state_file, segment.segment_id, SegmentStatus.COMPLETED, translation="Bonjour")
+    with StateWriter(settings.state_file) as writer:
+        writer.mark(segment.segment_id, SegmentStatus.COMPLETED, translation="Bonjour")
 
     console = Console(record=True)
     monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
@@ -278,3 +280,59 @@ def test_a_language_change_backs_up_and_says_so(monkeypatch, settings, tmp_path)
     assert load_state(backups[0]).segments[segment.segment_id].translation == "Bonjour"
     text = console.export_text()
     assert "1 finished translation" in text and str(backups[0].name) in text
+
+
+def test_a_stopped_run_resumes_where_it_left_off(monkeypatch, settings, tmp_path):
+    """After a fatal stop, the next run translates only what is still to do."""
+    from state.models import SegmentsDocument
+
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    segments = [
+        Segment(
+            segment_id=f"c-{i}",
+            file_path=Path("Text/c.xhtml"),
+            xpath=f"/html/body/p[{i}]",
+            extract_mode=ExtractMode.TEXT,
+            source_content=f"Sentence number {i}.",
+            metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=i),
+        )
+        for i in range(1, 6)
+    ]
+    save_segments(
+        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        settings.segments_file,
+    )
+    settings = settings.model_copy(update={"translation_workers": 1})
+    monkeypatch.setattr("translation.controller.console", Console(record=True))
+
+    class StopsOnThird:
+        name, model = "dummy", "dummy-model"
+        calls = 0
+
+        def translate(self, segment, source_language, target_language):
+            StopsOnThird.calls += 1
+            if StopsOnThird.calls == 3:
+                raise ProviderFatalError("key revoked")
+            return "Hola"
+
+    class Counting:
+        name, model = "dummy", "dummy-model"
+        seen: list[str] = []
+
+        def translate(self, segment, source_language, target_language):
+            Counting.seen.append(segment.segment_id)
+            return "Hola"
+
+    monkeypatch.setattr("translation.controller.create_provider", lambda _c: StopsOnThird())
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+    first = load_state(settings.state_file)
+    done_first = {k for k, r in first.segments.items() if r.status == SegmentStatus.COMPLETED}
+    assert len(done_first) == 2
+
+    monkeypatch.setattr("translation.controller.create_provider", lambda _c: Counting())
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+
+    assert sorted(Counting.seen) == sorted(set(f"c-{i}" for i in range(1, 6)) - done_first)
+    final = load_state(settings.state_file)
+    assert {r.status for r in final.segments.values()} == {SegmentStatus.COMPLETED}
