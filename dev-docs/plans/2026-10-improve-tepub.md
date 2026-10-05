@@ -317,7 +317,7 @@ the package identifier they depend on is never edited.
 **Do:** check the NLTK download result and fail loudly; catch template errors before synthesis; warn about content outside the TOC; full-width terminators only for CJK splitting; filter the chapter preview the way assembly does; scope the NLTK environment variable.
 
 ### WI-5.3 CLI routing and the workspace move (N4, N5)
-**Status:** open
+**Status:** DONE 2026-10-05. N5: seven commands take no book (`resume`, `format`, and five debug commands); they now resolve the workspace through `cli.core.bookless_settings`: a folder that is a workspace is used, a single book workspace inside it is used, several are listed. Verified through the CLI: `extract` with `--work-dir` then `resume` with the same flag finds the state. N4: book identity is by content: extraction records the EPUB's SHA-256, and a moved or renamed book with the same digest is accepted, while a different book is still refused; the two duplicated path checks are one function. No override flag was needed.
 **Do:** every command resolves the workspace through one function; a moved EPUB can be re-bound with an explicit flag.
 
 ### WI-5.4 Web builder keeps classes and lang (W1)

@@ -103,6 +103,20 @@ class WorkspaceNotFoundError(TepubError):
         super().__init__(message)
 
 
+class AmbiguousWorkspaceError(WorkspaceNotFoundError):
+    """A command without a book found several book workspaces to choose from."""
+
+    def __init__(self, root: Path, candidates: list[Path]):
+        self.root = root
+        self.candidates = candidates
+        names = "\n".join(f"  {path.name}" for path in candidates)
+        TepubError.__init__(
+            self,
+            f"{root} holds workspaces for several books:\n{names}\n"
+            f"Pass --work-dir {root}/<one of them> to choose.",
+        )
+
+
 class WorkspaceBusyError(TepubError):
     """Raised when another tepub process is already working on this workspace."""
 

@@ -2,6 +2,7 @@
 
 import click
 
+from cli.core import bookless_settings
 from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError
@@ -17,7 +18,7 @@ console = get_console()
 def format_cmd(ctx: click.Context) -> None:
     """Format translated text for Chinese typography."""
 
-    settings: AppSettings = ctx.obj["settings"]
+    settings: AppSettings = bookless_settings(ctx)
     settings.ensure_directories()
 
     # Load state first: whether formatting applies depends on the language the

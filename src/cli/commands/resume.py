@@ -3,6 +3,7 @@
 import click
 from rich.table import Table
 
+from cli.core import bookless_settings
 from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError
@@ -16,7 +17,7 @@ console = get_console()
 def resume(ctx: click.Context) -> None:
     """Show resumable state summary."""
 
-    settings: AppSettings = ctx.obj["settings"]
+    settings: AppSettings = bookless_settings(ctx)
 
     # A missing state file used to yield an all-zero table, which reads as
     # "nothing left to do" rather than "this workspace was never set up".

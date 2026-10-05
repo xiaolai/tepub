@@ -9,6 +9,7 @@ from pathlib import Path
 import click
 
 from config import AppSettings, load_settings_from_cli
+from exceptions import AmbiguousWorkspaceError
 from logging_utils.logger import configure_logging
 from state.store import load_segments, load_state
 
@@ -61,6 +62,48 @@ def prepare_settings_for_epub(
         settings = settings.with_book_workspace(input_epub)
 
     settings.ensure_directories()
+    ctx.obj["settings"] = settings
+    return settings
+
+
+def resolve_bookless_workspace(settings: AppSettings) -> AppSettings:
+    """The workspace for a command that takes no book, such as resume or format.
+
+    translate and extract put each book in its own folder under --work-dir,
+    while commands without a book read --work-dir itself, so they reported no
+    state for a book that was half translated. A folder that is a workspace is
+    used as it is; a single book workspace inside it is used; several are
+    listed rather than guessed.
+    """
+    root = settings.work_dir
+    if (root / "segments.json").exists() or (root / "state.json").exists():
+        return settings
+    if not root.is_dir():
+        return settings
+    candidates = sorted(
+        child
+        for child in root.iterdir()
+        if child.is_dir() and ((child / "segments.json").exists() or (child / "state.json").exists())
+    )
+    if len(candidates) == 1:
+        return settings.model_copy(update={"work_root": root, "work_dir": candidates[0]})
+    if len(candidates) > 1:
+        raise AmbiguousWorkspaceError(root, candidates)
+    return settings
+
+
+def bookless_settings(ctx: click.Context) -> AppSettings:
+    """Settings for a command without a book, its workspace resolved.
+
+    Several matching workspaces end the command with a message listing them.
+    """
+    from console_singleton import get_console
+
+    try:
+        settings = resolve_bookless_workspace(ctx.obj["settings"])
+    except AmbiguousWorkspaceError as exc:
+        get_console().print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from exc
     ctx.obj["settings"] = settings
     return settings
 

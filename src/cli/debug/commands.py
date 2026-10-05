@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from cli.core import prepare_settings_for_epub
+from cli.core import bookless_settings, prepare_settings_for_epub
 from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError
@@ -24,7 +24,7 @@ def show_skip_list_cmd(ctx: click.Context) -> None:
     """Show configured skip rules."""
     from debug_tools.skip_lists import show_skip_list
 
-    settings: AppSettings = ctx.obj["settings"]
+    settings: AppSettings = bookless_settings(ctx)
     show_skip_list(settings)
 
 
@@ -34,7 +34,7 @@ def show_pending_cmd(ctx: click.Context) -> None:
     """Show pending segments."""
     from debug_tools.pending import show_pending
 
-    settings: AppSettings = ctx.obj["settings"]
+    settings: AppSettings = bookless_settings(ctx)
     show_pending(settings)
 
 
@@ -44,7 +44,7 @@ def show_pending_cmd(ctx: click.Context) -> None:
 def purge_refusals(ctx: click.Context, dry_run: bool) -> None:
     """Reset segments whose translations look like provider refusals."""
 
-    settings: AppSettings = ctx.obj["settings"]
+    settings: AppSettings = bookless_settings(ctx)
 
     try:
         state = load_state(settings.state_file)
@@ -107,7 +107,7 @@ def inspect_segment_cmd(ctx: click.Context, segment_id: str) -> None:
     """Inspect a specific segment."""
     from debug_tools.inspect import inspect_segment
 
-    settings: AppSettings = ctx.obj["settings"]
+    settings: AppSettings = bookless_settings(ctx)
     inspect_segment(settings, segment_id)
 
 
@@ -117,7 +117,7 @@ def list_files_cmd(ctx: click.Context) -> None:
     """List all processed files."""
     from debug_tools.files import list_files
 
-    settings: AppSettings = ctx.obj["settings"]
+    settings: AppSettings = bookless_settings(ctx)
     list_files(settings)
 
 
