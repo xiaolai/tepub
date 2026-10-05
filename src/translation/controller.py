@@ -20,7 +20,7 @@ from logging_utils.logger import get_logger
 from state.models import ExtractMode, SegmentStatus
 from state.store import backup_state, ensure_state, load_segments, load_state
 from state.writer import StateWriter, exclusive_run
-from translation.languages import describe_language
+from translation.languages import describe_language, normalize_language
 from translation.markup import markup_mismatch, protect, restore
 from translation.polish import polish_translation
 from translation.providers import (
@@ -146,6 +146,10 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
         preview = " ".join(text.split())[:80]
         raise ReplyRejectedError(f"Provider refused segment {segment.segment_id}: {preview!r}")
     return polish_translation(text)
+
+
+def _language_codes(source_language: str, target_language: str) -> tuple[str, str]:
+    return normalize_language(source_language)[0], normalize_language(target_language)[0]
 
 
 def select_for_translation(segments: list, settings: AppSettings) -> list:
@@ -345,9 +349,10 @@ def run_translation(
         # which left the message that should have announced it unreachable.
         if settings.state_file.exists():
             previous = load_state(settings.state_file)
-            if (previous.source_language, previous.target_language) != (
-                source_language,
-                target_language,
+            # Compared as language codes: "Simplified Chinese" and "zh-CN" are one
+            # language, and comparing spellings reset a translated book.
+            if _language_codes(previous.source_language, previous.target_language) != (
+                _language_codes(source_language, target_language)
             ):
                 finished = sum(
                     1 for r in previous.segments.values() if r.status == SegmentStatus.COMPLETED

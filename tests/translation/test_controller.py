@@ -407,3 +407,25 @@ def test_rejected_replies_do_not_start_a_cooldown(monkeypatch, settings, tmp_pat
     state = load_state(settings.state_file)
     assert {r.status for r in state.segments.values()} == {SegmentStatus.ERROR}
     assert slept == [], "no cooldown for replies rejected on content"
+
+
+def test_one_language_spelled_two_ways_is_not_a_change(monkeypatch, settings, tmp_path):
+    """"Simplified Chinese" and "zh-CN" are one language; comparing spellings
+    reset finished translations."""
+    from state.store import ensure_state
+    from state.writer import StateWriter
+
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    segment = _write_segments(settings, input_epub)
+    ensure_state(settings.state_file, [segment], "dummy", "dummy-model", "English", "Simplified Chinese")
+    with StateWriter(settings.state_file) as writer:
+        writer.mark(segment.segment_id, SegmentStatus.COMPLETED, translation="你好", provider_name="x")
+
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
+    monkeypatch.setattr("translation.controller.console", Console(record=True))
+
+    run_translation(settings, input_epub, source_language="en", target_language="zh-CN")
+
+    assert list(settings.state_file.parent.glob("state.*.json")) == []
+    assert load_state(settings.state_file).segments[segment.segment_id].translation == "你好"

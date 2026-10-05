@@ -13,6 +13,7 @@ from epub_io.reader import EpubReader
 from epub_io.selector import build_skip_map
 from state.models import Segment, SegmentsDocument, SkippedDocument
 from state.store import ensure_state, load_segments, save_segments
+from translation.languages import normalize_language
 
 console = get_console()
 
@@ -136,6 +137,7 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
         segments,
         provider=settings.primary_provider.name,
         model=settings.primary_provider.model,
-        source_language=settings.source_language,
-        target_language=settings.target_language,
+        # Codes, as a translate run records them; see ensure_state.
+        source_language=normalize_language(settings.source_language)[0],
+        target_language=normalize_language(settings.target_language)[0],
     )

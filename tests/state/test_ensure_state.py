@@ -55,3 +55,16 @@ def test_backup_state_copies_the_file_beside_it(tmp_path: Path) -> None:
 
     assert backup.parent == tmp_path and backup != path
     assert load_state(backup).segments["s1"].translation == "一"
+
+
+def test_an_existing_state_is_never_rebuilt(tmp_path: Path) -> None:
+    """Re-running extract passed the languages spelled differently from the
+    stored ones, and the whole state was rebuilt as PENDING without a copy."""
+    path = tmp_path / "state.json"
+    _translated_state(path)
+
+    state = ensure_state(path, _segments(4), "openai", "gpt-a", "auto", "Simplified Chinese")
+
+    assert state.segments["s1"].translation == "一"
+    assert state.segments["s4"].status == SegmentStatus.PENDING  # a new unit is added
+    assert load_state(path).segments["s1"].status == SegmentStatus.COMPLETED

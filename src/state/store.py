@@ -66,26 +66,26 @@ def ensure_state(
     segments_list = list(segments)  # Consume iterable once
 
     if path.exists() and not force_reset:
+        # An existing state is only ever merged into: new units are added and
+        # the provider is recorded. It used to be rebuilt as PENDING, with no
+        # warning and no copy, whenever the provider, the model or the spelling
+        # of a language differed: `tepub extract` passed "Simplified Chinese"
+        # where translate had stored "zh-CN", and a re-extraction erased a
+        # translated book. Whether a language change resets finished work is
+        # decided in one place, the translate run, which keeps a copy first.
         existing = load_state(path)
-        # Only the languages decide whether finished work still applies. A change
-        # of provider or model used to rebuild the whole state as PENDING, with no
-        # warning and no copy; each record already says who translated it.
-        if (
-            existing.source_language == source_language
-            and existing.target_language == target_language
-        ):
-            changed = False
-            for seg in segments_list:
-                if seg.segment_id not in existing.segments:
-                    existing.segments[seg.segment_id] = TranslationRecord(segment_id=seg.segment_id)
-                    changed = True
-            if (existing.current_provider, existing.current_model) != (provider, model):
-                existing.current_provider = provider
-                existing.current_model = model
+        changed = False
+        for seg in segments_list:
+            if seg.segment_id not in existing.segments:
+                existing.segments[seg.segment_id] = TranslationRecord(segment_id=seg.segment_id)
                 changed = True
-            if changed:
-                save_state(existing, path)
-            return existing
+        if (existing.current_provider, existing.current_model) != (provider, model):
+            existing.current_provider = provider
+            existing.current_model = model
+            changed = True
+        if changed:
+            save_state(existing, path)
+        return existing
 
     doc = StateDocument(
         segments={
