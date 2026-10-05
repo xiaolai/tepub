@@ -188,7 +188,12 @@ def apply_translations(
             # serialised, making it a no-op for the output. It also raised
             # NameError when every document was missing and the loop never ran.
             _restore_document_structure(document, document.raw_html)
-            html_bytes = etree.tostring(document.tree, encoding="utf-8", method="html")
+            # XML serialisation: the writer copies these bytes into the book as
+            # they are, and HTML serialisation leaves void elements unclosed,
+            # which is not well-formed XHTML.
+            html_bytes = etree.tostring(
+                document.tree.getroottree(), encoding="utf-8", method="xml", xml_declaration=True
+            )
             updated_html[file_path] = html_bytes
 
     if missing_documents:

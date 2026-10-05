@@ -263,7 +263,7 @@ the package identifier they depend on is never edited.
 **Done when:** the round-trip test exists and fails on today's writer for the reasons E1 and E2 describe.
 
 ### WI-4.1 A byte-copy writer (E1, E2, E3, E15, F02)
-**Status:** open
+**Status:** DONE 2026-10-05. `src/epub_io/container.py` reads the container and package with a parser that never resolves entities, loads DTDs or touches the network, and writes the output as the input's zip with only the given entries replaced, mimetype first and stored; duplicate or case-colliding names stop the write (D8). The writer updates every table of contents present, nav and NCX alike, resolving hrefs from the TOC document (D7). Verified: the 7 fixture round trips are byte for byte; the 19-book corpus round trip adds no epubcheck errors to any book, against 15 of 19 with the old writer. Also in this item: the injector serialises documents as XML, since the bytes now reach the book as they are, and `tests/epub_io/test_translated_output.py` seeds WI-4.8, with 5 cases marked as strict expected failures tied to WI-4.2, WI-4.4 and WI-4.6. The two ebooklib-mocking writer tests were replaced by tests on real files.
 **Depends:** WI-4.0
 **Files:** `src/epub_io/container.py` (new), `src/epub_io/writer.py`
 **Do:** read the container and package with lxml's XML parser. Write output by copying every entry untouched except the documents passed in, with `mimetype` first and stored uncompressed. TOC title rewrites edit the nav or NCX document directly. ebooklib leaves the write path entirely.

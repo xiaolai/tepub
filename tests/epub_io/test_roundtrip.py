@@ -20,10 +20,6 @@ from tests.epub_fixtures import FIXTURES
 
 pytestmark = pytest.mark.skipif(not epubcheck.AVAILABLE, reason="epubcheck not installed")
 
-# The writer replaced by WI-4.1 cannot pass; strict, so the fix must remove this.
-REWRITER = pytest.mark.xfail(strict=True, reason="ebooklib rewrites the package (WI-4.1)")
-
-
 def _entries(path: Path) -> list[tuple[str, bytes]]:
     with zipfile.ZipFile(path) as archive:
         return [(info.filename, archive.read(info)) for info in archive.infolist()]
@@ -35,7 +31,6 @@ def test_fixtures_are_valid_as_built(name: str, tmp_path: Path) -> None:
     assert epubcheck.errors(epubcheck.check(book)) == []
 
 
-@REWRITER
 @pytest.mark.parametrize("name", sorted(FIXTURES))
 def test_an_unchanged_book_round_trips_byte_for_byte(name: str, tmp_path: Path) -> None:
     book = FIXTURES[name](tmp_path / f"{name}.epub")
@@ -58,7 +53,6 @@ def _corpus_books() -> list[Path]:
     return sorted(Path(CORPUS).expanduser().glob("*.epub"))
 
 
-@REWRITER
 @pytest.mark.corpus
 @pytest.mark.skipif(not CORPUS, reason="set TEPUB_CORPUS_DIR to a folder of real EPUBs")
 @pytest.mark.parametrize("book", _corpus_books(), ids=lambda p: p.stem[:40])

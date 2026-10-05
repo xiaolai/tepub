@@ -1,10 +1,18 @@
+"""Write a translated EPUB: the source book with some entries replaced.
+
+Content documents, the table of contents and, for translated-only output, one
+stylesheet are replaced; every other entry is copied unchanged. See container.py
+for why this no longer goes through ebooklib.
+"""
+
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path, PurePosixPath
 
-from ebooklib import ITEM_STYLE, epub
+from lxml import etree
 
-from .resources import get_item_by_href, load_book
+from .container import Package, read_package, resolve, secure_xml_parser, write_copy
 
 TRANSLATED_ONLY_CSS = """
 [data-lang=\"original\"] {
@@ -16,80 +24,103 @@ TRANSLATED_ONLY_CSS = """
 }
 """
 
+XHTML_NS = "http://www.w3.org/1999/xhtml"
+OPS_NS = "http://www.idpf.org/2007/ops"
+NCX_NS = "http://www.daisy.org/z3986/2005/ncx/"
+
+TitleUpdates = dict[PurePosixPath, dict[str | None, str]]
+
 
 def write_updated_epub(
     input_epub: Path,
     output_epub: Path,
     updated_html: dict[Path, bytes],
     *,
-    toc_updates: dict[PurePosixPath, dict[str | None, str]] | None = None,
+    toc_updates: TitleUpdates | None = None,
     css_mode: str = "bilingual",
 ) -> None:
-    book = load_book(input_epub)
-    for href, content in updated_html.items():
-        item = get_item_by_href(book, href)
-        item.set_content(content)
+    """Write ``input_epub`` to ``output_epub`` with ``updated_html`` applied.
+
+    ``updated_html`` and ``toc_updates`` are keyed by package-relative paths, as
+    the manifest writes them.
+    """
+    package = read_package(input_epub)
+    replacements = {
+        package.zip_path(PurePosixPath(href).as_posix()): content
+        for href, content in updated_html.items()
+    }
 
     if toc_updates and css_mode == "translated_only":
-        _rewrite_toc_titles(book, toc_updates)
+        by_entry = {package.zip_path(path.as_posix()): titles for path, titles in toc_updates.items()}
+        with zipfile.ZipFile(input_epub) as archive:
+            for toc in _toc_documents(package):
+                source = replacements.get(toc) or archive.read(toc)
+                replacements[toc] = _retitle(toc, source, by_entry)
 
     if css_mode == "translated_only":
-        _append_translated_only_css(book)
+        stylesheet = _first_stylesheet(package)
+        if stylesheet is not None:
+            with zipfile.ZipFile(input_epub) as archive:
+                css = replacements.get(stylesheet) or archive.read(stylesheet)
+            if b'[data-lang="original"]' not in css:
+                replacements[stylesheet] = (
+                    css.rstrip() + b"\n\n" + TRANSLATED_ONLY_CSS.strip().encode("utf-8") + b"\n"
+                )
 
-    output_epub.parent.mkdir(parents=True, exist_ok=True)
-    epub.write_epub(str(output_epub), book)
-
-
-def _append_translated_only_css(book: epub.EpubBook) -> None:
-    for item in book.get_items_of_type(ITEM_STYLE):
-        content = item.get_content().decode("utf-8")
-        if '[data-lang="original"]' in content:
-            return
-        content = f"{content}\n\n{TRANSLATED_ONLY_CSS.strip()}\n"
-        item.set_content(content.encode("utf-8"))
-        return
+    write_copy(input_epub, output_epub, replacements)
 
 
-def _rewrite_toc_titles(
-    book: epub.EpubBook, toc_updates: dict[PurePosixPath, dict[str | None, str]]
-) -> None:
-    def recurse(entries):
-        for entry in entries:
-            if isinstance(entry, (list, tuple)):
-                recurse(entry)
-                continue
-            # Only epub.Link was handled, so epub.Section entries — which also
-            # carry href and title — kept their original headings in
-            # translated-only output.
-            href = getattr(entry, "href", None)
-            if href is None or not hasattr(entry, "title"):
-                continue
-            path, fragment = _split_href(href)
-            title = _lookup_title(toc_updates, path, fragment)
-            if title:
-                entry.title = title
-
-    recurse(book.toc)
+def _toc_documents(package: Package) -> list[str]:
+    """Every table of contents the book has: an EPUB 3 nav, an NCX, or both."""
+    found = []
+    for item in (package.nav_item(), package.ncx_item()):
+        if item is not None and item.path not in found:
+            found.append(item.path)
+    return found
 
 
-def _split_href(href: str | None) -> tuple[PurePosixPath, str | None]:
-    if not href:
-        return PurePosixPath(""), None
-    if "#" in href:
-        path_part, fragment = href.split("#", 1)
-    else:
-        path_part, fragment = href, None
-    return PurePosixPath(path_part), fragment
+def _first_stylesheet(package: Package) -> str | None:
+    for item in package.manifest.values():
+        if item.media_type == "text/css":
+            return item.path
+    return None
 
 
-def _lookup_title(
-    toc_updates: dict[PurePosixPath, dict[str | None, str]],
-    path: PurePosixPath,
-    fragment: str | None,
-) -> str | None:
-    updates = toc_updates.get(path)
-    if not updates:
+def _lookup_title(updates: dict[str, dict[str | None, str]], entry: str, fragment: str | None) -> str | None:
+    titles = updates.get(entry)
+    if not titles:
         return None
-    if fragment and fragment in updates:
-        return updates[fragment]
-    return updates.get(None)
+    if fragment and fragment in titles:
+        return titles[fragment]
+    return titles.get(None)
+
+
+def _split(href: str) -> tuple[str, str | None]:
+    path, _, fragment = href.partition("#")
+    return path, fragment or None
+
+
+def _retitle(toc_path: str, source: bytes, updates: dict[str, dict[str | None, str]]) -> bytes:
+    root = etree.fromstring(source, parser=secure_xml_parser())
+    if root.tag == f"{{{NCX_NS}}}ncx":
+        for point in root.iter(f"{{{NCX_NS}}}navPoint"):
+            content = point.find(f"{{{NCX_NS}}}content")
+            label = point.find(f"{{{NCX_NS}}}navLabel/{{{NCX_NS}}}text")
+            if content is None or label is None:
+                continue
+            path, fragment = _split(content.get("src", ""))
+            title = _lookup_title(updates, resolve(toc_path, path), fragment)
+            if title:
+                label.text = title
+    else:
+        for nav in root.iter(f"{{{XHTML_NS}}}nav"):
+            if "toc" not in (nav.get(f"{{{OPS_NS}}}type") or "").split():
+                continue
+            for link in nav.iter(f"{{{XHTML_NS}}}a"):
+                path, fragment = _split(link.get("href", ""))
+                title = _lookup_title(updates, resolve(toc_path, path), fragment)
+                if title:
+                    for child in list(link):
+                        link.remove(child)
+                    link.text = title
+    return etree.tostring(root.getroottree(), xml_declaration=True, encoding="utf-8")
