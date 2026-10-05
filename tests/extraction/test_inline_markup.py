@@ -44,3 +44,26 @@ def test_a_paragraph_with_inline_markup_is_html() -> None:
 def test_spans_are_unwrapped_but_links_are_kept() -> None:
     (unit,) = _units('<p><span class="x">Styled</span> and <a href="#t">linked</a>.</p>')
     assert unit.source_content == 'Styled and <a href="#t">linked</a>.'
+
+
+SVG_COVER = (
+    '<div><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+    'viewBox="0 0 600 800"><image width="600" height="800" xlink:href="cover.jpg"/></svg></div>'
+)
+
+
+def test_a_picture_with_no_words_is_not_a_unit() -> None:
+    """A title page's SVG cover used to become a unit: sent to the model, and
+    rewritten into invalid SVG (xlink:href turned into src, sizes dropped)."""
+    assert _units(SVG_COVER) == []
+
+
+def test_svg_and_mathml_inside_a_unit_are_left_exactly_as_written() -> None:
+    (unit,) = _units(
+        '<p>The value <math xmlns="http://www.w3.org/1998/Math/MathML" display="inline">'
+        '<mi mathvariant="bold">x</mi></math> and a figure '
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="10"><rect width="1" height="1"/></svg>.</p>'
+    )
+    source = unit.source_content
+    assert 'mathvariant="bold"' in source and 'display="inline"' in source
+    assert 'viewBox="0 0 1 1"' in source and 'width="10"' in source

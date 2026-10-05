@@ -50,7 +50,6 @@ SKIPPED_TAGS = frozenset({"svg", "math", "switch", "script", "style", "pre", "te
 _UNWRAPPED_INLINE = ("span", "font")
 
 OPS_TYPE = "{http://www.idpf.org/2007/ops}type"
-XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 
 # Attributes the translation must carry back unchanged: link targets, anchors,
 # images and note semantics. Classes and styles are noise to a model.
@@ -122,6 +121,16 @@ def _has_inline_markup(element: etree._Element) -> bool:
     )
 
 
+def _translatable_text(element: etree._Element) -> str:
+    """Text outside SVG, MathML and other skipped content."""
+    parts = [element.text or ""]
+    for child in element:
+        if isinstance(child.tag, str) and local_name(child) not in SKIPPED_TAGS:
+            parts.append(_translatable_text(child))
+        parts.append(child.tail or "")
+    return "".join(parts)
+
+
 def body_of(root: etree._Element) -> etree._Element | None:
     return root.find(f"{{{XHTML_NS}}}body")
 
@@ -131,17 +140,20 @@ def _extract_text(element: etree._Element) -> str:
 
 
 def _plain_copy(element: etree._Element) -> etree._Element:
-    """A copy with XHTML names un-namespaced and only meaningful attributes kept."""
+    """A copy with XHTML names un-namespaced and only meaningful attributes kept.
+
+    SVG and MathML are left exactly as written: cleaning them as HTML turned an
+    SVG <image xlink:href> into an invalid <image src> and dropped its size.
+    """
     clone = deepcopy(element)
     for node in clone.iter():
         if not isinstance(node.tag, str):
             continue
         qname = etree.QName(node)
-        if qname.namespace == XHTML_NS:
-            node.tag = qname.localname
+        if qname.namespace != XHTML_NS:
+            continue
+        node.tag = qname.localname
         kept = {name: value for name, value in node.attrib.items() if name in _KEPT_ATTRIBUTES}
-        if qname.localname == "image" and XLINK_HREF in node.attrib:
-            kept["src"] = node.get(XLINK_HREF)
         node.attrib.clear()
         for name, value in kept.items():
             node.set(name, value)
@@ -174,6 +186,17 @@ def source_of(element: etree._Element, mode: ExtractMode) -> str:
     return _extract_text(element) if mode == ExtractMode.TEXT else _extract_inner_html(element)
 
 
+def _unit_source(element: etree._Element, mode: ExtractMode) -> str | None:
+    """The unit's source, or None when it has no words to translate.
+
+    A block holding only a picture, such as a title page's SVG cover, used to
+    become a unit and be sent to the model.
+    """
+    if not _has_text(_translatable_text(element)):
+        return None
+    return source_of(element, mode) or None
+
+
 def iter_segments(
     tree: etree._Element,
     file_path: Path,
@@ -185,8 +208,8 @@ def iter_segments(
     root_tree = tree.getroottree()
     order = 0
     for element, mode in iter_units(body):
-        content = source_of(element, mode)
-        if not content:
+        content = _unit_source(element, mode)
+        if content is None:
             continue
         order += 1
         yield Segment(
@@ -215,8 +238,8 @@ def locate_units(
     found: dict[int, tuple[etree._Element, ExtractMode, str]] = {}
     order = 0
     for element, mode in iter_units(body):
-        content = source_of(element, mode)
-        if not content:
+        content = _unit_source(element, mode)
+        if content is None:
             continue
         order += 1
         found[order] = (element, mode, content)
