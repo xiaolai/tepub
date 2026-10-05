@@ -4,6 +4,116 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.5.0] - 2026-10-05
+
+Local translation by default, a glossary that holds a book's terms to one
+rendering, and inline markup a local model can keep.
+
+### ⬆️ Upgrading from 0.4
+
+- **The default translator is now local**: Ollama with TranslateGemma 12B.
+  Install [Ollama](https://ollama.com/) and run `ollama pull translategemma:12b`,
+  or, to keep using OpenAI, set it in `~/.tepub/config.yaml`:
+  ```yaml
+  primary_provider:
+    name: openai
+    model: gpt-4o
+  ```
+  Before translating, tepub checks that Ollama answers and has the model, and
+  says how to fix it if not.
+- **Run `tepub extract` once on each book you are working on.** Links that
+  carry no target or anchor are no longer part of a unit, and long lists,
+  tables and definition lists are split into their items (segments format 4).
+  Every translation carries over: one whose unit changed between text and HTML
+  is converted to its new form, a list translated whole is distributed over its
+  items, and anything that cannot be carried faithfully is translated again.
+  Re-running extract is safe from this release on; see the first fix below.
+
+### ✨ Added
+
+- **A glossary per book.** Each paragraph used to be translated alone, so a
+  book's key terms drifted: in 124 paragraphs of one book, "scam compound" came
+  out ten different ways. `tepub glossary build` proposes terms from the book's
+  index and its recurring names, with renderings from the model, for review;
+  saved as `glossary.yaml`, the renderings of the terms in each paragraph go
+  into its prompt, and a reply that misses one is retried once with the term
+  named. TranslateGemma used an injected rendering in 10 of 10 paragraphs, and
+  in 0 of 10 without it. `tepub glossary check` lists finished translations
+  that miss a rendering; `--retranslate` redoes only those.
+- **Local translation by default** with Ollama and TranslateGemma 12B: free,
+  private, no API key. The docs lead with it and show how to choose a cloud
+  service instead.
+- **`think: false`** for reasoning models on Ollama, such as Qwen 3.5, which
+  otherwise spend minutes thinking before each paragraph.
+
+### 🐛 Fixed — data loss
+
+- **Re-running `tepub extract` no longer erases a translated book.** Translate
+  stored the target language as a code ("zh-CN") and extract passed its name
+  ("Simplified Chinese"); the mismatch rebuilt the whole state as untranslated,
+  with no warning and no copy. A workspace's state is now only ever merged
+  into, and a real language change is decided only by `translate`, which
+  compares language codes, keeps a copy and says so.
+
+### 🐛 Fixed — translation
+
+- **Links, note references and anchors survive a local model** (markers).
+  Asked to keep raw HTML, TranslateGemma moved or dropped them in a quarter of
+  a link-dense book's paragraphs, which then stayed untranslated. Inline markup
+  now travels as numbered markers, ⟦1⟧…⟦/1⟧, and the tags are rebuilt from the
+  source; line breaks travel as newlines. On a 20-paragraph sample, 20 passed
+  instead of 15. DeepL, which handles tags itself, still gets HTML.
+- **A custom prompt can no longer drop what every translation needs.** The
+  per-book config that `extract` writes left out `{mode_instruction}`, so the
+  model was never told to keep markup; a prompt without it, or naming no target
+  language, now gets the missing instruction appended.
+- **Long lists, tables and definition lists are split into their items.** A
+  book's endnotes, one list of hundreds of notes, made units of up to 34,000
+  characters that no request finished. In bilingual output an item's
+  translation sits inside it, so list numbering and table columns are kept.
+- **A local model gets longer to answer a longer unit**, instead of a fixed two
+  minutes that cut long units off on every retry.
+- **Replies rejected for their content no longer start a cooldown.** Three in a
+  row stopped a run for 30 minutes though the model was answering. The count
+  also restarts with each run, instead of carrying over from the last one.
+- **A local model is checked, not waited for.** When failures pile up on
+  Ollama, tepub asks the server instead of pausing for 30 minutes: if it
+  answers, the run carries on at once; if not, the run stops and says how to
+  start it. Cloud providers keep the cooldown, which suits rate limits and
+  outages.
+- **An empty anchor the model dropped is put back** at the start of its
+  paragraph, instead of failing the paragraph over a mark no reader sees.
+- **Replies fenced as code are unwrapped**, and tags a model invents in plain
+  text are refused: a reply returned as "```html … ```" put the fence inside a
+  list and showed "<p>" to readers.
+- **A note's link survives a model that forgets to close it**: when the reply
+  has the note's number right after its opening marker, the pair is closed.
+- **A lost line break no longer leaves a unit untranslated**; like emphasis,
+  it carries no link or note.
+- **Chinese output has no spaces beside full-width punctuation** ("改善。 那个").
+- **Bare `<a>` elements left by converters** are unwrapped like spans, instead
+  of making a paragraph an HTML unit.
+
+- **`max_tokens` reaches every provider.** It was documented as capping each
+  reply, but only Anthropic sent it; OpenAI, Gemini, Grok and Ollama now do,
+  and a reply cut at the limit is reported as truncated.
+
+### 🐛 Fixed — choosing what to translate
+
+- **Notes the table of contents leaves out are found** by their first line, so
+  the default rules skip them as intended.
+- **Plural titles match**: "Acknowledgements" is skipped like "Acknowledgement".
+- **A section title no longer skips its whole chapter**: one book lost its
+  chapter 10 to a closing section titled "Further Reading".
+
+### 🐛 Fixed — docs
+
+- `config.example.yaml` showed alternative providers under keys tepub never
+  read, such as `anthropic_provider`; the README showed a `--provider` flag no
+  command has. Both now show `primary_provider`.
+
+---
+
 ## [0.4.0] - 2026-10-05
 
 A new EPUB core. Each item names its work item in

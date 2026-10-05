@@ -4,7 +4,7 @@
 
 TEPUB is a comprehensive toolkit for processing EPUB files. Translate books into any language, create professional audiobooks with natural voices, export to markdown, or publish as interactive websites.
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -335,46 +335,25 @@ audiobook_workers: 5      # Default: 3
 
 ### Glossary: One Rendering per Term
 
-Each paragraph is translated on its own, so without a glossary a book's key
-terms drift: in one test, "scam compound" came out ten different ways. A
-glossary fixes the rendering of each term for the whole book.
-
 ```bash
-tepub extract book.epub
-tepub glossary build book.epub      # proposes terms, with renderings from the model
-# review book/glossary.proposed.yaml, then save it as book/glossary.yaml
-tepub translate book.epub
-tepub glossary check book.epub      # lists translations that missed a rendering
+tepub glossary build book.epub      # proposes terms; review, save as book/glossary.yaml
+tepub translate book.epub           # holds each paragraph to the glossary
+tepub glossary check book.epub      # lists misses; --retranslate redoes them
 ```
-
-`glossary build` takes terms from the book's index and from names that recur,
-and asks the translation model for a rendering of each in context. Review every
-entry: renderings of names especially can be wrong. Nothing is used until you
-save the file as `glossary.yaml`.
 
 ```yaml
 target_language: Simplified Chinese
 terms:
-  - source: scam compound     # lowercase terms also match their plural
+  - source: scam compound     # lowercase: also matches the plural
     target: 诈骗园区
-    avoid: [集中营]            # renderings that count as a miss
-  - source: Sihanoukville      # terms with a capital match exactly
-    target: 西哈努克港
+    avoid: [集中营]
   - source: Telegram
-    target: Telegram           # same as the source: left untranslated
-  - source: POGO
-    target: 菲律宾离岸博彩运营商
-    variants: [POGOs]
+    target: Telegram           # same as source: left untranslated
 ```
 
-Each paragraph's prompt lists the renderings of the terms it contains. A reply
-that misses one is retried once with the term named; a second miss is kept and
-logged, since a translator may rightly avoid repeating a term. A glossary in
-`~/.tepub/glossary.yaml` applies to every book, and a book's own entries win.
-
-A book translated before its glossary existed:
-`tepub glossary check book.epub --retranslate` marks the paragraphs that miss a
-rendering, and the next `tepub translate` redoes only those.
+Limits: `glossary build` proposes terms for English books only, and renderings
+are checked as written, so languages that inflect (German, Russian) see false
+misses. Review proposed renderings; the model gets names wrong.
 
 ### Custom Translation Style
 
