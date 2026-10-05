@@ -14,6 +14,9 @@ class DummyProvider:
     name = "dummy"
     model = "dummy-model"
 
+    def preflight(self):
+        pass
+
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         return "<p>Hola mundo</p>"
 
@@ -78,6 +81,9 @@ class FailingProvider:
     name = "dummy"
     model = "dummy-model"
 
+    def preflight(self):
+        pass
+
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         raise ProviderFatalError("network unavailable")
 
@@ -114,6 +120,9 @@ class SpyProvider:
 
     def __init__(self):
         self.calls = []
+
+    def preflight(self):
+        pass
 
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         self.calls.append(segment.source_content)
@@ -182,6 +191,9 @@ class FlakyProvider:
     def __init__(self) -> None:
         self.calls = 0
 
+    def preflight(self):
+        pass
+
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         from translation.providers.base import ProviderError
 
@@ -229,6 +241,9 @@ def test_a_cooldown_resumes_the_run(monkeypatch, settings, tmp_path):
 class AlwaysRateLimited:
     name = "dummy"
     model = "dummy-model"
+
+    def preflight(self):
+        pass
 
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         from translation.providers.base import ProviderError
@@ -310,6 +325,9 @@ def test_a_stopped_run_resumes_where_it_left_off(monkeypatch, settings, tmp_path
         name, model = "dummy", "dummy-model"
         calls = 0
 
+        def preflight(self):
+            pass
+
         def translate(self, segment, source_language, target_language):
             StopsOnThird.calls += 1
             if StopsOnThird.calls == 3:
@@ -319,6 +337,9 @@ def test_a_stopped_run_resumes_where_it_left_off(monkeypatch, settings, tmp_path
     class Counting:
         name, model = "dummy", "dummy-model"
         seen: list[str] = []
+
+        def preflight(self):
+            pass
 
         def translate(self, segment, source_language, target_language):
             Counting.seen.append(segment.segment_id)

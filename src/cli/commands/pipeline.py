@@ -6,6 +6,7 @@ import click
 
 from cli.commands.export import _run_exports
 from cli.core import describe_pipeline_artifacts, prepare_settings_for_epub, resolve_export_flags
+from cli.errors import handle_provider_errors
 from config import AppSettings
 from console_singleton import get_console
 from extraction.pipeline import run_extraction
@@ -42,6 +43,7 @@ console = get_console()
     help="Select bilingual (default) or translated-only EPUB output.",
 )
 @click.pass_context
+@handle_provider_errors
 def pipeline_command(
     ctx: click.Context,
     input_epub: Path,

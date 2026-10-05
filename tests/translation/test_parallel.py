@@ -19,6 +19,9 @@ class DummyParallelProvider:
     def __init__(self):
         self.call_count = 0
 
+    def preflight(self):
+        pass
+
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         """Simulate translation with a counter."""
         self.call_count += 1

@@ -307,6 +307,7 @@ def run_translation(
     # again, and the last to save won.
     with exclusive_run(settings.state_file):
         provider = create_provider(settings.primary_provider)
+        provider.preflight()
 
         # Translations into another language do not carry over. Keep a copy and say
         # how much is being reset; this used to happen silently inside ensure_state,

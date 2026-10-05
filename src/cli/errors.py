@@ -47,3 +47,20 @@ def handle_state_errors(func: F) -> F:
             raise click.exceptions.Exit(1)
 
     return cast(F, wrapper)
+
+
+def handle_provider_errors(func: F) -> F:
+    """Report a provider that cannot work at all, such as an unreachable Ollama,
+    in red and exit with code 1, instead of a traceback."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from translation.providers import ProviderFatalError
+
+        try:
+            return func(*args, **kwargs)
+        except ProviderFatalError as e:
+            console.print(f"[red]{e}[/red]")
+            raise click.exceptions.Exit(1)
+
+    return cast(F, wrapper)

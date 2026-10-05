@@ -83,6 +83,10 @@ class BaseProvider(abc.ABC):
                 f"preserves markup, or re-extract in text mode."
             )
 
+    def preflight(self) -> None:
+        """Raise ProviderFatalError if the run cannot work at all; checked once
+        before any segment is sent."""
+
     @abc.abstractmethod
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         raise NotImplementedError

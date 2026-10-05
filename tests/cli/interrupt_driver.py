@@ -50,6 +50,9 @@ class SlowThird:
     model = "fake"
     calls = 0
 
+    def preflight(self):
+        pass
+
     def translate(self, segment, source_language, target_language):
         SlowThird.calls += 1
         if SlowThird.calls == 3:

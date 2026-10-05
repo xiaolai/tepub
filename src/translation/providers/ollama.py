@@ -4,11 +4,19 @@ import json
 from typing import Any
 from urllib.parse import urlsplit
 
+import requests
+
 from config import ProviderConfig
+from logging_utils.logger import get_logger
 from state.models import Segment
 from translation.prompt_builder import build_prompt
 
-from .base import BaseProvider, ensure_not_truncated, ensure_translation_available
+from .base import (
+    BaseProvider,
+    ProviderFatalError,
+    ensure_not_truncated,
+    ensure_translation_available,
+)
 from .http import post_json
 
 DEFAULT_SERVER = "http://localhost:11434"
@@ -27,12 +35,48 @@ def _generate_endpoint(base_url: str | None) -> str:
     return url
 
 
+logger = get_logger(__name__)
+
+
+def _installed(model: str, names: set[str]) -> bool:
+    # Ollama lists an untagged model under its :latest tag.
+    return model in names or (":" not in model and f"{model}:latest" in names)
+
+
 class OllamaProvider(BaseProvider):
     supports_html = True
 
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
         self.config.base_url = _generate_endpoint(self.config.base_url)
+
+    def preflight(self) -> None:
+        """Check the server answers and has the model, before the first segment.
+
+        Ollama is the default provider, so a machine without it, or without the
+        model pulled, is the likeliest first run. Each segment used to fail its
+        retries and the run then waited through its cooldowns before giving up.
+        """
+        server = self.config.base_url.rsplit("/api/", 1)[0]
+        try:
+            response = requests.get(f"{server}/api/tags", timeout=10)
+        except requests.exceptions.RequestException as exc:
+            raise ProviderFatalError(
+                f"Cannot reach Ollama at {server} ({exc.__class__.__name__}). Start it with "
+                "'ollama serve', or set primary_provider in ~/.tepub/config.yaml."
+            ) from exc
+        try:
+            names = {entry["name"] for entry in response.json()["models"]}
+        except (ValueError, KeyError, TypeError):
+            # Not Ollama's own API (a proxy exposing only /api/generate, say);
+            # the first request will tell.
+            logger.warning("Could not list the models at %s; skipping the model check", server)
+            return
+        if not _installed(self.config.model, names):
+            raise ProviderFatalError(
+                f"Ollama at {server} does not have the model {self.config.model!r}. "
+                f"Install it with 'ollama pull {self.config.model}'."
+            )
 
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         payload: dict[str, Any] = {
