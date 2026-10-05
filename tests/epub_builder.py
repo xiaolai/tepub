@@ -100,7 +100,8 @@ def build_epub(
             f'<item id="c{index}" href="{escape(name)}" media-type="application/xhtml+xml"{props}/>'
         )
         spine.append(f'<itemref idref="c{index}"/>')
-        toc_entries.append((name, chapter_title))
+        if chapter_title:  # an empty title keeps a chapter out of the TOC
+            toc_entries.append((name, chapter_title))
 
     uid = "urn:uuid:00000000-0000-4000-8000-000000000000"
     if version == 3:
@@ -152,7 +153,7 @@ def build_epub(
         )
     for name, chapter_title, body in chapters:
         link = _relative(name, "style.css") if css is not None else None
-        files[name] = xhtml(chapter_title, body, version=version, lang=lang, css=link)
+        files[name] = xhtml(chapter_title or name, body, version=version, lang=lang, css=link)
     files.update(resources)
 
     path.parent.mkdir(parents=True, exist_ok=True)

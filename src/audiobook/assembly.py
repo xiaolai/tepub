@@ -258,9 +258,9 @@ def _build_spine_to_toc_map(
 ) -> dict[int, tuple[str, str]]:
     """Build mapping from spine index to (toc_file, toc_title).
 
-    Maps each spine item to its governing TOC entry. Files between TOC entries
-    are mapped to the previous TOC entry. Files before the first TOC entry or
-    after the last TOC entry are not included in the map.
+    Maps each spine item to its governing TOC entry. Files between TOC entries,
+    and after the last one, are mapped to the previous TOC entry. Files before
+    the first TOC entry each map to themselves, as chapters of their own.
 
     Returns:
         Dict mapping spine_index -> (toc_file_path, toc_title)
@@ -287,19 +287,17 @@ def _build_spine_to_toc_map(
     # Build the mapping: spine_index -> (toc_file, toc_title)
     result: dict[int, tuple[str, str]] = {}
 
-    # Get first and last TOC spine indices
     first_toc_idx = toc_entries[0][0]
-    last_toc_idx = toc_entries[-1][0]
+    hrefs = {item.index: item.href.as_posix() for item in reader.package.spine_items()}
 
-    # Map spine indices to their governing TOC entry
+    # Map spine indices to their governing TOC entry. Documents before the first
+    # entry each become a chapter of their own, and documents after the last
+    # belong to it; both used to be synthesised and then left out of the book.
     current_toc_idx = 0
     for spine_idx in range(len(reader.package.spine)):
-        # Skip files before first TOC entry
         if spine_idx < first_toc_idx:
-            continue
-
-        # Skip files after last TOC entry
-        if spine_idx > last_toc_idx:
+            if spine_idx in hrefs:
+                result[spine_idx] = (hrefs[spine_idx], "")
             continue
 
         # Find the appropriate TOC entry for this spine index
@@ -328,10 +326,9 @@ def group_segments_into_chapters(
     for segment in segments:
         if spine_to_toc:
             toc_entry = spine_to_toc.get(segment.metadata.spine_index)
-            if toc_entry is None:
-                # Before the first TOC entry or after the last — not in any chapter.
-                continue
-            key = toc_entry[0]
+            # Every spine document is mapped (see _build_spine_to_toc_map); a
+            # segment outside the spine would be a different book.
+            key = toc_entry[0] if toc_entry is not None else segment.file_path.as_posix()
         else:
             key = segment.file_path.as_posix()
         chapter_map.setdefault(key, []).append(segment)
