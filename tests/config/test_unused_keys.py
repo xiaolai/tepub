@@ -38,3 +38,19 @@ def test_the_example_config_names_only_real_settings() -> None:
     keys = set(yaml.safe_load(example.read_text(encoding="utf-8")))
     assert keys <= set(AppSettings.model_fields), keys - set(AppSettings.model_fields)
 
+
+@pytest.mark.parametrize(
+    ("given", "posted_to"),
+    [
+        (None, "http://localhost:11434/api/generate"),
+        ("http://localhost:11434", "http://localhost:11434/api/generate"),
+        ("http://box:11434/", "http://box:11434/api/generate"),
+        ("http://box:11434/api/generate", "http://box:11434/api/generate"),
+    ],
+)
+def test_ollama_accepts_a_server_address_or_an_endpoint(given, posted_to) -> None:
+    from config import ProviderConfig
+    from translation.providers import create_provider
+
+    provider = create_provider(ProviderConfig(name="ollama", model="m", base_url=given))
+    assert provider.config.base_url == posted_to
