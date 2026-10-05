@@ -110,7 +110,14 @@ def ensure_punkt() -> None:
         try:
             nltk.data.find(f"tokenizers/{resource}")
         except LookupError:
-            nltk.download(resource, quiet=True)
+            # nltk.download returns False instead of raising when it cannot fetch
+            # the data (offline, blocked), which used to surface much later as a
+            # LookupError in the middle of synthesis.
+            if not nltk.download(resource, quiet=True):
+                raise RuntimeError(
+                    f"NLTK's {resource} sentence data is not installed and could not be "
+                    f"downloaded. Install it with: python -m nltk.downloader {resource}"
+                ) from None
 
 
 def _ensure_list_punctuation(root: lxml_html.HtmlElement) -> None:
