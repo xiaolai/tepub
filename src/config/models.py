@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProviderConfig(BaseModel):
@@ -20,11 +20,22 @@ class ProviderConfig(BaseModel):
         description="Maximum tokens in a single translation response. A long segment "
         "that exceeds this is reported as an error rather than silently truncated.",
     )
+    think: bool | None = Field(
+        default=None,
+        description="Ollama only. false turns off a reasoning model's thinking, which "
+        "otherwise costs minutes per paragraph; unset leaves the model's default.",
+    )
 
     @field_validator("name")
     @classmethod
     def _lowercase_name(cls, value: str) -> str:
         return value.lower()
+
+    @model_validator(mode="after")
+    def _think_is_ollama_only(self) -> ProviderConfig:
+        if self.think is not None and self.name != "ollama":
+            raise ValueError(f"think is an Ollama option; provider {self.name!r} has no such setting")
+        return self
 
 
 class SkipRule(BaseModel):

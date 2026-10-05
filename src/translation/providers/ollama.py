@@ -35,11 +35,13 @@ class OllamaProvider(BaseProvider):
         self.config.base_url = _generate_endpoint(self.config.base_url)
 
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.config.model,
             "prompt": build_prompt(segment, source_language, target_language),
             "stream": False,
         }
+        if self.config.think is not None:
+            payload["think"] = self.config.think
         body: Any = post_json(
             "Ollama",
             self.config.base_url,
