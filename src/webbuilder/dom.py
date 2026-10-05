@@ -194,7 +194,11 @@ def _rewrite_media_urls(doc: html.HtmlElement, relative_path: Path) -> None:
 
 
 REMOVABLE_TAGS = {"font", "center"}
-REMOVABLE_ATTRS = {"style", "class", "lang", "xml:lang"}
+# Inline style can make outbound requests (url(...)), so it goes. Classes and
+# language attributes stay: they cannot run anything, the viewer's
+# original/translation toggles match the tepub-* classes (the only markers EPUB 2
+# output has), and lang selects fonts for CJK text.
+REMOVABLE_ATTRS = {"style"}
 
 #: Elements dropped with their contents. The book is untrusted input and the
 #: export is opened in a browser, but none of these were removed, so a book
@@ -234,12 +238,6 @@ def _strip_attributes(doc: html.HtmlElement) -> None:
             del el.attrib[name]
 
         for attr in REMOVABLE_ATTRS:
-            if attr not in el.attrib:
-                continue
-            if attr in ("class", "style") and el.get("data-lang"):
-                # Preserve class/style on translation/original nodes if present
-                del el.attrib[attr]
-                continue
             el.attrib.pop(attr, None)
 
 

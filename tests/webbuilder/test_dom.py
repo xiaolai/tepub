@@ -17,8 +17,10 @@ def test_clean_html_adds_image_attrs():
     cleaned = clean_html(html_doc)
     assert 'loading="lazy"' in cleaned
     assert 'decoding="async"' in cleaned
-    assert cleaned.count('class="tepub-img"') == 2
+    # Every image gains tepub-img; a book's own classes are kept alongside it.
+    assert 'class="cover tepub-img"' in cleaned
     assert 'class="tepub-img"' in cleaned
+    assert cleaned.count("tepub-img") == 2
 
 
 
