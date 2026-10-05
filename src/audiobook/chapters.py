@@ -14,6 +14,7 @@ from epub_io.toc_utils import parse_toc_to_dict
 from state.store import load_segments
 
 from .mp4chapters import write_chapter_markers
+from .selection import audiobook_segments
 
 
 def _parse_timestamp(value: str | int | float) -> float:
@@ -117,7 +118,9 @@ def extract_chapters_from_epub(
 
     # Same grouping the final assembly uses, so the preview cannot disagree with
     # the book it is previewing.
-    sorted_chapters = group_segments_into_chapters(segments_doc.segments, spine_to_toc)
+    sorted_chapters = group_segments_into_chapters(
+        audiobook_segments(settings, segments_doc.segments), spine_to_toc
+    )
 
     # Build chapter info list
     chapters = []

@@ -21,6 +21,7 @@ from .assembly import assemble_audiobook
 from .models import AudioSegmentStatus
 from .preprocess import segment_to_text, split_sentences
 from .renderer import SegmentRenderer
+from .selection import audiobook_segments
 from .state import (
     ensure_state,
     get_or_create_segment,
@@ -229,16 +230,7 @@ class AudiobookRunner:
         segments_doc = load_segments(self.settings.segments_file)
         original_count = len(segments_doc.segments)
 
-        # Filter segments based on audiobook_files inclusion list or skip metadata
-        if self.settings.audiobook_files is not None:
-            # Explicit inclusion list takes precedence
-            allowed_files = set(self.settings.audiobook_files)
-            segments = [
-                seg for seg in segments_doc.segments if seg.file_path.as_posix() in allowed_files
-            ]
-        else:
-            # No inclusion list: filter out segments with skip metadata
-            segments = [seg for seg in segments_doc.segments if seg.skip_reason is None]
+        segments = audiobook_segments(self.settings, segments_doc.segments)
 
         filtered_count = original_count - len(segments)
         if announce and filtered_count > 0:
