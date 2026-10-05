@@ -61,6 +61,8 @@ class SegmentsDocument(BaseModel):
     # file path and document order.
     format_version: int = 1
     epub_path: Path
+    # SHA-256 of the EPUB extracted from; identifies the book wherever it moves.
+    epub_sha256: str | None = None
     generated_at: str
     segments: list[Segment]
     skipped_documents: list[SkippedDocument] = Field(default_factory=list)

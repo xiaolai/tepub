@@ -26,7 +26,8 @@ class ArtifactMismatchError(TepubError):
             f"Workspace artifacts belong to a different EPUB.\n"
             f"  requested: {input_epub}\n"
             f"  recorded:  {recorded_epub}\n"
-            f"Re-run `tepub extract` for this book, or point --work-dir at its workspace."
+            f"If it is the same book, moved or renamed, re-run `tepub extract` on it once\n"
+            f"so its content is recorded; otherwise point --work-dir at its workspace."
         )
 
 

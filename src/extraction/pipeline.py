@@ -6,6 +6,7 @@ from pathlib import Path
 from rich.progress import Progress
 
 from config import AppSettings
+from config.workspace import epub_digest
 from console_singleton import get_console
 from epub_io.container import metadata_summary
 from epub_io.reader import EpubReader
@@ -112,6 +113,7 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
     segments_doc = SegmentsDocument(
         format_version=SEGMENTS_FORMAT,
         epub_path=input_epub,
+        epub_sha256=epub_digest(input_epub),
         generated_at=timestamp,
         segments=segments,
         skipped_documents=skipped_documents,

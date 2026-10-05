@@ -61,16 +61,29 @@ def with_override_root(settings: AppSettings, base_path: Path, input_epub: Path)
     return settings.model_copy(update={"work_root": base_path, "work_dir": work_dir})
 
 
-def _assert_segments_match_epub(segments_doc, input_epub: Path) -> None:
-    """Fail when segments.json was generated from a different EPUB.
+def epub_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    Existence and schema checks alone let a workspace built for one book be used
-    for another: segment ids and xpaths then refer to the wrong document, and
-    translation/export silently produced corrupted output.
+
+def assert_same_book(segments_doc, input_epub: Path) -> None:
+    """Fail when segments.json was extracted from a different book.
+
+    The book is identified by its content when extraction recorded a digest, so
+    a moved or renamed EPUB is still the same book; comparing paths alone made
+    translate and export refuse it with no way to override. Workspaces made
+    before the digest was recorded fall back to comparing paths.
     """
     from exceptions import ArtifactMismatchError
 
     recorded = Path(str(segments_doc.epub_path))
+    if segments_doc.epub_sha256:
+        if epub_digest(input_epub) == segments_doc.epub_sha256:
+            return
+        raise ArtifactMismatchError(input_epub, recorded)
     try:
         same = recorded.resolve() == input_epub.resolve()
     except OSError:
@@ -106,7 +119,7 @@ def validate_for_export(settings: AppSettings, input_epub: Path) -> None:
     # Validate that files can actually be loaded (not corrupted)
     segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
     safe_load_state(settings.state_file, StateDocument, "translation")
-    _assert_segments_match_epub(segments_doc, input_epub)
+    assert_same_book(segments_doc, input_epub)
 
 
 def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
@@ -132,7 +145,7 @@ def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
 
     # Validate that segments file can actually be loaded (not corrupted)
     segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
-    _assert_segments_match_epub(segments_doc, input_epub)
+    assert_same_book(segments_doc, input_epub)
 
 
 def build_workspace_name(input_epub: Path) -> str:

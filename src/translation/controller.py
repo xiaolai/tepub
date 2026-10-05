@@ -13,8 +13,8 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 from rich.table import Table
 
 from config import AppSettings
+from config.workspace import assert_same_book
 from console_singleton import get_console
-from exceptions import ArtifactMismatchError
 from logging_utils.logger import get_logger
 from state.models import ExtractMode, SegmentStatus
 from state.store import backup_state, ensure_state, load_segments, load_state
@@ -243,17 +243,9 @@ def run_translation(
     settings.ensure_directories()
 
     segments_doc = load_segments(settings.segments_file)
-    # Compare resolved paths: the raw comparison reported a mismatch for a mere
-    # relative-vs-absolute difference, which is presumably why this was only a
-    # warning. A genuine mismatch means the segment ids and xpaths describe a
-    # different book, so translating them corrupts the output — fail instead.
-    recorded_epub = Path(str(segments_doc.epub_path))
-    try:
-        mismatched = recorded_epub.resolve() != input_epub.resolve()
-    except OSError:
-        mismatched = recorded_epub != input_epub
-    if mismatched:
-        raise ArtifactMismatchError(input_epub, recorded_epub)
+    # Segments from another book describe other documents, so translating them
+    # corrupts the output. The check is shared with export (config.workspace).
+    assert_same_book(segments_doc, input_epub)
 
     # Filter segments based on translation_files inclusion list or skip metadata
     original_count = len(segments_doc.segments)
