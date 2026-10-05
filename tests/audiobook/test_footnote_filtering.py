@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from lxml import html as lxml_html
 
 from audiobook.preprocess import _reextract_filtered, segment_to_text
@@ -176,12 +178,14 @@ def test_segment_to_text_uses_reader_when_provided():
     assert "1" in result_without_reader
 
 
-def test_segment_to_text_fallback_on_reextraction_failure():
-    """Test fallback to stored content if re-extraction fails."""
+def test_segment_to_text_fallback_when_element_cannot_be_located():
+    """An element the parser cannot locate again is narrated from stored text."""
+    from lxml import etree
+
     segment = Segment(
         segment_id="test-006",
         file_path=Path("chapter.xhtml"),
-        xpath="//p",
+        xpath="/html/body/epub:switch/p",
         extract_mode=ExtractMode.HTML,
         source_content="<p>Fallback text content</p>",
         metadata=SegmentMetadata(
@@ -191,13 +195,33 @@ def test_segment_to_text_fallback_on_reextraction_failure():
         )
     )
 
-    # Mock reader that raises error
-    mock_reader = Mock()
-    mock_reader.read_document_by_path.side_effect = Exception("EPUB read failed")
+    document = Mock()
+    document.tree.xpath.side_effect = etree.XPathEvalError("Undefined namespace prefix")
+    reader = Mock()
+    reader.read_document_by_path.return_value = document
 
-    # Should fallback to stored content
-    result = segment_to_text(segment, reader=mock_reader)
-    assert result == "Fallback text content"
+    assert segment_to_text(segment, reader=reader) == "Fallback text content"
+
+
+def test_segment_to_text_does_not_swallow_a_failed_document_lookup():
+    """A document missing from the EPUB is an error, not a reason to guess.
+
+    Catching every exception here is how a reader method that did not exist
+    went unnoticed: each call raised AttributeError and was silently ignored.
+    """
+    segment = Segment(
+        segment_id="test-007",
+        file_path=Path("missing.xhtml"),
+        xpath="/html/body/p",
+        extract_mode=ExtractMode.TEXT,
+        source_content="Text",
+        metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=1),
+    )
+    reader = Mock()
+    reader.read_document_by_path.side_effect = KeyError("missing.xhtml")
+
+    with pytest.raises(KeyError):
+        segment_to_text(segment, reader=reader)
 
 
 def test_segment_to_text_skips_table_and_figure():

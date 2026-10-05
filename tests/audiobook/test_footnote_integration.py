@@ -138,57 +138,6 @@ def test_footnote_file_exclusion():
     # So the footnote segment never gets processed for TTS
 
 
-def test_skips_footnote_definition_sections():
-    """Test that footnote definition sections are skipped based on segment ID."""
-
-    # Footnote definition segment (from Dynasty EPUB)
-    footnote_def = Segment(
-        segment_id="ftn3",
-        file_path=Path("chapter.xhtml"),
-        xpath="//div[@id='div3']/p[@id='ftn3']",
-        extract_mode=ExtractMode.HTML,
-        source_content='<p id="ftn3"><a href="#ftn3a">*1</a> Two historians, Marcus Octavius and Licinius Macer, claimed that the rapist was the girl\'s uncle.</p>',
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=1,
-            order_in_file=100  # Late in file
-        )
-    )
-
-    # Endnote with different ID pattern
-    endnote_def = Segment(
-        segment_id="note-42",
-        file_path=Path("chapter.xhtml"),
-        xpath="//div[@id='endnotes']/p[@id='note-42']",
-        extract_mode=ExtractMode.HTML,
-        source_content="<p>This is the endnote text.</p>",
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=1,
-            order_in_file=101
-        )
-    )
-
-    # Footnote in div with class
-    footnote_in_div = Segment(
-        segment_id="p150",
-        file_path=Path("chapter.xhtml"),
-        xpath="//div[@class='footnotes']/p[@id='p150']",
-        extract_mode=ExtractMode.HTML,
-        source_content="<p>Footnote content here.</p>",
-        metadata=SegmentMetadata(
-            element_type="p",
-            spine_index=1,
-            order_in_file=150
-        )
-    )
-
-    # All should be skipped (return None)
-    assert segment_to_text(footnote_def, reader=None) is None
-    assert segment_to_text(endnote_def, reader=None) is None
-    assert segment_to_text(footnote_in_div, reader=None) is None
-
-
 def test_preserves_regular_links_in_text():
     """Ensure regular hyperlinks without sup/sub are preserved."""
 

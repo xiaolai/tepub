@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 
+from lxml import etree
 from lxml import html as lxml_html
 
 from state.models import ExtractMode, Segment
+
+logger = logging.getLogger(__name__)
 
 BLOCK_PUNCTUATION = re.compile(r"[.!?…]$")
 NON_WORD_RE = re.compile(r"^[^\w]+$")
@@ -289,16 +293,23 @@ FOOTNOTE_DEF_HINTS = ("footnote", "endnote", "rearnote", "ftn", "fn", "note")
 _TOKEN_SPLIT_RE = re.compile(r"[\s_\-]+")
 
 
-def _looks_like_note_identifier(value: str) -> bool:
+def _looks_like_note_identifier(value: str, *, allow_bare_note: bool) -> bool:
     """True when an id/class token names a note, e.g. "ftn3", "footnote-2", "fn1".
 
     Token-prefix matching rather than substring: a plain ``in`` test would match
     ids like "fnord" or any class containing "note".
+
+    A bare "note" token is accepted only where ``allow_bare_note`` says so. As an
+    id ("note-3") it names a note; as a class it is the standard name for an
+    admonition box ("Note: ...") in technical books, which is content.
     """
     for token in _TOKEN_SPLIT_RE.split(value.lower()):
         stripped = token.rstrip("0123456789")
-        if stripped and stripped in FOOTNOTE_DEF_HINTS:
-            return True
+        if not stripped or stripped not in FOOTNOTE_DEF_HINTS:
+            continue
+        if stripped == "note" and not allow_bare_note:
+            continue
+        return True
     return False
 
 
@@ -308,10 +319,18 @@ def _element_is_footnote_definition(segment: Segment, reader) -> bool:
     EPUB 3 marks definitions with ``epub:type="footnote"`` / ``"endnote"`` or ARIA
     ``role="doc-footnote"``; older books rely on id/class naming.
     """
+    doc = reader.read_document_by_path(segment.file_path)
     try:
-        doc = reader.read_document_by_path(segment.file_path)
         elements = doc.tree.xpath(segment.xpath)
-    except Exception:
+    except etree.XPathEvalError as exc:
+        # Namespaced elements such as epub:switch give paths the HTML parser
+        # cannot evaluate. The segment is narrated from its stored text.
+        logger.warning(
+            "Cannot locate %s in %s (%s); footnote filtering skipped for it",
+            segment.xpath,
+            segment.file_path,
+            exc,
+        )
         return False
     if not elements:
         return False
@@ -328,10 +347,10 @@ def _element_is_footnote_definition(segment: Segment, reader) -> bool:
             return True
         if (get("role") or "").lower() in {"doc-footnote", "doc-endnote"}:
             return True
-        for attr in ("id", "class"):
-            value = get(attr) or ""
-            if value and _looks_like_note_identifier(value):
-                return True
+        if _looks_like_note_identifier(get("id") or "", allow_bare_note=True):
+            return True
+        if _looks_like_note_identifier(get("class") or "", allow_bare_note=False):
+            return True
         node = node.getparent()
     return False
 
@@ -349,29 +368,9 @@ def segment_to_text(segment: Segment, reader=None) -> str | None:
     if segment.metadata.element_type in {"table", "figure"}:
         return None
 
-    # Skip footnote/endnote definition sections based on segment ID or xpath
-    # Common patterns: ftn*, fn*, note*, endnote*, footnote*
-    seg_id_lower = segment.segment_id.lower()
-    xpath_lower = segment.xpath.lower()
-
-    footnote_id_patterns = ["ftn", "fn-", "note-", "endnote", "footnote"]
-    if any(pattern in seg_id_lower for pattern in footnote_id_patterns):
-        return None
-
-    # Check xpath for footnote container divs.
-    # Note: this only fires for hand-written xpaths carrying @id/@class predicates.
-    # Real extraction stores absolute positional paths ("/html/body/div[3]/p[2]"),
-    # so the element inspection below is what actually catches definitions in the
-    # wild — this check is kept for segments whose xpath does carry predicates.
-    footnote_xpath_patterns = ["footnote", "endnote", "notes"]
-    if any(f"div[@id='{pattern}" in xpath_lower or f"div[@class='{pattern}" in xpath_lower
-           for pattern in footnote_xpath_patterns):
-        return None
-
-    # Inspect the actual element and its ancestors. Segment ids are
-    # "{file_stem}-{digest}" and xpaths are positional, so neither carries the
-    # semantics the checks above look for; without this, in-file footnote
-    # definitions were read aloud in full.
+    # Inspect the actual element and its ancestors. Segment ids and positional
+    # xpaths carry no note semantics: matching "note-" against the id dropped
+    # every segment of files such as authors_note.xhtml or keynote.xhtml.
     if reader is not None and _element_is_footnote_definition(segment, reader):
         return None
 
@@ -379,8 +378,15 @@ def segment_to_text(segment: Segment, reader=None) -> str | None:
     if reader is not None:
         try:
             content = _reextract_filtered(segment, reader)
-        except Exception:
-            # Fallback to stored content if re-extraction fails
+        except (etree.XPathEvalError, ValueError) as exc:
+            # The element cannot be located again; narrate the stored text, which
+            # may still carry note markers, and say so.
+            logger.warning(
+                "Re-extraction failed for %s in %s (%s); using stored text",
+                segment.xpath,
+                segment.file_path,
+                exc,
+            )
             if segment.extract_mode == ExtractMode.HTML:
                 content = _html_to_text(segment.source_content, segment.metadata.element_type)
             else:

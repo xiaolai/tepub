@@ -43,6 +43,7 @@ class EpubReader:
             )
 
         self.book = load_book(epub_path)
+        self._documents: dict[Path, HtmlDocument] | None = None
 
     def iter_documents(self) -> Iterable[HtmlDocument]:
         for spine_item in iter_spine_items(self.book):
@@ -52,3 +53,23 @@ class EpubReader:
             raw_html: bytes = item.get_content()
             tree = html.fromstring(raw_html)
             yield HtmlDocument(spine_item=spine_item, tree=tree, raw_html=raw_html)
+
+    def read_document_by_path(self, href: Path) -> HtmlDocument:
+        """Return the parsed spine document at ``href``, parsing each one once.
+
+        Audiobook preprocessing looks a document up for every segment it holds,
+        so documents are parsed on first use and kept. Callers must not modify
+        the returned tree; clone it first.
+
+        Raises KeyError when ``href`` is not a document in this book's spine,
+        which means the segments were extracted from a different EPUB.
+        """
+        if self._documents is None:
+            self._documents = {document.path: document for document in self.iter_documents()}
+        try:
+            return self._documents[Path(href)]
+        except KeyError:
+            raise KeyError(
+                f"{href} is not a content document in {self.epub_path.name}; "
+                "the segments may come from a different EPUB"
+            ) from None

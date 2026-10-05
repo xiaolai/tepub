@@ -82,7 +82,7 @@ Each of these reports success while producing wrong output.
 **Done when:** both readers report each marker within 10 ms of its intended time, for timescales 1000, 11025 and 24000.
 
 ### WI-1.2 Footnote filtering actually runs (A2, A12)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/audiobook/test_footnotes_real_epub.py` against an EPUB built by the new `tests/epub_builder.py` (4 of 5 failed before the fix); corpus run over 19 real books: no crash, no fallback, and every dropped segment classified as a marked note section (`rearnotes`, `footnote`) or text with no words. Not as planned: id-token matching is kept, because EPUB 2 books mark notes only by ids such as `ftn3`; a bare `note` is accepted in ids but not in classes. Folded in from WI-5.2: A6 (segment-id substring filter that dropped `authors_note.xhtml`) and the unreachable xpath-predicate check. Two mock tests that enshrined the old behaviour were replaced, not deleted: see the commit body.
 **Files:** `src/epub_io/reader.py`, `src/audiobook/preprocess.py`
 **Do:** give `EpubReader` the document lookup that `preprocess.py` calls; replace the bare `except Exception` around it with a narrow exception that is logged with the file name; restrict footnote-definition detection to `epub:type` and DPUB-ARIA roles, dropping the `class="note"` heuristic that would remove admonition boxes.
 **Test first:** a test against a real EPUB fixture, not a `Mock()`, asserting a note body is excluded and a `<div class="note">` admonition is kept.
@@ -239,9 +239,9 @@ objections. Any objection whose check fails blocks the phase until resolved.
 **Status:** open
 **Do:** chapter plan, concat, tagging and statements become separate modules; behaviour is pinned by WI-1.5 before the split.
 
-### WI-5.2 Remaining audiobook defects (A5, A6, A9, A10, A11, A13, A14)
+### WI-5.2 Remaining audiobook defects (A5, A9, A10, A11, A13, A14)
 **Status:** open
-**Do:** check the NLTK download result and fail loudly; drop the segment-id substring filter; catch template errors before synthesis; warn about content outside the TOC; full-width terminators only for CJK splitting; filter the chapter preview the way assembly does; scope the NLTK environment variable.
+**Do:** check the NLTK download result and fail loudly; catch template errors before synthesis; warn about content outside the TOC; full-width terminators only for CJK splitting; filter the chapter preview the way assembly does; scope the NLTK environment variable.
 
 ### WI-5.3 CLI routing and the workspace move (N4, N5)
 **Status:** open
