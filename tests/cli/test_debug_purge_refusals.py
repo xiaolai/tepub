@@ -123,7 +123,8 @@ def test_update_state_atomic_persists_in_place_mutation(tmp_path):
     Comparing the returned document against the (already mutated) loaded document
     made every in-place updater look like a no-op, so nothing was written.
     """
-    from state.store import load_state, save_state, update_state_atomic
+    from state.store import load_state, save_state
+    from state.writer import update_state_atomic
 
     path = tmp_path / "state.json"
     save_state(

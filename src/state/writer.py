@@ -130,3 +130,30 @@ def exclusive_run(state_path: Path) -> Iterator[None]:
         yield
     finally:
         lock.release()
+
+
+def update_state_atomic(state_path: Path, updater) -> bool:
+    """Run ``updater(state)`` while holding the workspace and persist any change.
+
+    Commands that did load_state -> modify -> save_state could run beside a
+    translate run and overwrite its progress. Only a thread lock was taken here,
+    although this docstring claimed more; the whole-run lock is held now, so the
+    command stops with WorkspaceBusyError while a translation is running.
+    ``updater`` receives the freshly loaded document and returns the document to
+    save, or None to make no change.
+
+    Returns True when the file was rewritten.
+    """
+    with exclusive_run(state_path):
+        state = load_state(state_path)
+        # Snapshot before calling the updater: an updater that mutates the document
+        # in place and returns it would otherwise be compared against itself, so
+        # the change would always look like a no-op and never be persisted.
+        before = state.model_dump()
+        updated = updater(state)
+        if updated is None:
+            return False
+        if updated.model_dump() == before:
+            return False
+        save_state(updated, state_path)
+        return True

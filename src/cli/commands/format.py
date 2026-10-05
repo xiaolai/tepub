@@ -5,7 +5,8 @@ import click
 from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError
-from state.store import load_state, update_state_atomic
+from state.store import load_state
+from state.writer import update_state_atomic
 from translation.polish import polish_state, target_is_chinese
 
 console = get_console()

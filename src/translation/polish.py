@@ -100,7 +100,7 @@ def polish_if_chinese(
     # Re-read and write under the state-file lock. This was an unlocked
     # load-modify-save, so a translation completing between the read above and
     # the write below was overwritten by the stale snapshot.
-    from state.store import update_state_atomic
+    from state.writer import update_state_atomic
 
     changed = update_state_atomic(state_file_path, polish_state)
     if changed:

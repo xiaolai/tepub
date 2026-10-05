@@ -11,7 +11,8 @@ from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError
 from state.models import SegmentStatus, TranslationRecord
-from state.store import load_state, update_state_atomic
+from state.store import load_state
+from state.writer import update_state_atomic
 from translation.refusal_filter import looks_like_refusal
 
 console = get_console()
