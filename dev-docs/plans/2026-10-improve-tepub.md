@@ -184,6 +184,78 @@ Decision gate before starting: the owner confirms the staged path, and the
 design below is sent to a second model in refute mode with checkable
 objections. Any objection whose check fails blocks the phase until resolved.
 
+### Gate outcome, 2026-10-05
+
+The owner confirmed the staged path. Codex reviewed the design read-only in
+refute mode and raised ten objections, each with a check. Two blocked the
+design as written, and all ten change it. The decisions below replace the
+original wording of WI-4.2 to WI-4.6 where they disagree.
+
+| # | Objection | Verdict | Decision |
+|---|---|---|---|
+| 1 | The leaf-block rule loses text beside block children, as in `<blockquote>Before<p>In</p>After</blockquote>` | Accepted; blocked | D1 |
+| 2 | Mapping old workspaces by order misassigns translations when the unit set changes; Codex reproduced the shift | Accepted; blocked | D2 |
+| 3 | Falling back to lxml's HTML parser keeps the SVG case damage (`viewBox` to `viewbox`, reproduced in the grill) | Accepted | D3 |
+| 4 | Entities, DOCTYPE and external-entity safety have no contract | Accepted | D4 |
+| 5 | Bilingual copies duplicate ids, so links can land on the wrong copy | Accepted | D5 |
+| 6 | The inline-markup check is too narrow (src, structure) and too strict (reordering, ruby) | Accepted in part: failures stay ERROR, rates are measured | D6 |
+| 7 | TOC editing must update both nav and NCX and resolve hrefs properly | Accepted | D7 |
+| 8 | ZIP edge cases: duplicate or case-colliding names, obfuscated fonts | Accepted in part: the contract is entry order, names, content and compression type, not raw headers | D8 |
+| 9 | The reader, audiobook, web and markdown code still use ebooklib, XPath and `text_content()` | Accepted | WI-4.7 |
+| 10 | The round-trip gate never exercises translation | Accepted | WI-4.8 |
+
+Not yet checked: which HTML5 parser to use for D3, measured in WI-4.2; real
+model failure rates for D6, measured with the live endpoint in WI-4.5.
+
+**Baseline, today's writer over the 19-book corpus with nothing changed:** 15
+books gain epubcheck errors (mostly RSC-005, OPF-014, OPF-028, OPF-049); two
+lose errors, which only shows how much it rewrites.
+
+**D1 Segmentation.** A block element with no block descendants is a unit. A
+block that has its own non-whitespace text beside block children (mixed
+content) is one unit as a whole, in HTML mode, and nothing inside it is a unit.
+`table`, `ul`, `ol`, `dl` and `figure` stay whole. A property test requires
+every non-whitespace text node in the body to belong to exactly one unit or to
+an explicitly skipped element.
+
+**D2 Importer.** A legacy segment maps to a new unit only when both have the
+same file path and the same normalised source text; among identical texts, order
+breaks the tie. Anything else is translated again and listed in the report.
+Order alone never decides a match.
+
+**D3 Parser fallback.** When a document is not well-formed XML, it is parsed
+with an HTML5-conformant parser, which keeps SVG and MathML names and
+namespaces, never with lxml's HTML 4 parser. Malformed fixtures live apart from
+the valid set and assert SVG case, MathML namespace, `epub:` namespace,
+`xml:lang` and text order after repair.
+
+**D4 Entities.** lxml's XML parser runs with entity resolution, DTD loading and
+network access off. A pre-pass rewrites known HTML named entities, other than
+the five XML ones, as numeric references, outside CDATA and comments. The
+DOCTYPE is kept verbatim. A test feeds an external entity aimed at a local file
+and requires it to be refused without access.
+
+**D5 Ids in bilingual output.** Translated copies carry no `id` attributes;
+links inside them keep their `href`. Every output document is checked for unique
+ids and for link targets that resolve.
+
+**D6 Inline markup.** The reply must keep the multiset of inline tag names and
+the multiset of `href`, `src` and `id` values, in any order. Atomic units also
+keep their structural counts (`tr`, `td`, `li`). Ruby `rt` and `rp` are exempt.
+The check runs after polishing. One retry naming the mismatch, then ERROR. The
+live endpoint measures how often each kind of mismatch occurs.
+
+**D7 TOC.** Every table of contents present is updated, nav and NCX alike.
+Hrefs resolve relative to the TOC document and are URL-decoded. A dual-TOC
+fixture with the nav in a subfolder checks titles, hierarchy, landmarks and page
+lists.
+
+**D8 ZIP.** Output keeps entry order, names, uncompressed bytes and compression
+type. Duplicate names, or names equal ignoring case, stop the write with an
+error. `META-INF/encryption.xml` and obfuscated fonts are copied untouched, and
+the package identifier they depend on is never edited.
+
+
 ### WI-4.0 Fixture corpus and the epubcheck gate
 **Status:** DONE 2026-10-05. Seven generated fixtures in `tests/epub_fixtures.py`, each passing epubcheck as built: nested blockquotes, `epub:switch` with MathML, SVG cover, footnotes with backlinks, EPUB 2 with NCX, same basename in two folders, vertical Chinese. `tests/epub_io/test_roundtrip.py` requires an unchanged book to come back byte for byte, and real books in `TEPUB_CORPUS_DIR` to gain no epubcheck errors; both are strict expected failures against today's writer, which WI-4.1 must remove. CI installs epubcheck. Not as planned: no fixture for HTML named entities such as `&nbsp;`, because they are invalid in EPUB 3 XHTML and a fixture must be valid; the corpus covers them.
 **Files:** `tests/fixtures/epub/` (small, committed, licence-clean), `tests/corpus/` (a local folder named by `TEPUB_CORPUS_DIR`, never committed)
@@ -251,6 +323,19 @@ objections. Any objection whose check fails blocks the phase until resolved.
 ### WI-5.4 Web builder keeps classes and lang (W1)
 **Status:** open
 
+### WI-4.7 Move every consumer off ebooklib and XPath (gate objection 9)
+**Status:** open
+**Depends:** WI-4.4
+**Files:** `src/epub_io/reader.py`, `src/audiobook/preprocess.py`, `src/webbuilder/exporter.py`, `src/extraction/markdown_export.py`, `src/extraction/pipeline.py`
+**Do:** the reader reads through `container.py` and the new XHTML parser; ebooklib leaves the read path too. Audiobook footnote lookup, web export and markdown export use the new document model: unit ids instead of xpaths, `itertext()` instead of `text_content()`, namespace-aware queries. Skip rules, cascade skipping and non-linear spine exclusions carry over unchanged.
+**Done when:** all three exports run on every fixture; `grep -rn "ebooklib\|text_content\|\.xpath(segment" src` finds nothing outside tests.
+
+### WI-4.8 A gate that translates (gate objection 10)
+**Status:** open
+**Depends:** WI-4.6
+**Files:** `tests/epub_io/test_translated_output.py` (new)
+**Do:** a deterministic fake translation runs through extraction, injection and both output modes over every fixture and, opt-in, the corpus. It asserts every unit is translated, ids are unique, every link target resolves, structure such as tables and footnotes is kept, and epubcheck reports no more occurrences of any error than the input had.
+
 ### Release 0.4.0
 **Done when:** `scripts/verify.sh` exits 0 including epubcheck on fixtures; the importer is documented in the changelog; the owner's corpus run is recorded.
 
@@ -264,10 +349,10 @@ objections. Any objection whose check fails blocks the phase until resolved.
 | 1 | 1.5 | None | None |
 | 2 | 2 | Error classification | None |
 | 3 | 2 to 3 | Flush policy | None |
-| 4 | 8 to 10 | Segmentation rule; inline-markup contract; id scheme | Collecting the fixture corpus; the refute-mode review |
+| 4 | 16 to 20 after the review | Segmentation rule; inline-markup contract; importer matching; parser fallback | Corpus epubcheck runs (about 7 minutes each pass) |
 | 5 | 2 to 3 | None | None |
 
-About 16 to 20 agent-hours in total. The 0.3.4 release is about 6 of them.
+About 24 to 30 agent-hours in total after the phase 4 review. The 0.3.4 release was about 6 of them.
 
 ## Owner answers, 2026-10-05
 
