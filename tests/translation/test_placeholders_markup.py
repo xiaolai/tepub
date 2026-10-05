@@ -65,7 +65,9 @@ def test_crossed_pairs_keep_only_the_one_closed_properly() -> None:
 def test_block_structure_and_marker_lookalikes_keep_the_html_route() -> None:
     assert protect("<li>one</li><li>two</li>") is None
     assert protect("a ⟦1⟧ in the source") is None
-    assert protect('x<svg xmlns="http://www.w3.org/2000/svg"/>') is None
+    # An inline drawing is not structure: it travels as one opaque marker.
+    text, markers = protect('x<svg xmlns="http://www.w3.org/2000/svg"/>')
+    assert text == "x⟦1⟧" and markers.tags[0].start == '<svg xmlns="http://www.w3.org/2000/svg"/>'
 
 
 def test_a_line_break_travels_as_a_newline() -> None:
@@ -110,3 +112,13 @@ def test_a_missing_closing_marker_is_not_guessed_otherwise() -> None:
     assert restore("⟦1⟧见注释 现在", markers) == "见注释 现在"  # the text differs: no guess
     _text, markers = protect('x<a href="#n"><sup>2</sup></a>')
     assert restore("x⟦1⟧⟦2⟧2⟦/2⟧", markers) == "x<sup>2</sup>"  # nested: no guess
+
+
+def test_an_inline_formula_travels_as_one_marker_and_comes_back_unchanged() -> None:
+    math = '<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi><mo>=</mo><mn>2</mn></math>'
+    source = f"Let {math} hold, see <a href=\"#n\">note</a>."
+    text, markers = protect(source)
+    assert text == "Let ⟦1⟧ hold, see ⟦2⟧note⟦/2⟧."
+    rebuilt = restore("设 ⟦1⟧ 成立，见⟦2⟧注释⟦/2⟧。", markers)
+    assert "<mi>x</mi><mo>=</mo><mn>2</mn>" in rebuilt
+    assert markup_mismatch(source, rebuilt) is None

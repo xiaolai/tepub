@@ -126,6 +126,19 @@ _NOT_INLINE = frozenset(
 )
 
 
+_OPAQUE = frozenset({"svg", "math"})
+
+
+def _whole(element: etree._Element) -> str:
+    """An element and everything in it, without its tail, and without the
+    namespace declarations it only inherited from the parsing wrapper."""
+    from copy import deepcopy
+
+    copy = deepcopy(element)
+    etree.cleanup_namespaces(copy)
+    return etree.tostring(copy, encoding="unicode", with_tail=False)
+
+
 @dataclass(frozen=True)
 class Tag:
     """One protected element: its start tag, and whether it wrapped content."""
@@ -137,6 +150,8 @@ class Tag:
     # <a id="p12"/>: nothing shows, so where it sits within the paragraph does
     # not matter to a reader.
     anchor: bool = False
+    # Stands for a whole subtree, an inline <svg> or <math>, given back as is.
+    opaque: bool = False
     # The text a pair wrapped when it held text alone, such as a note number;
     # empty otherwise.
     inner: str = ""
@@ -192,6 +207,13 @@ def protect(markup: str) -> tuple[str, Markers] | None:
         if not isinstance(element.tag, str):  # comments and processing instructions
             parts.append(tail)
             return True
+        if local_name(element) in _OPAQUE:
+            # An inline drawing or formula: one marker, and the original back
+            # unchanged; the model never sees it.
+            tags.append(Tag(local_name(element), _whole(element), False, opaque=True))
+            parts.append(f"⟦{len(tags)}⟧")
+            parts.append(tail)
+            return True
         if etree.QName(element).namespace != XHTML_NS or local_name(element) in _NOT_INLINE:
             return False
         if local_name(element) == "br" and not element.attrib:
@@ -211,7 +233,7 @@ def protect(markup: str) -> tuple[str, Markers] | None:
             and element.get("href") is None
         )
         inner = (element.text or "").strip() if paired and len(element) == 0 else ""
-        tags.append(Tag(local_name(element), start, paired, anchor, inner))
+        tags.append(Tag(local_name(element), start, paired, anchor=anchor, inner=inner))
         parts.append(f"⟦{number}⟧")
         if paired:
             parts.append(_WHITESPACE.sub(" ", element.text or ""))
@@ -321,7 +343,9 @@ def restore(reply: str, markers: Markers) -> str:
     for position, ((closing, number), piece) in enumerate(zip(tokens, pieces[3::3])):
         if position in kept:
             tag = tags[number - 1]
-            if not tag.paired:
+            if tag.opaque:
+                out.append(tag.start)
+            elif not tag.paired:
                 out.append(tag.start + "/>")
             else:
                 out.append(f"</{tag.name}>" if closing else tag.start + ">")
