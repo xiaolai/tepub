@@ -108,6 +108,10 @@ class Tag:
     name: str
     start: str
     paired: bool
+    # An empty element that only marks a place for links to land on, such as
+    # <a id="p12"/>: nothing shows, so where it sits within the paragraph does
+    # not matter to a reader.
+    anchor: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,7 +176,13 @@ def protect(markup: str) -> tuple[str, Markers] | None:
             return False
         number = len(tags) + 1
         paired = bool(element.text) or len(element) > 0
-        tags.append(Tag(local_name(element), start, paired))
+        anchor = (
+            not paired
+            and local_name(element) in ("a", "span")
+            and element.get("id") is not None
+            and element.get("href") is None
+        )
+        tags.append(Tag(local_name(element), start, paired, anchor))
         parts.append(f"⟦{number}⟧")
         if paired:
             parts.append(_WHITESPACE.sub(" ", element.text or ""))
@@ -234,7 +244,8 @@ def restore(reply: str, markers: Markers) -> str:
     """The reply as markup: markers become the original tags, text is escaped.
 
     A marker the model invented, repeated or left unpaired is dropped and its
-    words kept; the markup check then reports what went missing.
+    words kept; the markup check then reports what went missing. An anchor
+    the model dropped is put back at the start.
     """
     tags = markers.tags
     reply = reply.strip()
@@ -248,7 +259,17 @@ def restore(reply: str, markers: Markers) -> str:
     def text(piece: str) -> str:
         return _NEWLINE.sub("<br/>", html.escape(piece, quote=False))
 
-    out = [text(pieces[0])]
+    # An anchor the model dropped goes back at the start: a link to it still
+    # lands on this paragraph. TranslateGemma dropped one in about 3% of a
+    # book's paragraphs, which then failed the markup check twice and stayed
+    # untranslated over a mark no reader sees.
+    placed = {tokens[position][1] for position in kept}
+    lost_anchors = [
+        tag.start + "/>"
+        for number, tag in enumerate(tags, start=1)
+        if tag.anchor and number not in placed
+    ]
+    out = [*lost_anchors, text(pieces[0])]
     for position, ((closing, number), piece) in enumerate(zip(tokens, pieces[3::3])):
         if position in kept:
             tag = tags[number - 1]

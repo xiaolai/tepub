@@ -82,3 +82,16 @@ def test_newlines_the_model_added_are_joined_without_a_space_in_chinese() -> Non
     assert restore("一个⟦1⟧很长的⟦/1⟧\n段落。\nEnd\nhere", markers) == (
         '一个<a href="#n">很长的</a>段落。End here'
     )
+
+
+def test_a_dropped_anchor_is_put_back_at_the_start() -> None:
+    source = 'Early scams<a id="filepos15941"/> were small, see <a href="#n">note</a>.'
+    _text, markers = protect(source)
+    rebuilt = restore("早期的诈骗规模很小，见⟦2⟧注释⟦/2⟧。", markers)
+    assert rebuilt == '<a id="filepos15941"/>早期的诈骗规模很小，见<a href="#n">注释</a>。'
+    assert markup_mismatch(source, rebuilt) is None
+
+
+def test_a_dropped_link_is_not_put_back() -> None:
+    _text, markers = protect('See <a href="#n">note</a>.')
+    assert restore("见注释。", markers) == "见注释。"
