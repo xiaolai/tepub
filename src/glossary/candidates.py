@@ -33,6 +33,14 @@ _NEVER_TERMS = frozenset(
     "Acknowledgements Acknowledgments Contents Figure Table Appendix".split()
 )
 _DEMONYM_ENDINGS = ("ese", "ian", "ish", "an", "i", "e")
+# Words that open a sentence and glue onto a name after them: "Then Nguyễn
+# Văn Đức spoke" holds the name, not "Then Nguyễn Văn Đức".
+_OPENERS = frozenset(
+    "A An And As At After Also Although Because But By Even For From He Her Here His "
+    "However I If In It Its Later Many Meanwhile Most My Now On Once One Our She Since "
+    "So Some Still That The Their Then There These They This Those Though To Today "
+    "We When While With Yet".split()
+)
 
 
 def _nationality_words(names: list[str]) -> set[str]:
@@ -59,8 +67,31 @@ def _nationality_words(names: list[str]) -> set[str]:
                 break
     return derived
 _QUALIFIER = re.compile(r"\s*\([^)]*\)")
-_INVERTED_NAME = re.compile(r"^([A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+)?), ([A-Z][\w'’.-]+(?: [A-Z][\w'’.]+)*)$")
-_NAME = re.compile(r"\b[A-Z][a-zA-Z'’-]+(?:\s+(?:of\s+|de\s+|van\s+|von\s+|al-)?[A-Z][a-zA-Z'’-]+)*")
+
+
+def _uppercase_class() -> str:
+    """A character class of every uppercase letter in the Basic Multilingual
+    Plane, so that names such as José, Nguyễn and Đức are names too."""
+    ranges: list[list[int]] = []
+    for code in range(0x10000):
+        if chr(code).isupper():
+            if ranges and ranges[-1][1] == code - 1:
+                ranges[-1][1] = code
+            else:
+                ranges.append([code, code])
+    return "".join(
+        re.escape(chr(a)) if a == b else f"{re.escape(chr(a))}-{re.escape(chr(b))}" for a, b in ranges
+    )
+
+
+_UPPER = _uppercase_class()
+_CAPITALISED = rf"[{_UPPER}][\w'’-]*"
+_INVERTED_NAME = re.compile(
+    rf"^({_CAPITALISED}(?: {_CAPITALISED})?), ({_CAPITALISED}\.?(?: {_CAPITALISED}\.?)*)$"
+)
+_NAME = re.compile(
+    rf"(?<![\w'’-]){_CAPITALISED}(?:\s+(?:of\s+|de\s+|van\s+|von\s+|al-)?{_CAPITALISED})*"
+)
 _LEADING_ARTICLE = re.compile(r"^(?:The|A|An)\s+")
 
 
@@ -107,10 +138,14 @@ def recurring_names(text: str, *, min_count: int) -> list[str]:
     inside: Counter[str] = Counter()
     for match in _NAME.finditer(text):
         name = _TRAILING.sub("", _LEADING_ARTICLE.sub("", match.group()))
+        at_start = bool(_SENTENCE_START.search(text[max(0, match.start() - 12) : match.start()]))
+        first, _, rest = name.partition(" ")
+        if rest and first in _OPENERS:
+            name, at_start = rest, False  # the name proper starts after the opener
         if len(name) < 2 or name in _NEVER_TERMS:
             continue
         counts[name] += 1
-        if not _SENTENCE_START.search(text[max(0, match.start() - 12) : match.start()]):
+        if not at_start:
             inside[name] += 1
     lowered = Counter(re.findall(r"(?<![\w-])[a-z][a-z-]*(?![\w])", text))
     names = []

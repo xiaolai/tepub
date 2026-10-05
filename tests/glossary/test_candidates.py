@@ -88,3 +88,9 @@ def test_nationality_words_and_section_headings_are_left_out() -> None:
     }
     text = "Chapter One. In Chapter Two, the Chapter Three. Introduction here, Introduction there."
     assert dict(candidates([], text, known=set(), min_count=2)) == {}
+
+
+def test_names_with_accents_are_names() -> None:
+    text = "We met José yesterday. Then Nguyễn Văn Đức spoke, and José left with Nguyễn Văn Đức."
+    found = dict(candidates([], text, known=set(), min_count=2))
+    assert found == {"José": 2, "Nguyễn Văn Đức": 2}
