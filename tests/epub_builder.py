@@ -68,6 +68,7 @@ def build_epub(
     resources: dict[str, bytes] | None = None,
     page_direction: str | None = None,
     properties: dict[str, str] | None = None,
+    nav_in_spine: bool = False,
 ) -> Path:
     """Write an EPUB to ``path``.
 
@@ -92,7 +93,7 @@ def build_epub(
         suffix = PurePosixPath(name).suffix
         manifest.append(f'<item id="r{index}" href="{escape(name)}" media-type="{MEDIA_TYPES[suffix]}"/>')
 
-    spine: list[str] = []
+    spine: list[str] = ['<itemref idref="nav"/>'] if nav_in_spine and version == 3 else []
     toc_entries: list[tuple[str, str]] = []
     for index, (name, chapter_title, _body) in enumerate(chapters, start=1):
         props = f' properties="{properties[name]}"' if name in properties else ""

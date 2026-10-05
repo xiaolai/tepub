@@ -334,3 +334,22 @@ def test_tail_text_after_nested_same_tag_is_preserved():
 
     contents = " ".join(s.source_content for s in segments)
     assert "outer tail text" in contents
+
+
+def test_the_navigation_document_is_not_extracted_even_when_in_the_spine(tmp_path):
+    """Its titles are translated through the table-of-contents update. Extracted
+    as a chapter, bilingual output put a second heading and list inside <nav>,
+    which epubcheck rejects."""
+    import json
+
+    from config import AppSettings
+    from extraction.pipeline import run_extraction
+    from tests.epub_builder import build_epub
+
+    book = build_epub(
+        tmp_path / "b.epub", [("ch1.xhtml", "One", "<p>Text.</p>")], nav_in_spine=True
+    )
+    settings = AppSettings(work_dir=tmp_path / "w")
+    run_extraction(settings, book)
+    files = {s["file_path"] for s in json.loads(settings.segments_file.read_text())["segments"]}
+    assert files == {"ch1.xhtml"}

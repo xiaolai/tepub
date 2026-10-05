@@ -30,9 +30,16 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
     segments: list[Segment] = []
     with Progress() as progress:
         task = progress.add_task("Extracting", total=None)
+        nav = reader.package.nav_item()
+        nav_href = reader.package.package_href(nav.path) if nav is not None else None
         for document in reader.iter_documents():
             file_path = document.path
             if not document.spine_item.linear:
+                continue
+            if file_path.as_posix() == nav_href:
+                # The navigation document's titles are translated through the
+                # table-of-contents update. Extracted as a chapter, bilingual output
+                # put a second heading and list inside <nav>, which is invalid.
                 continue
             if document.tree is None:
                 # Not well-formed XML: left untranslated, already warned (D3).
