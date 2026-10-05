@@ -112,6 +112,13 @@ Run over 1,958 real books, extraction and injection found these:
   paragraph, as EPUB 2 requires.
 - **A damaged EPUB is reported plainly**, without a traceback, as are all of
   tepub's own errors.
+- **Drawings stay out of requests.** A figure holding an SVG chart is walked so
+  its caption is the unit (one book sent 340,000 characters of drawing), and
+  an inline SVG or formula travels as one marker and comes back unchanged.
+
+Known limit: a whole chapter converted into one paragraph, its paragraphs
+separated by line breaks, is still one unit; if it passes the model's output
+limit it is reported as truncated and left untranslated.
 
 ### 🐛 Fixed — choosing what to translate
 
