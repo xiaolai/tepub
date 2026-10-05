@@ -28,21 +28,43 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 logger = get_logger(__name__)
 
-# The shape of an environment variable name. A .env entry of this shape, such as
-# OPENAI_API_KEY, is exported to the process; anything else is a setting.
+# The variables tepub itself reads from the environment. Only these may be set
+# from a .env file: it is read from whatever directory tepub runs in, and
+# exporting every entry let such a file route API traffic through a proxy
+# (HTTPS_PROXY) or inject a library into ffmpeg (DYLD_INSERT_LIBRARIES).
+DOTENV_EXPORTABLE = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "DEEPL_API_KEY",
+        "GEMINI_API_KEY",
+        "GROK_API_KEY",
+        "OLLAMA_BASE_URL",
+        "OPENAI_API_KEY",
+    }
+)
+
+# The shape of an environment variable name; settings are lowercase.
 _ENV_VAR_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
 def _apply_env_file(path: Path, payload: dict[str, Any]) -> None:
-    """Read a .env file: export variables, merge settings.
+    """Read a .env file: export provider variables, merge settings.
 
     API keys used to be merged into the settings payload, where they are not
     fields and were dropped, while the providers read them from the process
     environment. A variable already exported in the shell is left as it is.
+    Any other variable-shaped entry is ignored with a warning.
     """
     for key, value in _parse_env_file(path).items():
-        if _ENV_VAR_NAME.fullmatch(key):
+        if key in DOTENV_EXPORTABLE:
             os.environ.setdefault(key, value)
+        elif _ENV_VAR_NAME.fullmatch(key):
+            logger.warning(
+                "Ignoring %s in %s: a .env file may only set %s",
+                key,
+                path,
+                ", ".join(sorted(DOTENV_EXPORTABLE)),
+            )
         else:
             payload[key] = value
 

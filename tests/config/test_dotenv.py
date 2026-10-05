@@ -64,3 +64,33 @@ def test_dotenv_still_carries_ordinary_settings() -> None:
     Path(".env").write_text("target_language=Spanish\n", encoding="utf-8")
     assert load_settings().target_language == "Spanish"
     assert "target_language" not in os.environ
+
+
+@pytest.mark.parametrize("name", ["HTTPS_PROXY", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "PYTHONPATH"])
+def test_dotenv_cannot_set_other_variables(name: str, monkeypatch, caplog) -> None:
+    """A .env in the working directory may name only the variables tepub reads.
+
+    Exporting every entry let a .env in whatever folder tepub was run from route
+    API traffic through a proxy or inject a library into ffmpeg.
+    """
+    monkeypatch.delenv(name, raising=False)
+    Path(".env").write_text(f"{name}=/tmp/evil\n", encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        load_settings()
+    assert name not in os.environ
+    assert name in caplog.text
+
+
+def test_the_exportable_list_covers_every_variable_the_source_reads() -> None:
+    import re
+
+    from config.loader import DOTENV_EXPORTABLE
+
+    src = Path(__file__).resolve().parents[2] / "src"
+    read = set()
+    for path in src.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        read |= set(re.findall(r'os\.(?:getenv|environ\.get)\("([A-Z0-9_]+)"', text))
+    # TEPUB_ variables configure tepub itself and are not secrets a .env should carry.
+    provider_vars = {name for name in read if not name.startswith("TEPUB_")}
+    assert provider_vars == set(DOTENV_EXPORTABLE)
