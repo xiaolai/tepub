@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from audiobook.assembly import _build_spine_to_toc_map, group_segments_into_chapters
+from audiobook.chapter_plan import _build_spine_to_toc_map, group_segments_into_chapters
 from config import AppSettings
 from epub_io.reader import EpubReader
 from epub_io.toc_utils import parse_toc_to_dict

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from audiobook.assembly import _prepare_cover
+from audiobook.cover import _prepare_cover
 from epub_io.path_utils import normalize_epub_href
 
 

@@ -107,7 +107,7 @@ def extract_chapters_from_epub(
     segments_doc = load_segments(settings.segments_file)
 
     # Build spine to TOC mapping (reuse logic from assembly.py)
-    from .assembly import (
+    from .chapter_plan import (
         _build_spine_to_toc_map,
         _document_titles,
         group_segments_into_chapters,

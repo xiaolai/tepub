@@ -309,11 +309,11 @@ the package identifier they depend on is never edited.
 ## Phase 5: cleanup the above exposes
 
 ### WI-5.1 Split `assembly.py` (843 lines)
-**Status:** open
+**Status:** DONE 2026-10-05. `assembly.py` went from 843 lines doing six jobs to 299 lines of orchestration; chapter planning moved to `chapter_plan.py`, statements to `statements.py`, cover selection and preparation into `cover.py`, tags and chapter markers to `tagging.py`, and joining audio was already in `concat.py` (WI-1.3). Removed while moving: a duration helper duplicating `concat.container_duration`, and a native-chapter branch that imported `MP4Chapter`, which mutagen does not have, so it never ran. Verified: the end-to-end assembly test passes unchanged; tests and the chapter preview import from the new modules, so a monkeypatch still reaches the code that runs.
 **Do:** chapter plan, concat, tagging and statements become separate modules; behaviour is pinned by WI-1.5 before the split.
 
 ### WI-5.2 Remaining audiobook defects (A5, A9, A10, A11, A13, A14)
-**Status:** open
+**Status:** DONE 2026-10-05, across several commits: A5 (a failed NLTK download now stops with the install command), A6 (in WI-1.2), A9 (statements cached by wording and voice; a stray brace no longer errors, see WI-2.2), A10 (files outside the TOC get a chapter), A11 (CJK split only on an ASCII full stop before a space), A12 (in WI-1.2), A13 (the chapter preview uses the same selection as the book), A14 (the NLTK guard override is scoped to the import, checked from the home directory with the guard re-armed).
 **Do:** check the NLTK download result and fail loudly; catch template errors before synthesis; warn about content outside the TOC; full-width terminators only for CJK splitting; filter the chapter preview the way assembly does; scope the NLTK environment variable.
 
 ### WI-5.3 CLI routing and the workspace move (N4, N5)

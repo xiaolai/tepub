@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from audiobook import assembly, tts
+from audiobook import statements, tts
 from audiobook.models import AudioSessionConfig
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
@@ -40,7 +40,7 @@ def engine(monkeypatch):
 def _render(tmp_path: Path, **session_changes) -> Path | None:
     settings = {"voice": "en-US-JennyNeural", "output_dir": tmp_path, **session_changes}
     session = AudioSessionConfig(**settings)
-    return assembly._render_statement("opening", "Welcome to {book_name}.", session, tmp_path, "Moby-Dick", "Melville")
+    return statements._render_statement("opening", "Welcome to {book_name}.", session, tmp_path, "Moby-Dick", "Melville")
 
 
 def test_the_same_statement_is_synthesised_once(tmp_path: Path, engine) -> None:

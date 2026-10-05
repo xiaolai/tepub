@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from audiobook.assembly import chapter_is_current
+from audiobook.chapter_plan import chapter_is_current
 from audiobook.models import (
     AudioSegmentState,
     AudioSegmentStatus,

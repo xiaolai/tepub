@@ -1,499 +1,40 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import random
-import re
 import shutil
-import subprocess
-from io import BytesIO
 from pathlib import Path
 
-try:
-    from mutagen.mp4 import MP4, MP4Chapter, MP4Cover
-except ImportError:
-    from mutagen.mp4 import MP4, MP4Cover
-
-    MP4Chapter = None
-from PIL import Image
-from pydub import AudioSegment
+from mutagen.mp4 import MP4, MP4Cover
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from config import AppSettings
-from config.placeholders import fill_placeholders
 from console_singleton import get_console
 from epub_io.reader import EpubReader
 from epub_io.toc_utils import parse_toc_to_dict
-from epub_io.xhtml import document_title
 from state.models import Segment
 from state.store import load_segments
 
-from .concat import concat_audio, write_silence
-from .cover import find_spine_cover_candidate
+from .chapter_plan import (
+    _build_spine_to_toc_map,
+    _chapter_title,
+    _document_titles,
+    _load_custom_chapter_titles,
+    _slugify,
+    chapter_is_current,
+    group_segments_into_chapters,
+)
+from .concat import concat_audio, container_duration, write_silence
+from .cover import _prepare_cover
 from .models import AudioSegmentStatus, AudioSessionConfig
-from .mp4chapters import write_chapter_markers
 from .state import load_state
+from .statements import _render_statement
+from .tagging import _book_authors, _book_title, _tag_audiobook
 
 logger = logging.getLogger(__name__)
 console = get_console()
 
-
-def _slugify(value: str) -> str:
-    value = value.strip()
-    value = re.sub(r"\s+", "_", value)
-    value = re.sub(r"[^A-Za-z0-9_\-]", "", value)
-    return value or "audiobook"
-
-
-def _get_audio_duration(audio_path: Path) -> float:
-    """Get accurate audio duration in seconds using ffprobe.
-
-    Uses ffprobe instead of pydub's duration_seconds because pydub
-    underreports duration for M4A/AAC files (VBR encoding issue).
-
-    Args:
-        audio_path: Path to audio file (M4A, MP3, etc.)
-
-    Returns:
-        Duration in seconds as float
-    """
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(audio_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return float(result.stdout.strip())
-
-
-def _extract_narrator_name(voice_id: str) -> str:
-    """Extract friendly narrator name from voice ID.
-
-    Examples:
-        en-US-GuyNeural -> Guy
-        en-US-JennyNeural -> Jenny
-        alloy -> alloy
-    """
-    # Remove language prefix (e.g., "en-US-")
-    parts = voice_id.split("-")
-    if len(parts) >= 3:
-        name_part = "-".join(parts[2:])
-    else:
-        name_part = voice_id
-
-    # Remove common suffixes
-    for suffix in ["Neural", "Multilingual", "Turbo"]:
-        if name_part.endswith(suffix):
-            name_part = name_part[:-len(suffix)]
-
-    # Clean up any remaining hyphens or underscores
-    name = name_part.strip("-_")
-
-    return name if name else voice_id
-
-
-def _book_title(reader: EpubReader) -> str:
-    return reader.package.metadata.title or reader.epub_path.stem
-
-
-def _book_authors(reader: EpubReader) -> list[str]:
-    return list(reader.package.metadata.creators)
-
-
-
-
-def _document_titles(reader: EpubReader) -> dict[str, str]:
-    titles: dict[str, str] = {}
-    for document in reader.iter_documents():
-        tree = document.tree
-        if tree is None:
-            continue
-        titles[document.path.as_posix()] = document_title(tree) or document.path.stem
-    return titles
-
-
-def _find_cover_item(reader: EpubReader):
-    """The package's declared cover, else a spine cover image, else a likely image."""
-    declared = reader.item_for(reader.package.cover_item())
-    if declared is not None and declared.is_image:
-        return declared
-    spine_candidate = find_spine_cover_candidate(reader)
-    if spine_candidate:
-        item = reader.item_by_href(spine_candidate.href)
-        if item is not None:
-            return item
-    images = [item for item in reader.items() if item.is_image]
-    for item in images:
-        if "cover" in item.href.as_posix().lower():
-            return item
-    return images[0] if images else None
-
-
-def _generate_statement_audio(
-    text: str,
-    session: AudioSessionConfig,
-    output_path: Path,
-) -> Path | None:
-    """Generate audio for opening/closing statement using the configured TTS engine.
-
-    Matches the renderer.py workflow: generate TTS output, then convert to M4A.
-
-    Args:
-        text: Statement text to synthesize
-        session: Audio session config with TTS provider and voice settings
-        output_path: Where to save the M4A audio file
-
-    Returns:
-        Path to the generated M4A file, or None when the text is empty.
-
-    Raises:
-        Any error from the TTS engine or the conversion; callers decide.
-    """
-    if not text or not text.strip():
-        return None
-
-    # The output folder may not exist yet: statements are rendered before any
-    # chapter is written into it.
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Use the same TTS engine as the main audiobook
-    from .tts import create_tts_engine
-
-    engine = create_tts_engine(
-        provider=session.tts_provider,
-        voice=session.voice,
-        rate=None,  # Edge TTS only
-        volume=None,  # Edge TTS only
-        model=session.tts_model,
-        speed=session.tts_speed,
-    )
-
-    # Determine temp file extension based on provider
-    # OpenAI outputs AAC, Edge outputs MP3
-    temp_ext = ".aac" if session.tts_provider == "openai" else ".mp3"
-    temp_file = output_path.with_suffix(temp_ext)
-
-    # Generate TTS output
-    engine.synthesize(text.strip(), temp_file)
-
-    # Always convert to M4A (matching renderer.py approach)
-    audio = AudioSegment.from_file(temp_file)
-    audio.export(
-        output_path,
-        format="mp4",
-        codec="aac",
-        parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
-    )
-    temp_file.unlink()  # Remove temporary file
-    return output_path
-
-
-def _prepare_cover(
-    output_root: Path,
-    reader: EpubReader,
-    explicit_cover: Path | None = None,
-) -> Path | None:
-    try:
-        if explicit_cover:
-            image = Image.open(explicit_cover)
-            # Preserve original format if PNG
-            original_format = image.format  # 'PNG', 'JPEG', etc.
-        else:
-            cover_item = _find_cover_item(reader)
-            if not cover_item:
-                return None
-            image = Image.open(BytesIO(reader.read_bytes(cover_item)))
-            original_format = image.format
-    except Exception:
-        return None
-
-    with image:
-        # Only convert if necessary
-        if image.mode not in ("RGB", "RGBA"):
-            image = image.convert("RGB")
-
-        width, height = image.size
-        if width == 0 or height == 0:
-            return None
-
-        output_root.mkdir(parents=True, exist_ok=True)
-
-        # Preserve PNG format for transparency, otherwise use JPEG
-        if original_format == "PNG" and image.mode == "RGBA":
-            cover_path = output_root / "cover.png"
-            image.save(cover_path, format="PNG")
-        else:
-            # Convert RGBA to RGB for JPEG (no transparency support)
-            if image.mode == "RGBA":
-                image = image.convert("RGB")
-            cover_path = output_root / "cover.jpg"
-            image.save(cover_path, format="JPEG", quality=95)
-
-        return cover_path
-
-
-def _chapter_title(
-    file_path: str,
-    toc_map: dict[str, str],
-    doc_titles: dict[str, str],
-    custom_map: dict[str, str] | None = None,
-) -> str:
-    # Priority: custom > TOC > document title > filename
-    if custom_map and file_path in custom_map:
-        return custom_map[file_path]
-    title = toc_map.get(file_path)
-    if title:
-        return title
-    return doc_titles.get(file_path, Path(file_path).stem)
-
-
-def _build_spine_to_toc_map(
-    reader: EpubReader, toc_map: dict[str, str]
-) -> dict[int, tuple[str, str]]:
-    """Build mapping from spine index to (toc_file, toc_title).
-
-    Maps each spine item to its governing TOC entry. Files between TOC entries,
-    and after the last one, are mapped to the previous TOC entry. Files before
-    the first TOC entry each map to themselves, as chapters of their own.
-
-    Returns:
-        Dict mapping spine_index -> (toc_file_path, toc_title)
-    """
-    # Build spine index lookup
-    spine_lookup: dict[str, int] = {
-        item.href.as_posix(): item.index for item in reader.package.spine_items()
-    }
-
-    # Find spine indices for TOC entries
-    toc_entries: list[tuple[int, str, str]] = []  # (spine_index, file_path, title)
-    for file_path, title in toc_map.items():
-        spine_idx = spine_lookup.get(file_path)
-        if spine_idx is not None:
-            toc_entries.append((spine_idx, file_path, title))
-
-    if not toc_entries:
-        # No TOC entries found, return empty map
-        return {}
-
-    # Sort by spine index
-    toc_entries.sort(key=lambda x: x[0])
-
-    # Build the mapping: spine_index -> (toc_file, toc_title)
-    result: dict[int, tuple[str, str]] = {}
-
-    first_toc_idx = toc_entries[0][0]
-    hrefs = {item.index: item.href.as_posix() for item in reader.package.spine_items()}
-
-    # Map spine indices to their governing TOC entry. Documents before the first
-    # entry each become a chapter of their own, and documents after the last
-    # belong to it; both used to be synthesised and then left out of the book.
-    current_toc_idx = 0
-    for spine_idx in range(len(reader.package.spine)):
-        if spine_idx < first_toc_idx:
-            if spine_idx in hrefs:
-                result[spine_idx] = (hrefs[spine_idx], "")
-            continue
-
-        # Find the appropriate TOC entry for this spine index
-        while (
-            current_toc_idx < len(toc_entries) - 1
-            and spine_idx >= toc_entries[current_toc_idx + 1][0]
-        ):
-            current_toc_idx += 1
-
-        toc_spine_idx, toc_file, toc_title = toc_entries[current_toc_idx]
-        result[spine_idx] = (toc_file, toc_title)
-
-    return result
-
-
-def group_segments_into_chapters(
-    segments, spine_to_toc: dict
-) -> list[tuple[str, list]]:
-    """Group segments into chapters by TOC entry, falling back to file grouping.
-
-    Shared by final assembly and the preview chapter export. They previously
-    carried independent copies of this grouping and sort, so a preview could
-    disagree with the book it was previewing.
-    """
-    chapter_map: dict[str, list] = {}
-    for segment in segments:
-        if spine_to_toc:
-            toc_entry = spine_to_toc.get(segment.metadata.spine_index)
-            # Every spine document is mapped (see _build_spine_to_toc_map); a
-            # segment outside the spine would be a different book.
-            key = toc_entry[0] if toc_entry is not None else segment.file_path.as_posix()
-        else:
-            key = segment.file_path.as_posix()
-        chapter_map.setdefault(key, []).append(segment)
-
-    return sorted(
-        chapter_map.items(),
-        key=lambda item: (
-            min(seg.metadata.spine_index for seg in item[1]),
-            min(seg.metadata.order_in_file for seg in item[1]),
-        ),
-    )
-
-
-def _load_custom_chapter_titles(settings: AppSettings) -> dict[str, str]:
-    """Map segment file path -> custom chapter title from chapters.yaml, if present."""
-    custom_chapters_map: dict[str, str] = {}
-    chapters_yaml_path = settings.work_dir / "chapters.yaml"
-    if not chapters_yaml_path.exists():
-        return custom_chapters_map
-
-    try:
-        from .chapters import read_chapters_yaml
-
-        chapters, _metadata = read_chapters_yaml(chapters_yaml_path)
-        console.print("[cyan]Loading custom chapter titles from chapters.yaml[/cyan]")
-        # Every segment file in a chapter inherits that chapter's title.
-        for chapter in chapters:
-            for seg_file in chapter.segments:
-                custom_chapters_map[seg_file] = chapter.title
-    except Exception as exc:
-        logger.warning(f"Failed to load chapters.yaml: {exc}")
-        console.print(f"[yellow]Warning: Could not load chapters.yaml: {exc}[/yellow]")
-
-    return custom_chapters_map
-
-
-def _render_statement(
-    label: str,
-    template: str | None,
-    session: AudioSessionConfig,
-    output_root: Path,
-    book_title: str,
-    author_str: str,
-) -> Path | None:
-    """Render one opening/closing statement to audio.
-
-    The opening and closing paths were near-identical copies differing only in
-    which setting they read and which words they logged.
-    """
-    if not template:
-        return None
-
-    # Only {book_name}, {author} and {narrator_name} are filled; any other brace
-    # is text (see config.placeholders).
-    text = fill_placeholders(
-        template,
-        {
-            "book_name": book_title,
-            "author": author_str,
-            "narrator_name": _extract_narrator_name(session.voice),
-        },
-    )
-    if not text.strip():
-        return None
-    # Cached under everything that shapes the audio. It used to be synthesised
-    # on every assembly, a cover-only rebuild included, and deleted afterwards,
-    # so a paid voice was paid again each time.
-    key = hashlib.sha256(
-        json.dumps(
-            [text, session.tts_provider, session.voice, session.tts_model,
-             session.tts_speed, session.rate, session.volume]
-        ).encode("utf-8")
-    ).hexdigest()[:16]
-    audio_path = output_root / "statements" / f"{label}-{key}.m4a"
-    if audio_path.exists() and audio_path.stat().st_size > 0:
-        return audio_path
-    audio_path.parent.mkdir(parents=True, exist_ok=True)
-    partial = audio_path.with_name(audio_path.stem + ".partial.m4a")
-    # A configured statement that cannot be rendered stops assembly. Logging and
-    # carrying on produced a book silently missing its opening or closing.
-    try:
-        rendered = _generate_statement_audio(text, session, partial)
-    except Exception as exc:
-        partial.unlink(missing_ok=True)
-        raise RuntimeError(f"Could not render the {label} statement: {exc}") from exc
-    if rendered is None:
-        return None
-    partial.replace(audio_path)
-    console.print(f"[cyan]Generated {label} statement audio[/cyan]")
-    return audio_path
-
-
-def _tag_audiobook(
-    workspace_path: Path,
-    book_title: str,
-    authors: list[str],
-    cover_path: Path | None,
-    chapter_markers: list[tuple[int, str]],
-) -> None:
-    """Write title/author/cover metadata and chapter markers to the final file."""
-    mp4 = MP4(workspace_path)
-    mp4["©nam"] = [book_title]
-    mp4["©alb"] = [book_title]
-    if authors:
-        mp4["©ART"] = [", ".join(authors)]
-    if cover_path and cover_path.exists():
-        cover_bytes = cover_path.read_bytes()
-        cover_img_format = (
-            MP4Cover.FORMAT_PNG if cover_path.suffix.lower() == ".png" else MP4Cover.FORMAT_JPEG
-        )
-        mp4["covr"] = [MP4Cover(cover_bytes, imageformat=cover_img_format)]
-
-    native_chapters = False
-    if MP4Chapter:
-        chapters = [MP4Chapter(start_ms, title=title) for start_ms, title in chapter_markers]
-        if chapters and hasattr(mp4, "chapters"):
-            mp4.chapters = chapters
-            native_chapters = True
-    mp4.save()
-
-    # Fall back to manual chpl injection when mutagen cannot write chapters natively.
-    if not native_chapters and chapter_markers:
-        try:
-            write_chapter_markers(workspace_path, chapter_markers)
-        except Exception as exc:
-            # Logging and carrying on reported a finished audiobook whose chapters
-            # were missing or pointed at the wrong times.
-            raise RuntimeError(
-                f"The audio was written to {workspace_path}, but its chapter markers "
-                f"could not be written correctly: {exc}"
-            ) from exc
-
-
-def chapter_is_current(chapter_path: Path, segments: list[Segment], audio_state) -> bool:
-    """True when a cached chapter is newer than, and built from, these segments.
-
-    Existence alone is not enough: re-synthesising with a different voice,
-    speed or source text rewrites the segment audio but leaves the chapter
-    file in place, so the old audio was served indefinitely.
-
-    Timestamps alone are not enough either. If a chapter was built from
-    segments A+B and a later run includes only A, every remaining source file
-    can be older than the chapter, so the stale chapter — still containing B —
-    was reused. The composition is recorded alongside the audio and compared.
-    """
-    if not chapter_path.exists():
-        return False
-    manifest_path = chapter_path.with_suffix(chapter_path.suffix + ".segments")
-    expected = "\n".join(segment.segment_id for segment in segments)
-    try:
-        if manifest_path.read_text(encoding="utf-8") != expected:
-            return False
-    except OSError:
-        # No manifest: written by an older version, composition unknown.
-        return False
-    chapter_mtime = chapter_path.stat().st_mtime
-    for segment in segments:
-        seg_state = audio_state.segments.get(segment.segment_id)
-        if not seg_state or not seg_state.audio_path:
-            continue
-        source = Path(seg_state.audio_path)
-        if source.exists() and source.stat().st_mtime > chapter_mtime:
-            return False
-    return True
 
 
 def assemble_audiobook(
@@ -594,7 +135,7 @@ def assemble_audiobook(
         # Load existing chapter files and calculate durations
         for title, chapter_path, _, _ in expected_chapters:
             try:
-                duration = _get_audio_duration(chapter_path)
+                duration = container_duration(chapter_path)
                 chapter_audios.append((title, chapter_path, duration))
             except Exception:
                 # If any file is invalid, we'll need to regenerate all
@@ -688,7 +229,7 @@ def assemble_audiobook(
 
                 # Get actual duration from the created file (using ffprobe for accuracy)
                 try:
-                    actual_duration = _get_audio_duration(chapter_path)
+                    actual_duration = container_duration(chapter_path)
                 except Exception as exc:
                     # A 0.0 duration is not a harmless default: chapter start times
                     # are cumulative, so every later marker would be shifted or
@@ -725,8 +266,8 @@ def assemble_audiobook(
         )
         parts += [opening_audio_path, opening_silence_path]
         # Durations come from the files themselves, so markers match the audio.
-        current_position_seconds += _get_audio_duration(opening_audio_path)
-        current_position_seconds += _get_audio_duration(opening_silence_path)
+        current_position_seconds += container_duration(opening_audio_path)
+        current_position_seconds += container_duration(opening_silence_path)
 
     for idx, (title, chapter_path, duration_seconds) in enumerate(chapter_audios):
         safe_title = title.strip() if isinstance(title, str) else ""

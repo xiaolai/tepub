@@ -54,7 +54,7 @@ def test_a_custom_prompt_with_json_in_it_builds(custom_prompt) -> None:
 
 
 def test_a_statement_with_a_stray_brace_renders(monkeypatch, tmp_path) -> None:
-    from audiobook import assembly
+    from audiobook import statements
     from audiobook.models import AudioSessionConfig
 
     captured = {}
@@ -64,9 +64,9 @@ def test_a_statement_with_a_stray_brace_renders(monkeypatch, tmp_path) -> None:
         output_path.write_bytes(b"audio")  # the real generator writes the file
         return output_path
 
-    monkeypatch.setattr(assembly, "_generate_statement_audio", fake_generate)
+    monkeypatch.setattr(statements, "_generate_statement_audio", fake_generate)
     session = AudioSessionConfig(voice="en-US-JennyNeural", output_dir=tmp_path)
-    assembly._render_statement(
+    statements._render_statement(
         "opening", "{book_name} by {author} {see notes}", session, tmp_path, "Moby-Dick", "Melville"
     )
     assert captured["text"] == "Moby-Dick by Melville {see notes}"
