@@ -187,3 +187,15 @@ def test_apply_translations_ul_no_wrapper():
     assert "wrapper" not in result
     assert [text_of(li) for li in translated] == ["项目 1"]
     assert all(etree.QName(li).namespace == XHTML_NS for li in translated)
+
+
+def test_epub2_documents_are_marked_with_classes_only():
+    """XHTML 1.1, the EPUB 2 content format, has no data-* attributes."""
+    document, (segment,) = _document("<p class='body'>Text</p>")
+    _apply_translations_to_document(
+        document, [(segment, "Texte")], "bilingual", defaultdict(dict), data_attributes=False
+    )
+    original, translated = _elements(document, "p")
+    assert original.get("class") == "body tepub-original"
+    assert translated.get("class") == "body tepub-translation"
+    assert original.get("data-lang") is None and translated.get("data-lang") is None

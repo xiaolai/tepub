@@ -50,6 +50,8 @@ def _apply_translations_to_document(
     segments: list[tuple[Segment, str]],
     mode: str,
     title_updates: defaultdict[PurePosixPath, dict[str | None, str]],
+    *,
+    data_attributes: bool = True,
 ) -> tuple[bool, list[str]]:
     """Inject translations, finding each unit by its place in the document.
 
@@ -79,9 +81,12 @@ def _apply_translations_to_document(
             _replace_with_translation(original, segment, translation)
             _record_heading_title(segment.file_path, original, title_updates)
         else:
-            prepare_original(original)
+            prepare_original(original, data_attributes=data_attributes)
             insert_translation_after(
-                original, build_translation_element(original, segment, translation)
+                original,
+                build_translation_element(
+                    original, segment, translation, data_attributes=data_attributes
+                ),
             )
     return bool(located), failed_ids
 
@@ -160,7 +165,12 @@ def apply_translations(
             missing_documents.append(file_path)
             continue
         updated, failures = _apply_translations_to_document(
-            document, segments, effective_mode, title_updates
+            document,
+            segments,
+            effective_mode,
+            title_updates,
+            # EPUB 2 content is XHTML 1.1, which has no data-* attributes.
+            data_attributes=not reader.package.version.startswith("2"),
         )
         failed_segments.extend(failures)
         if updated:

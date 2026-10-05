@@ -102,19 +102,24 @@ body {
   margin: 0.75em 0;
 }
 
-.content [data-lang="original"] {
+/* EPUB 2 books carry only the class markers: XHTML 1.1 has no data-* attributes. */
+.content [data-lang="original"],
+.content .tepub-original {
   color: #2f4858;
 }
 
-.content [data-lang="translation"] {
+.content [data-lang="translation"],
+.content .tepub-translation {
   color: #222;
 }
 
-body.hide-original [data-lang="original"] {
+body.hide-original [data-lang="original"],
+body.hide-original .tepub-original {
   display: none;
 }
 
-body.hide-translation [data-lang="translation"] {
+body.hide-translation [data-lang="translation"],
+body.hide-translation .tepub-translation {
   display: none;
 }
 

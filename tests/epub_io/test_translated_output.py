@@ -26,7 +26,6 @@ pytestmark = pytest.mark.skipif(not epubcheck.AVAILABLE, reason="epubcheck not i
 # Fixtures that the parts of the new core not yet built still break, by reason.
 # Strict: when a fix lands, its entries must be removed here.
 PENDING: dict[tuple[str, str], str] = {
-    ("epub2_with_ncx", "bilingual"): "data-lang is not allowed in XHTML 1.1 (EPUB 2)",
 }
 
 

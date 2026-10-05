@@ -10,8 +10,23 @@ from epub_io.xhtml import parse_fragment
 from state.models import ExtractMode, Segment
 
 
-def prepare_original(element: etree._Element) -> None:
-    element.set("data-lang", "original")
+def _mark(element: etree._Element, side: str, *, data_attributes: bool) -> None:
+    """Mark an element as the original or the translation.
+
+    A class works in every EPUB version. data-lang is added only where data-*
+    attributes are valid: EPUB 2 content is XHTML 1.1, where epubcheck rejects
+    them.
+    """
+    token = f"tepub-{side}"
+    classes = (element.get("class") or "").split()
+    if token not in classes:
+        element.set("class", " ".join([*classes, token]))
+    if data_attributes:
+        element.set("data-lang", side)
+
+
+def prepare_original(element: etree._Element, *, data_attributes: bool = True) -> None:
+    _mark(element, "original", data_attributes=data_attributes)
 
 
 def _clear_children(element: etree._Element) -> None:
@@ -49,7 +64,11 @@ def _strip_ids(element: etree._Element) -> None:
 
 
 def build_translation_element(
-    original: etree._Element, segment: Segment, translation: str
+    original: etree._Element,
+    segment: Segment,
+    translation: str,
+    *,
+    data_attributes: bool = True,
 ) -> etree._Element:
     clone = deepcopy(original)
     clone.tail = None
@@ -58,7 +77,13 @@ def build_translation_element(
     else:
         _set_html_content(clone, translation)
     _strip_ids(clone)
-    clone.set("data-lang", "translation")
+    clone.attrib.pop("data-lang", None)
+    classes = [c for c in (clone.get("class") or "").split() if c != "tepub-original"]
+    if classes:
+        clone.set("class", " ".join(classes))
+    else:
+        clone.attrib.pop("class", None)
+    _mark(clone, "translation", data_attributes=data_attributes)
     return clone
 
 
