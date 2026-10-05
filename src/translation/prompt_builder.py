@@ -6,6 +6,7 @@ from config.placeholders import fill_placeholders
 from state.models import ExtractMode, Segment
 
 from .languages import describe_language
+from .markup import has_markers
 
 # Default system prompt used when no custom prompt is configured
 DEFAULT_SYSTEM_PROMPT = """
@@ -42,13 +43,21 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
     Returns:
         Complete prompt with system instructions and source content
     """
-    mode_instruction = (
-        "The source is an HTML fragment. Translate only its text. Keep every tag, and "
-        "every href, src and id value, exactly as given; inline elements may move to "
-        "follow the translated wording."
-        if segment.extract_mode == ExtractMode.HTML
-        else "Return a faithful translation of the prose without adding explanations."
-    )
+    if segment.extract_mode == ExtractMode.HTML:
+        mode_instruction = (
+            "The source is an HTML fragment. Translate only its text. Keep every tag, and "
+            "every href, src and id value, exactly as given; inline elements may move to "
+            "follow the translated wording."
+        )
+    elif has_markers(segment.source_content):
+        mode_instruction = (
+            "The source contains numbered markers such as ⟦1⟧ and ⟦/1⟧. Keep every "
+            "marker exactly once, unchanged: a pair ⟦n⟧…⟦/n⟧ goes around the translated "
+            "words it wrapped, and a single ⟦n⟧ stays where it belongs in the sentence. "
+            "Return a faithful translation without adding explanations."
+        )
+    else:
+        mode_instruction = "Return a faithful translation of the prose without adding explanations."
     display_source = describe_language(source_language)
     display_target = describe_language(target_language)
 

@@ -129,8 +129,11 @@ def _html_segment() -> Segment:
 
 
 class Replies:
+    """A provider that handles tags itself, so HTML units reach it as HTML."""
+
     name = "fake"
     model = "fake-1"
+    uses_markers = False
 
     def __init__(self, *replies: str):
         self.replies = list(replies)
@@ -173,3 +176,39 @@ def test_the_retry_note_reaches_the_prompt() -> None:
     )
     assert "keep the link" in build_prompt(noted, "fr", "en")
     assert "keep the link" not in build_prompt(segment, "fr", "en")
+
+
+class MarkerReplies(Replies):
+    """A language model: inline-only HTML reaches it as text with markers."""
+
+    uses_markers = True
+
+    def translate(self, segment, *, source_language, target_language):
+        self.sources = getattr(self, "sources", []) + [segment.source_content]
+        return super().translate(
+            segment, source_language=source_language, target_language=target_language
+        )
+
+
+def test_a_language_model_sees_markers_and_the_tags_come_back() -> None:
+    provider = MarkerReplies("A clear claim⟦1⟧⟦2⟧1⟦/2⟧⟦/1⟧.")
+    result = _translate_segment(_html_segment(), provider, "fr", "en")
+    assert provider.sources == ["Une affirmation⟦1⟧⟦2⟧1⟦/2⟧⟦/1⟧ claire."]
+    assert result.error is None and result.translation == GOOD
+
+
+def test_a_lost_marker_is_retried_with_markers_named() -> None:
+    provider = MarkerReplies("A clear claim.", "A clear claim⟦1⟧⟦2⟧1⟦/2⟧⟦/1⟧.")
+    result = _translate_segment(_html_segment(), provider, "fr", "en")
+    assert result.error is None and result.translation == GOOD
+    assert "marker" in provider.prompts_notes[1]
+
+
+def test_the_marker_prompt_asks_for_markers_to_be_kept() -> None:
+    from translation.prompt_builder import build_prompt
+
+    segment = _html_segment().model_copy(
+        update={"source_content": "Une affirmation⟦1⟧ claire.", "extract_mode": ExtractMode.TEXT}
+    )
+    assert "Keep every marker exactly once" in build_prompt(segment, "fr", "en")
+    assert "marker" not in build_prompt(_html_segment(), "fr", "en")

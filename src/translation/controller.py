@@ -20,7 +20,7 @@ from state.models import ExtractMode, SegmentStatus
 from state.store import backup_state, ensure_state, load_segments, load_state
 from state.writer import StateWriter, exclusive_run
 from translation.languages import describe_language
-from translation.markup import markup_mismatch
+from translation.markup import markup_mismatch, protect, restore
 from translation.polish import polish_translation
 from translation.providers import ProviderError, ProviderFatalError, create_provider
 from translation.refusal_filter import looks_like_refusal
@@ -145,25 +145,40 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
 def _translate_checked(segment, provider, source_language: str, target_language: str) -> str:
     """Translate, and hold an HTML unit's reply to the markup contract (D6).
 
-    A reply that changed the markup is retried once with the problem named in
-    the prompt; a second such reply is an error. The check runs after polishing,
-    which rewrites the whole string.
+    An HTML unit with only inline markup goes to a language model as text with
+    numbered markers, and its tags are rebuilt from the source afterwards (see
+    translation.markup). A reply that still changed the markup is retried once
+    with the problem named in the prompt; a second such reply is an error. The
+    check runs after polishing, which rewrites the whole string.
     """
-    text = _reply(segment, provider, source_language, target_language)
     if segment.extract_mode != ExtractMode.HTML:
-        return text
+        return _reply(segment, provider, source_language, target_language)
+    protected = protect(segment.source_content) if provider.uses_markers else None
+    if protected is None:
+        sent = segment
+
+        def rebuild(text: str) -> str:
+            return text
+
+        keep = "Keep every tag and every href, src and id value exactly as in the source"
+    else:
+        marked, tags = protected
+        sent = segment.model_copy(
+            update={"source_content": marked, "extract_mode": ExtractMode.TEXT}
+        )
+
+        def rebuild(text: str) -> str:
+            return restore(text, tags)
+
+        keep = "Keep every numbered marker exactly once, unchanged"
+
+    text = rebuild(_reply(sent, provider, source_language, target_language))
     problem = markup_mismatch(segment.source_content, text)
     if problem is None:
         return text
-    note = (
-        f"Your previous translation changed the markup ({problem}). Keep every tag "
-        "and every href, src and id value exactly as in the source; translate only "
-        "the text."
-    )
-    retry = segment.model_copy(
-        update={"metadata": segment.metadata.model_copy(update={"notes": note})}
-    )
-    text = _reply(retry, provider, source_language, target_language)
+    note = f"Your previous translation changed the markup ({problem}). {keep}; translate only the text."
+    retry = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"notes": note})})
+    text = rebuild(_reply(retry, provider, source_language, target_language))
     problem = markup_mismatch(segment.source_content, text)
     if problem is not None:
         raise ProviderError(

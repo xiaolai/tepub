@@ -13,6 +13,7 @@ from .http import post_json
 
 class DeepLProvider(BaseProvider):
     supports_html = True
+    uses_markers = False
 
     DEFAULT_BASE_URL = "https://api.deepl.com/v2/translate"
 

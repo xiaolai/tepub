@@ -68,6 +68,12 @@ class BaseProvider(abc.ABC):
     #: silently received HTML anyway.
     supports_html: bool = True
 
+    #: Whether an inline-only HTML unit is sent as text with numbered markers
+    #: (see translation.markup.protect) instead of raw HTML. Right for language
+    #: models, which keep short markers far better than tags; a service that
+    #: handles tags itself, as DeepL does, gets the HTML.
+    uses_markers: bool = True
+
     def ensure_segment_supported(self, segment: Segment) -> None:
         """Raise when this provider cannot faithfully handle the segment."""
         if segment.extract_mode == ExtractMode.HTML and not self.supports_html:
