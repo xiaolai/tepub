@@ -116,15 +116,45 @@ def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, Extr
         elif _has_block_descendant(child):
             # A container, whatever its tag: converted books often wrap lists and
             # paragraphs in a <span>, which is invalid HTML but common.
-            if _has_own_content(child):
-                yield child, ExtractMode.HTML
-            else:
+            if not _has_own_content(child):
                 yield from iter_units(child)
+            elif len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS:
+                # Text of its own beside blocks makes a container one unit;
+                # one converted book was a single <div> of 5,000,000 characters
+                # whose own text was links and spans between its paragraphs.
+                # Too big to send, its blocks are walked and each inline
+                # element with text of its own is a unit; loose text between
+                # them cannot be one, since a unit is an element.
+                yield from _split_mixed(child)
+            else:
+                yield child, ExtractMode.HTML
         elif _is_block(child):
             mode = ExtractMode.HTML if _has_inline_markup(child) else ExtractMode.TEXT
             yield child, mode
         # Inline content directly in a container that is walked is that
         # container's own text; a container with any is a unit itself above.
+
+
+def _split_mixed(container: etree._Element) -> Iterator[tuple[etree._Element, ExtractMode]]:
+    """Units of an oversized container with text of its own, in order."""
+    for child in container:
+        if not isinstance(child.tag, str) or local_name(child) in SKIPPED_TAGS:
+            continue
+        if _is_block(child) or _has_block_descendant(child) or local_name(child) in ATOMIC_TAGS:
+            yield from iter_units(_Single(child))
+        elif _has_text(text_of(child)):
+            yield child, ExtractMode.HTML if _has_inline_markup(child) else ExtractMode.TEXT
+
+
+class _Single:
+    """A one-child stand-in container, so iter_units applies its rules to
+    exactly that child."""
+
+    def __init__(self, child: etree._Element):
+        self._child = child
+
+    def __iter__(self):
+        return iter((self._child,))
 
 
 def _has_inline_markup(element: etree._Element) -> bool:

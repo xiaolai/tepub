@@ -63,7 +63,8 @@ class SegmentsDocument(BaseModel):
     # format was recorded). 2: units from the current segmentation rule, keyed by
     # file path and document order. 3: as 2, without bare <a/> elements.
     # 4: as 3, with long lists, tables and definition lists split into items.
-    # 5: as 4, the split decided on markup size, leading text escaped.
+    # 5: as 4, the split decided on markup size and applied to containers with
+    # text of their own, leading text escaped.
     format_version: int = 1
     epub_path: Path
     # SHA-256 of the EPUB extracted from; identifies the book wherever it moves.

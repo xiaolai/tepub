@@ -353,3 +353,33 @@ def test_the_navigation_document_is_not_extracted_even_when_in_the_spine(tmp_pat
     run_extraction(settings, book)
     files = {s["file_path"] for s in json.loads(settings.segments_file.read_text())["segments"]}
     assert files == {"ch1.xhtml"}
+
+
+def test_an_oversized_container_with_its_own_text_is_split() -> None:
+    """A converted book was one <div> of 5,000,000 characters whose own text,
+    links and spans between its paragraphs, made it a single unit."""
+    from lxml import etree
+
+    from epub_io.xhtml import XHTML_NS
+    from extraction.segments import SPLIT_ABOVE_CHARS, iter_units
+
+    paragraphs = "".join(f"<p>Paragraph number {n} of a long chapter.</p>" for n in range(200))
+    body = etree.fromstring(
+        f'<body xmlns="{XHTML_NS}"><div><a href="#t">Chapter One</a>{paragraphs}'
+        f"<span>A loose aside</span><ul><li>One</li><li>Two</li></ul></div></body>"
+    )
+    units = [(etree.QName(e).localname, mode.value) for e, mode in iter_units(body)]
+    assert units[0] == ("a", "text")
+    assert units.count(("p", "text")) == 200
+    assert ("span", "text") in units and ("ul", "html") in units
+    assert len(etree.tostring(body)) > SPLIT_ABOVE_CHARS
+
+
+def test_a_small_container_with_its_own_text_stays_whole() -> None:
+    from lxml import etree
+
+    from epub_io.xhtml import XHTML_NS
+    from extraction.segments import iter_units
+
+    body = etree.fromstring(f'<body xmlns="{XHTML_NS}"><div>Lead text<p>A paragraph.</p></div></body>')
+    assert [(etree.QName(e).localname, m.value) for e, m in iter_units(body)] == [("div", "html")]
