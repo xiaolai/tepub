@@ -7,6 +7,7 @@ from cli.commands.config import config
 from cli.commands.export import export_command
 from cli.commands.extract import extract
 from cli.commands.format import format_cmd
+from cli.commands.glossary import glossary
 from cli.commands.pipeline import pipeline_command
 from cli.commands.resume import resume
 from cli.commands.translate import translate
@@ -22,3 +23,4 @@ def register_commands(app: click.Group) -> None:
     app.add_command(resume)
     app.add_command(format_cmd, name="format")
     app.add_command(config)
+    app.add_command(glossary)
