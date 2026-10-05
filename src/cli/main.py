@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import sys
@@ -20,21 +21,45 @@ console = get_console()
 
 
 class DefaultCommandGroup(click.Group):
-    """Click group that supports a default command."""
+    """The tepub group: a book given alone runs the pipeline, global options
+    are accepted after the command too, typos get a suggestion, and help lists
+    the commands in the order a book goes through them."""
+
+    # Shown first, in this order; any other command follows alphabetically.
+    WORKFLOW = ("extract", "translate", "export", "pipeline", "status", "glossary")
+    # Kept working for a release, but not listed.
+    HIDDEN = frozenset({"resume"})
 
     def __init__(self, *args, default_command: str | None = None, **kwargs):
         self.default_command = default_command
         super().__init__(*args, **kwargs)
 
-    def _first_argument_index(self, args: list[str]) -> int | None:
-        """Index of the first non-option token, skipping group options and values."""
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        names = [name for name in super().list_commands(ctx) if name not in self.HIDDEN]
+        first = [name for name in self.WORKFLOW if name in names]
+        return first + sorted(name for name in names if name not in first)
+
+    def _value_options(self) -> set[str]:
         value_opts: set[str] = set()
         for param in self.params:
             if getattr(param, "is_flag", False):
                 continue
             value_opts.update(param.opts)
             value_opts.update(param.secondary_opts)
+        return value_opts
 
+    def _global_options(self) -> tuple[set[str], set[str]]:
+        """(options taking a value, flags) of the group itself."""
+        flags: set[str] = set()
+        for param in self.params:
+            if getattr(param, "is_flag", False):
+                flags.update(param.opts)
+                flags.update(param.secondary_opts)
+        return self._value_options(), flags
+
+    def _first_argument_index(self, args: list[str]) -> int | None:
+        """Index of the first non-option token, skipping group options and values."""
+        value_opts = self._value_options()
         index = 0
         while index < len(args):
             token = args[index]
@@ -48,15 +73,58 @@ class DefaultCommandGroup(click.Group):
             return index
         return None
 
+    def _hoist_global_options(self, args: list[str], start: int) -> list[str]:
+        """Move global options found after the command to before it.
+
+        `tepub resume --work-dir X` failed with "No such option": the global
+        options were accepted only before the command. No command defines an
+        option of the same name (a test holds that), so the move is unambiguous.
+        """
+        value_opts, flags = self._global_options()
+        front, rest = list(args[:start]), []
+        index = start
+        while index < len(args):
+            token = args[index]
+            if token == "--":
+                rest.extend(args[index:])
+                break
+            name = token.split("=", 1)[0]
+            if name in flags:
+                front.append(token)
+                index += 1
+            elif name in value_opts and "=" in token:
+                front.append(token)
+                index += 1
+            elif name in value_opts and index + 1 < len(args):
+                front.extend(args[index : index + 2])
+                index += 2
+            else:
+                rest.append(token)
+                index += 1
+        return front + rest
+
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        if self.default_command and args:
-            # Only args[0] was examined before, so any global option preceding an
-            # implicit EPUB argument ("tepub --verbose book.epub") suppressed the
-            # default command and the invocation failed to parse.
+        index = self._first_argument_index(args)
+        if index is not None:
+            args = self._hoist_global_options(args, index)
             index = self._first_argument_index(args)
-            if index is not None and args[index] not in self.commands:
+        if self.default_command and index is not None and args[index] not in self.commands:
+            # A book given alone runs the pipeline; anything else was taken for a
+            # book too, so a typo read "Path 'transalte' does not exist".
+            candidate = Path(args[index])
+            if candidate.suffix.lower() == ".epub" and candidate.is_file():
                 args.insert(index, self.default_command)
         return super().parse_args(ctx, args)
+
+    def resolve_command(self, ctx: click.Context, args: list[str]):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError as exc:
+            name = args[0] if args else ""
+            close = difflib.get_close_matches(name, self.list_commands(ctx), n=1)
+            if close and "No such command" in exc.message:
+                exc.message = f"No such command '{name}'. Did you mean '{close[0]}'?"
+            raise
 
 
 @click.group(cls=DefaultCommandGroup, default_command="pipeline")
@@ -84,6 +152,7 @@ class DefaultCommandGroup(click.Group):
     is_flag=True,
     help="Suppress all console output.",
 )
+@click.version_option(package_name="tepub", prog_name="tepub")
 @click.pass_context
 def app(
     ctx: click.Context,
@@ -92,7 +161,19 @@ def app(
     verbose: bool,
     quiet: bool,
 ) -> None:
-    """Tepub: EPUB Bilingual Translator & Multi-format Exporter."""
+    """Translate EPUB books, and turn them into audiobooks and web pages.
+
+    \b
+    A book goes through three steps:
+      tepub extract book.epub      find the text to translate
+      tepub translate book.epub    translate it (resumable)
+      tepub export book.epub       write the translated EPUB next to the book
+    or all three at once:
+      tepub book.epub
+
+    \b
+    tepub status book.epub shows how far a book has got.
+    """
     configure_console(quiet=quiet, verbose=verbose)
     settings = prepare_initial_settings(config_file, work_dir, verbose)
     ctx.ensure_object(dict)
