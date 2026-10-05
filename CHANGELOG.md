@@ -4,6 +4,70 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.3.4] - 2026-10-05
+
+Each item names its work item in `dev-docs/plans/2026-10-improve-tepub.md`.
+
+### 🐛 Fixed — audiobooks
+
+- **Chapter markers pointed at the wrong times** (WI-1.1). Start times were
+  scaled by the movie timescale instead of the fixed 100 ns unit the chapter
+  atom uses; with the pipeline's 24 kHz timescale a chapter meant for 2 s
+  appeared at 48 s. The writer now also reads its chapters back and stops if
+  any start time is off.
+- **Footnotes were read aloud** (WI-1.2). The filter called a reader method that
+  did not exist, inside a catch-all. Note bodies marked by `epub:type`, role or
+  id are now skipped; an admonition box with `class="note"`, and files named like
+  `authors_note.xhtml`, are no longer dropped.
+- **Pauses were too short and chapters drifted late** (WI-1.3). Silence was made
+  at 11025 Hz and copied beside 24 kHz speech. All joining now goes through one
+  helper that makes silence in the speech's own format and refuses mixed inputs.
+- **An apostrophe in the work folder cut the book short** (WI-1.4). Every concat
+  path is escaped, and an output shorter than its inputs stops the run.
+- **Opening and closing statements could vanish silently** (WI-1.5).
+
+### 🐛 Fixed — translation
+
+- **API keys in `.env` were ignored** (WI-2.1). Only the provider variables
+  tepub reads may be set from `.env`; anything else is ignored with a warning.
+- **A brace in a custom prompt broke every segment** (WI-2.2). Only named
+  placeholders are filled; other braces are text.
+- **Refusals and truncated replies were saved as translations** (WI-2.3).
+- **One rate-limit reply could end a run** (WI-2.4). Errors are classified once:
+  bad keys stop the run, rate limits and server errors are retried honouring
+  `Retry-After`, other rejections fail only their segment. A cooldown now
+  resumes the run instead of ending it.
+- **Changing model erased finished translations** (WI-2.5). Only a change of
+  language resets, after saving a timestamped copy of the state.
+- **The Ollama address in the docs did not work** (WI-2.6). A server address
+  such as `http://localhost:11434` now gets `/api/generate` appended.
+
+### ⚡ Faster and safer runs
+
+- **State writes no longer slow every segment** (WI-3.1). State is kept in
+  memory and saved in batches; 5000 segments now cost about 1 ms each in total,
+  down from about 400 ms each for state writes alone.
+- **One run per workspace** (WI-3.1, WI-3.3). A second `translate`, or `format`
+  during a run, stops with a clear message instead of overwriting progress.
+- **Ctrl-C exits at once with code 130** (WI-3.2), after saving progress. It
+  used to hang until in-flight requests finished; the audiobook command also
+  exited 0.
+
+### 🔧 Removed
+
+- `retry`, `rate_limit` and `fallback_provider` settings, which did nothing
+  (WI-2.6). Configs that still name them get a warning.
+
+### 🧪 Development
+
+- Tests no longer read the developer's own config, `.env` or API keys (WI-0.2).
+- `scripts/verify.sh` is the local gate (WI-0.3).
+- Opt-in live tests against a real model server: set `TEPUB_LIVE_BASE_URL`
+  (WI-0.4).
+- The PyPI publish action is pinned to a commit.
+
+---
+
 ## [0.3.3] - 2026-08-02
 
 ### 🐛 Fixed

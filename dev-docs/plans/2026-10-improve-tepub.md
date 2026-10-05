@@ -173,6 +173,7 @@ Each of these reports success while producing wrong output.
 **Do:** cover `ensure_state`, `mark_status`, `reset_error_segments`, resume after an interrupted run, and the retry pass.
 
 ### Release 0.3.4
+**Status:** prepared 2026-10-05: version bumped, changelog written, gate green. Tagging and pushing wait for the owner.
 **Done when:** `scripts/verify.sh` exits 0; the changelog lists every work item by id; the version is bumped. Pushing and tagging wait for the owner.
 
 ---
