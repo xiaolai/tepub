@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-
 from lxml import html as lxml_html
 
 from audiobook.preprocess import _reextract_filtered, segment_to_text
