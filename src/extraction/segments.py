@@ -116,9 +116,43 @@ def _has_inline_markup(element: etree._Element) -> bool:
     emphasis and images in translated-only output.
     """
     return any(
-        isinstance(node.tag, str) and local_name(node) not in _UNWRAPPED_INLINE
+        isinstance(node.tag, str)
+        and (local_name(node) not in _UNWRAPPED_INLINE or _is_anchor(node))
         for node in element.iterdescendants()
     )
+
+
+_ANCHOR_ATTRIBUTES = ("id", OPS_TYPE, "role")
+
+
+def _is_anchor(node: etree._Element) -> bool:
+    """A span or font that something points at or reads: an endnote target, a
+    print page-break marker. Real books carry both on empty spans."""
+    return any(node.get(name) is not None for name in _ANCHOR_ATTRIBUTES)
+
+
+def _unwrap(node: etree._Element) -> None:
+    """Replace ``node`` by its content, keeping text and tail in place."""
+    parent = node.getparent()
+    if parent is None:
+        return
+    index = parent.index(node)
+    children = list(node)
+    previous = node.getprevious()
+    lead = node.text or ""
+    if previous is not None:
+        previous.tail = (previous.tail or "") + lead
+    else:
+        parent.text = (parent.text or "") + lead
+    for offset, child in enumerate(children):
+        parent.insert(index + offset, child)
+    last = children[-1] if children else node.getprevious()
+    tail = node.tail or ""
+    if last is not None and last is not node:
+        last.tail = (last.tail or "") + tail
+    else:
+        parent.text = (parent.text or "") + tail
+    parent.remove(node)
 
 
 def _translatable_text(element: etree._Element) -> str:
@@ -157,7 +191,15 @@ def _plain_copy(element: etree._Element) -> etree._Element:
         node.attrib.clear()
         for name, value in kept.items():
             node.set(name, value)
-    etree.strip_tags(clone, *_UNWRAPPED_INLINE)
+    # Presentational wrappers go; spans that carry an anchor stay.
+    for node in list(clone.iter()):
+        if (
+            node is not clone
+            and isinstance(node.tag, str)
+            and local_name(node) in _UNWRAPPED_INLINE
+            and not _is_anchor(node)
+        ):
+            _unwrap(node)
     etree.cleanup_namespaces(clone)
     return clone
 

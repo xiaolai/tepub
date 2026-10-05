@@ -67,3 +67,21 @@ def test_svg_and_mathml_inside_a_unit_are_left_exactly_as_written() -> None:
     source = unit.source_content
     assert 'mathvariant="bold"' in source and 'display="inline"' in source
     assert 'viewBox="0 0 1 1"' in source and 'width="10"' in source
+
+
+def test_anchor_and_page_break_spans_are_kept() -> None:
+    """Seen in a real book: endnote targets and print page markers are empty
+    spans. Treated as presentational, the heading went as plain text and
+    translated-only output lost both, breaking the notes' links."""
+    (unit,) = _units(
+        '<h1><span epub:type="pagebreak" id="page_1" role="doc-pagebreak" title="1"/>'
+        '<span id="EndnotePhraseInText0"/>One</h1>'
+    )
+    assert unit.extract_mode == ExtractMode.HTML
+    assert 'id="page_1"' in unit.source_content and 'epub:type="pagebreak"' in unit.source_content
+    assert 'id="EndnotePhraseInText0"' in unit.source_content
+
+
+def test_unwrapping_keeps_text_in_order() -> None:
+    (unit,) = _units("<p>a<span>b<em>c</em>d</span>e<span>f</span></p>")
+    assert unit.source_content == "ab<em>c</em>def"
