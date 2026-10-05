@@ -185,7 +185,7 @@ design below is sent to a second model in refute mode with checkable
 objections. Any objection whose check fails blocks the phase until resolved.
 
 ### WI-4.0 Fixture corpus and the epubcheck gate
-**Status:** open
+**Status:** DONE 2026-10-05. Seven generated fixtures in `tests/epub_fixtures.py`, each passing epubcheck as built: nested blockquotes, `epub:switch` with MathML, SVG cover, footnotes with backlinks, EPUB 2 with NCX, same basename in two folders, vertical Chinese. `tests/epub_io/test_roundtrip.py` requires an unchanged book to come back byte for byte, and real books in `TEPUB_CORPUS_DIR` to gain no epubcheck errors; both are strict expected failures against today's writer, which WI-4.1 must remove. CI installs epubcheck. Not as planned: no fixture for HTML named entities such as `&nbsp;`, because they are invalid in EPUB 3 XHTML and a fixture must be valid; the corpus covers them.
 **Files:** `tests/fixtures/epub/` (small, committed, licence-clean), `tests/corpus/` (a local folder named by `TEPUB_CORPUS_DIR`, never committed)
 **Do:** committed fixtures cover: nested blockquotes, `epub:switch`, inline SVG cover, MathML, footnotes with backlinks, a NCX-only EPUB 2, a nav-only EPUB 3, files with the same basename in two directories, and a vertical CJK book. A round-trip test reads each fixture, writes it with no edits, and asserts every zip entry except the mimetype order is byte-identical, then runs epubcheck on the output.
 **Done when:** the round-trip test exists and fails on today's writer for the reasons E1 and E2 describe.
