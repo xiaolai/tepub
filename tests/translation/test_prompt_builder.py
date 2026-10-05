@@ -53,3 +53,18 @@ def test_the_book_template_uses_the_mode_instruction(tmp_path: Path) -> None:
     create_book_config_template(tmp_path, "book.epub", {"title": "A Book"})
     preamble = yaml.safe_load((tmp_path / "config.yaml").read_text())["prompt_preamble"]
     assert "{mode_instruction}" in preamble and "A Book" in preamble
+
+
+def test_a_custom_prompt_naming_no_target_language_gets_the_language_instruction() -> None:
+    configure_prompt("You are a careful literary translator.")
+    try:
+        prompt = build_prompt(_make_segment("Hello."), "en", "Simplified Chinese")
+    finally:
+        configure_prompt(None)
+    assert "into Simplified Chinese" in prompt
+    configure_prompt("Translate into {target_language} with care.")
+    try:
+        prompt = build_prompt(_make_segment("Hello."), "en", "Simplified Chinese")
+    finally:
+        configure_prompt(None)
+    assert prompt.count("Simplified Chinese") == 1

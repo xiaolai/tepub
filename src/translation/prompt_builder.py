@@ -70,10 +70,14 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
 
     # Use custom prompt if configured, otherwise use default
     preamble = _PROMPT_PREAMBLE
+    # A custom prompt cannot drop what every translation needs. The per-book
+    # template tepub wrote left out {mode_instruction}, the instruction to keep
+    # markers and tags, so on a whole book the model, never told, dropped
+    # note-link markers in most long paragraphs. A prompt naming no target
+    # language would leave the model to guess one.
+    if preamble and "{language_instruction}" not in preamble and "{target_language}" not in preamble:
+        preamble = f"{preamble}\n{{language_instruction}}"
     if preamble and "{mode_instruction}" not in preamble:
-        # The mode instruction is what tells the model to keep markers and tags.
-        # The per-book template tepub wrote left it out, so on a whole book the
-        # model, never told, dropped note-link markers in most long paragraphs.
         preamble = f"{preamble}\n{{mode_instruction}}"
     if preamble:
         # {language_instruction} is documented as an available placeholder in both
