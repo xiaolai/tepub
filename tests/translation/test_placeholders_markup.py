@@ -66,3 +66,19 @@ def test_block_structure_and_marker_lookalikes_keep_the_html_route() -> None:
     assert protect("<li>one</li><li>two</li>") is None
     assert protect("a ⟦1⟧ in the source") is None
     assert protect('x<svg xmlns="http://www.w3.org/2000/svg"/>') is None
+
+
+def test_a_line_break_travels_as_a_newline() -> None:
+    """TranslateGemma dropped a lone marker standing for <br/> on every title
+    page line it saw; it keeps newlines."""
+    text, markers = protect("Ching Kwan Lee, author of<br/>The Specter of\n   Global China")
+    assert text == "Ching Kwan Lee, author of\nThe Specter of Global China"
+    rebuilt = restore("李静君，\n《全球中国的幽灵》作者\n", markers)
+    assert rebuilt == "李静君，<br/>《全球中国的幽灵》作者"
+
+
+def test_newlines_the_model_added_are_joined_without_a_space_in_chinese() -> None:
+    _text, markers = protect('One <a href="#n">long</a> paragraph.')
+    assert restore("一个⟦1⟧很长的⟦/1⟧\n段落。\nEnd\nhere", markers) == (
+        '一个<a href="#n">很长的</a>段落。End here'
+    )

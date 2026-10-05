@@ -63,3 +63,10 @@ def test_emphasis_may_differ() -> None:
     the paragraph untranslated is worse than losing it."""
     assert markup_mismatch(SOURCE, SOURCE.replace("<em>emphasis</em>", "emphasis")) is None
     assert markup_mismatch("plain", "<b>plain</b>") is None
+
+
+def test_a_line_break_may_be_lost() -> None:
+    """Reordered into Chinese, "co-author of The Chinese Heroin Trade<br/>and
+    author of ..." has no place left for its break; untranslated is worse."""
+    source = "Ko-lin Chin, co-author of The Chinese Heroin Trade<br/>and author of The Golden Triangle"
+    assert markup_mismatch(source, "《中国海洛因贸易》合著者、《金三角》作者陈国霖") is None

@@ -170,7 +170,7 @@ def _translate_checked(segment, provider, source_language: str, target_language:
         def rebuild(text: str) -> str:
             return restore(text, tags)
 
-        keep = "Keep every numbered marker exactly once, unchanged"
+        keep = "Keep every numbered marker exactly once, unchanged, and every line break"
 
     text = rebuild(_reply(sent, provider, source_language, target_language))
     problem = markup_mismatch(segment.source_content, text)

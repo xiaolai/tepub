@@ -6,7 +6,9 @@ follow its own word order. Ruby annotation is exempt, because languages
 annotate differently, and so are emphasis-style tags: measured on TranslateGemma
 from English into Chinese, every reply that still failed after a retry had only
 dropped or added an <em>, and an untranslated paragraph is worse than lost
-emphasis. Without this check a reply that dropped a
+emphasis. Line breaks are exempt for the same reason: they carry no link,
+anchor or note, and when the translation reorders a phrase there may be no
+place left for one. Without this check a reply that dropped a
 footnote reference or renamed an anchor was injected as it stood.
 """
 
@@ -25,7 +27,7 @@ from epub_io.xhtml import OPS_NS, XHTML_NS, local_name
 
 _RUBY = frozenset({"ruby", "rt", "rp", "rb", "rtc"})
 _EMPHASIS = frozenset({"em", "i", "b", "strong", "u", "small", "mark", "cite", "q", "s"})
-_EXEMPT = _RUBY | _EMPHASIS
+_EXEMPT = _RUBY | _EMPHASIS | {"br"}
 _KEPT_VALUES = ("href", "src", "id", "epub:type")
 
 
@@ -75,8 +77,16 @@ def markup_mismatch(source: str, translated: str) -> str | None:
 # one (an anchor, an image) as a single ⟦n⟧. Asked to keep raw HTML,
 # TranslateGemma moved or dropped anchors and note links in about a quarter of
 # the paragraphs of a link-dense book; a model never sees the tags it carries
-# back this way, so it cannot mangle their attributes.
+# back this way, so it cannot mangle their attributes. A line break travels as
+# a newline: the same model dropped a lone marker standing for <br/> on every
+# title-page line it saw, and keeps newlines.
 _MARKER = re.compile(r"⟦\s*(/?)\s*(\d+)\s*⟧")
+_MARKERS_AT_END = re.compile(r"(?:⟦\s*/?\s*\d+\s*⟧|\s)*$")
+_MARKERS_AT_START = re.compile(r"^(?:⟦\s*/?\s*\d+\s*⟧|\s)*")
+_NEWLINE = re.compile(r"[ \t]*\n[ \t]*")
+_WHITESPACE = re.compile(r"\s+")
+# Scripts written without spaces between words, and their punctuation.
+_UNSPACED = re.compile(r"[\u2e80-\u303f\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]")
 _XML_NS = "http://www.w3.org/XML/1998/namespace"
 _PREFIXES = {OPS_NS: "epub", _XML_NS: "xml"}
 # Structure a reader would lose if a marker went astray; such units keep the
@@ -100,6 +110,14 @@ class Tag:
     paired: bool
 
 
+@dataclass(frozen=True)
+class Markers:
+    """What a protected unit's markers stand for."""
+
+    tags: tuple[Tag, ...]
+    line_breaks: bool
+
+
 def has_markers(text: str) -> bool:
     return _MARKER.search(text) is not None
 
@@ -118,7 +136,7 @@ def _start_tag(element: etree._Element) -> str | None:
     return "<" + " ".join(parts)
 
 
-def protect(markup: str) -> tuple[str, list[Tag]] | None:
+def protect(markup: str) -> tuple[str, Markers] | None:
     """Plain text with numbered markers, and the tags they stand for.
 
     None when the fragment cannot travel this way: it holds block structure,
@@ -132,14 +150,23 @@ def protect(markup: str) -> tuple[str, list[Tag]] | None:
     except etree.XMLSyntaxError:
         return None
     tags: list[Tag] = []
-    parts: list[str] = [root.text or ""]
+    # Source whitespace is insignificant; only a <br/> becomes a newline.
+    parts: list[str] = [_WHITESPACE.sub(" ", root.text or "")]
+    line_breaks = False
 
     def walk(element: etree._Element) -> bool:
+        nonlocal line_breaks
+        tail = _WHITESPACE.sub(" ", element.tail or "")
         if not isinstance(element.tag, str):  # comments and processing instructions
-            parts.append(element.tail or "")
+            parts.append(tail)
             return True
         if etree.QName(element).namespace != XHTML_NS or local_name(element) in _NOT_INLINE:
             return False
+        if local_name(element) == "br" and not element.attrib:
+            line_breaks = True
+            parts.append("\n")
+            parts.append(tail)
+            return True
         start = _start_tag(element)
         if start is None:
             return False
@@ -148,19 +175,20 @@ def protect(markup: str) -> tuple[str, list[Tag]] | None:
         tags.append(Tag(local_name(element), start, paired))
         parts.append(f"⟦{number}⟧")
         if paired:
-            parts.append(element.text or "")
+            parts.append(_WHITESPACE.sub(" ", element.text or ""))
             if not all(walk(child) for child in element):
                 return False
             parts.append(f"⟦/{number}⟧")
-        parts.append(element.tail or "")
+        parts.append(tail)
         return True
 
     if not all(walk(child) for child in root):
         return None
-    return "".join(parts), tags
+    text = _NEWLINE.sub("\n", "".join(parts)).strip(" ")
+    return text, Markers(tuple(tags), line_breaks)
 
 
-def _kept_markers(tokens: list[tuple[bool, int]], tags: list[Tag]) -> set[int]:
+def _kept_markers(tokens: list[tuple[bool, int]], tags: tuple[Tag, ...]) -> set[int]:
     """Positions of the markers to turn back into tags.
 
     A pair is kept when its first opening marker is closed later, properly
@@ -190,23 +218,43 @@ def _kept_markers(tokens: list[tuple[bool, int]], tags: list[Tag]) -> set[int]:
     return kept
 
 
-def restore(reply: str, tags: list[Tag]) -> str:
+def _join_lines(reply: str) -> str:
+    """Join lines a model broke where the source had no line break: with no
+    space when either side is Chinese or Japanese, with one otherwise."""
+
+    def join(match: re.Match) -> str:
+        before = _MARKERS_AT_END.sub("", reply[: match.start()])[-1:]
+        after = _MARKERS_AT_START.sub("", reply[match.end() :])[:1]
+        return "" if _UNSPACED.match(before) or _UNSPACED.match(after) else " "
+
+    return re.sub(r"\s*\n\s*", join, reply)
+
+
+def restore(reply: str, markers: Markers) -> str:
     """The reply as markup: markers become the original tags, text is escaped.
 
     A marker the model invented, repeated or left unpaired is dropped and its
     words kept; the markup check then reports what went missing.
     """
+    tags = markers.tags
+    reply = reply.strip()
+    if not markers.line_breaks:
+        reply = _join_lines(reply)
     pieces = _MARKER.split(reply)
     # split yields text, then (slash, number, text) for each marker.
     tokens = [(pieces[i] == "/", int(pieces[i + 1])) for i in range(1, len(pieces), 3)]
     kept = _kept_markers(tokens, tags)
-    out = [html.escape(pieces[0], quote=False)]
-    for position, ((closing, number), text) in enumerate(zip(tokens, pieces[3::3])):
+
+    def text(piece: str) -> str:
+        return _NEWLINE.sub("<br/>", html.escape(piece, quote=False))
+
+    out = [text(pieces[0])]
+    for position, ((closing, number), piece) in enumerate(zip(tokens, pieces[3::3])):
         if position in kept:
             tag = tags[number - 1]
             if not tag.paired:
                 out.append(tag.start + "/>")
             else:
                 out.append(f"</{tag.name}>" if closing else tag.start + ">")
-        out.append(html.escape(text, quote=False))
+        out.append(text(piece))
     return "".join(out)
