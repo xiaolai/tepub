@@ -1,8 +1,12 @@
 """Write a translated EPUB: the source book with some entries replaced.
 
-Content documents, the table of contents and, for translated-only output, one
-stylesheet are replaced; every other entry is copied unchanged. See container.py
-for why this no longer goes through ebooklib.
+Content documents and, for translated-only output, the tables of contents are
+replaced; every other entry, stylesheets included, is copied unchanged. See
+container.py for why this no longer goes through ebooklib.
+
+Translated-only output used to append a rule to the first stylesheet hiding
+elements marked as originals. It replaces each original in place, so nothing
+carries that marker: the rule did nothing but edit the publisher's CSS.
 """
 
 from __future__ import annotations
@@ -13,16 +17,6 @@ from pathlib import Path, PurePosixPath
 from lxml import etree
 
 from .container import Package, read_package, resolve, secure_xml_parser, write_copy
-
-TRANSLATED_ONLY_CSS = """
-[data-lang=\"original\"] {
-  display: none !important;
-}
-
-[data-lang=\"translation\"] {
-  display: block !important;
-}
-"""
 
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 OPS_NS = "http://www.idpf.org/2007/ops"
@@ -57,16 +51,6 @@ def write_updated_epub(
                 source = replacements.get(toc) or archive.read(toc)
                 replacements[toc] = _retitle(toc, source, by_entry)
 
-    if css_mode == "translated_only":
-        stylesheet = _first_stylesheet(package)
-        if stylesheet is not None:
-            with zipfile.ZipFile(input_epub) as archive:
-                css = replacements.get(stylesheet) or archive.read(stylesheet)
-            if b'[data-lang="original"]' not in css:
-                replacements[stylesheet] = (
-                    css.rstrip() + b"\n\n" + TRANSLATED_ONLY_CSS.strip().encode("utf-8") + b"\n"
-                )
-
     write_copy(input_epub, output_epub, replacements)
 
 
@@ -77,13 +61,6 @@ def _toc_documents(package: Package) -> list[str]:
         if item is not None and item.path not in found:
             found.append(item.path)
     return found
-
-
-def _first_stylesheet(package: Package) -> str | None:
-    for item in package.manifest.values():
-        if item.media_type == "text/css":
-            return item.path
-    return None
 
 
 def _lookup_title(updates: dict[str, dict[str | None, str]], entry: str, fragment: str | None) -> str | None:

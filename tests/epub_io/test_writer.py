@@ -62,13 +62,13 @@ def test_translated_only_retitles_the_table_of_contents(tmp_path: Path, version:
     etree.fromstring(_read(out, toc))  # still well-formed
 
 
-def test_translated_only_adds_the_hiding_css_once(tmp_path: Path) -> None:
+def test_translated_only_leaves_stylesheets_alone(tmp_path: Path) -> None:
+    """Nothing is marked as an original in translated-only output, so there is
+    nothing for a hiding rule to hide; the publisher's CSS is not edited."""
     book = build_epub(tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")], css="p { color: black; }")
     out = tmp_path / "out.epub"
     write_updated_epub(book, out, {}, css_mode="translated_only")
-    css = _read(out, "OEBPS/style.css").decode("utf-8")
-    assert css.startswith("p { color: black; }")
-    assert css.count('[data-lang="original"]') == 1
+    assert _read(out, "OEBPS/style.css") == _read(book, "OEBPS/style.css")
 
 
 def test_bilingual_output_leaves_toc_and_css_alone(tmp_path: Path) -> None:

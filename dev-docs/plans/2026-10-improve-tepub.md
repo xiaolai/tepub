@@ -298,7 +298,7 @@ the package identifier they depend on is never edited.
 **Test first:** P4 and P5 as assertions; validator tests for a dropped link, a renamed id, an added tag.
 
 ### WI-4.6 Bilingual and translated-only rendering on the new core (F11)
-**Status:** in progress. Done 2026-10-05: translated copies carry no ids (D5); originals and translations are marked with `tepub-original` and `tepub-translation` classes, plus `data-lang` only in EPUB 3, since XHTML 1.1 rejects `data-*` attributes; the web viewer's CSS matches both. All 14 translated-output cases pass epubcheck with no new errors. Remaining: drop the translated-only stylesheet edit, which hides markers that translated-only output no longer has.
+**Status:** DONE 2026-10-05. Translated copies carry no ids (D5); originals and translations are marked with `tepub-original` and `tepub-translation` classes, plus `data-lang` only in EPUB 3, since XHTML 1.1 rejects `data-*` attributes; the web viewer's CSS matches both. All 14 translated-output cases pass epubcheck with no new errors. Done 2026-10-05 as well: the translated-only stylesheet edit is removed, since translated-only output replaces originals in place and nothing carries the marker it hid; stylesheets are now copied unchanged in both modes.
 **Depends:** WI-4.5
 **Files:** `src/injection/engine.py`, `src/epub_io/writer.py`
 **Do:** both modes render from the same unit store. Translated-only removes originals instead of hiding them with CSS, so no stylesheet edit is needed.
