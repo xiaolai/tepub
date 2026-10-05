@@ -190,9 +190,15 @@ def _translate_checked(
     if missed:
         notes.append(f"Your previous translation did not follow the glossary: {'; '.join(missed)}.")
     retry = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"notes": " ".join(notes)})})
+    first, first_markup, first_missed = text, markup, missed
     text = rebuild(_reply(retry, provider, source_language, target_language))
     markup, missed = problems(text)
     if markup is not None:
+        if first_markup is None:
+            # Retried for the glossary alone, and the retry broke the markup:
+            # the first reply is a usable translation that missed a term.
+            _log_missed(segment, first_missed)
+            return first
         raise ProviderError(
             f"Translation of segment {segment.segment_id} changed the markup twice: {markup}"
         )

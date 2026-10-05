@@ -124,3 +124,11 @@ def test_a_glossary_for_another_language_is_refused(tmp_path: Path) -> None:
     )
     with pytest.raises(GlossaryError, match="is for Spanish"):
         glossary_for(tmp_path / "nowhere", tmp_path, "Simplified Chinese")
+
+
+def test_a_glossary_retry_that_breaks_the_markup_keeps_the_first_reply() -> None:
+    source = 'A compound<a href="#n1"><sup>1</sup></a>.'
+    model = Model("一个园区⟦1⟧⟦2⟧1⟦/2⟧⟦/1⟧。", "一个诈骗园区。")
+    result = _translate_segment(_segment(source, ExtractMode.HTML), model, "en", "zh", GLOSSARY)
+    assert result.error is None
+    assert result.translation == '一个园区<a href="#n1"><sup>1</sup></a>。'
