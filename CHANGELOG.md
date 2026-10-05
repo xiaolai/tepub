@@ -4,6 +4,78 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.4.0] - 2026-10-05
+
+A new EPUB core. Each item names its work item in
+`dev-docs/plans/2026-10-improve-tepub.md`.
+
+### ⬆️ Upgrading from 0.3
+
+- **Run `tepub extract` once on each book you are working on.** Segments are now
+  found by a new rule and get new ids. Extraction carries every finished
+  translation and synthesised audio clip over to the new units by matching file
+  and text, after saving a timestamped copy of the state; it reports anything it
+  could not match, which is translated again. On a real 1,623-segment workspace
+  every translation carried over.
+
+### 🐛 Fixed — the EPUB written back
+
+- **Translated books are valid EPUBs** (WI-4.1). The writer copies the source
+  book entry for entry and replaces only the chapters it translated. The old
+  one, through ebooklib, rebuilt every chapter's head, moved every file and
+  rewrote the navigation; written back unchanged, 15 of 19 real books gained
+  epubcheck errors. Now none does, translated or not.
+- **Translated chapters keep their title and stylesheet links** (WI-4.2).
+  ebooklib's reading API returned chapters with an empty head.
+- **SVG covers, MathML and `epub:switch` survive** (WI-4.2). Chapters are
+  parsed as XML; the HTML parser lowercased SVG names and crashed on prefixed
+  elements.
+- **No text is translated twice or lost** (WI-4.3). A paragraph inside a
+  blockquote used to be extracted twice; text beside block children, and lists
+  wrapped in `<span>`, are now covered. Across 10,583 chapters of a 19-book
+  corpus every piece of text is in exactly one unit, skipped on purpose (SVG,
+  MathML, code listings), or reported.
+- **Footnotes, links and emphasis survive translation** (WI-4.5). Paragraphs
+  with inline markup are translated as HTML, and each reply must keep its
+  links, anchors and images or it is retried once and then marked as an error.
+  Measured with TranslateGemma 12B into Chinese: 30 of 30 paragraphs kept their
+  markup.
+- **Bilingual output is valid in EPUB 2 too** (WI-4.6). Originals and
+  translations are marked with `tepub-original` and `tepub-translation`
+  classes; `data-lang` is added only in EPUB 3, and translated copies carry no
+  duplicate ids.
+- **Both tables of contents are retitled** in translated-only output, the EPUB 3
+  nav and the NCX, and publisher stylesheets are no longer edited.
+
+### 🐛 Fixed — reading books
+
+- **ebooklib is no longer used** (WI-4.7). Its navigation parser crashed on a
+  nav with landmarks only. The spine, contents and metadata are read directly.
+- **A moved or renamed book is still recognised** (WI-5.3). Workspaces record
+  the book's SHA-256 and accept the same content wherever it sits.
+- **`resume`, `format` and the debug commands find the right workspace** under
+  `--work-dir` (WI-5.3).
+
+### 🐛 Fixed — audiobooks
+
+- **Files the table of contents leaves out are no longer dropped** (WI-5.2).
+- **The chapter preview matches the book** (WI-5.2).
+- **Statements are synthesised once** per wording and voice (WI-5.2).
+- **Chinese sentences no longer split inside numbers** such as 3.5 (WI-5.2).
+
+### 🔧 Changed
+
+- **The web export keeps classes and language attributes** (WI-5.4), so its
+  original/translation toggles work for EPUB 2 books.
+- **`assembly.py` is split** into modules with one job each (WI-5.1).
+
+### 🧪 Development
+
+- Fixture books and a translating epubcheck gate run in the default suite;
+  `TEPUB_CORPUS_DIR` runs the same gate over a folder of real books.
+
+---
+
 ## [0.3.4] - 2026-10-05
 
 Each item names its work item in `dev-docs/plans/2026-10-improve-tepub.md`.

@@ -337,6 +337,7 @@ the package identifier they depend on is never edited.
 **Do:** a deterministic fake translation runs through extraction, injection and both output modes over every fixture and, opt-in, the corpus. It asserts every unit is translated, ids are unique, every link target resolves, structure such as tables and footnotes is kept, and epubcheck reports no more occurrences of any error than the input had.
 
 ### Release 0.4.0
+**Status:** prepared 2026-10-05: version bumped, changelog written with upgrade notes, gate green including epubcheck on fixtures, corpus gate 38 of 38. Tagging and pushing wait for the owner.
 **Done when:** `scripts/verify.sh` exits 0 including epubcheck on fixtures; the importer is documented in the changelog; the owner's corpus run is recorded.
 
 ---
