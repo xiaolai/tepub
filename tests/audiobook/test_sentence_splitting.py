@@ -6,6 +6,8 @@ import pytest
 
 from audiobook.preprocess import split_sentences
 
+pytestmark = pytest.mark.needs_punkt
+
 
 def test_english_splits_on_terminators():
     assert split_sentences("First one. Second one! Third one?", language="en") == [

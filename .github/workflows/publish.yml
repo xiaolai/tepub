@@ -40,8 +40,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      # The sentence-splitting tests need NLTK's Punkt tables. Tests never
+      # download them (tests/conftest.py); without this step they would skip.
+      - name: Install NLTK sentence data
+        run: python -m nltk.downloader -d "$HOME/nltk_data" punkt_tab
       - name: Run tests
-        run: python -m pytest --no-cov -q
+        run: python -m pytest --no-cov -q -rs
       # Gate on real errors only: F (undefined names, unused imports, dead code)
       # and E9 (syntax/IO). The repo carries pre-existing E501 line-length debt
       # across 56 sites; blocking a security release on that would mean the gate
