@@ -82,6 +82,39 @@ def _items(markup: str) -> list[str]:
     return found
 
 
+_WRAPPERS = frozenset({"p", "div", "blockquote", "section", "span"})
+
+
+def _only_child(markup: str):
+    root = lxml_html.fragment_fromstring(markup, create_parent="div")
+    children = [child for child in root if isinstance(child.tag, str)]
+    if (root.text or "").strip() or len(children) != 1 or (children[0].tail or "").strip():
+        return None
+    return children[0]
+
+
+def _inner(element) -> str:
+    return ((element.text or "") + "".join(
+        lxml_html.tostring(child, encoding="unicode") for child in element
+    )).strip()
+
+
+def _unwrap(source: str, translation: str) -> tuple[str, str]:
+    """Step into a wrapper both sides share: an item holding only a paragraph,
+    <li><p>…</p></li>, is now split into that paragraph, whose translation must
+    not carry the <p> of the item's, or the book gets a <p> inside a <p>."""
+    while True:
+        wrapped, translated = _only_child(source), _only_child(translation)
+        if (
+            wrapped is None
+            or translated is None
+            or wrapped.tag != translated.tag
+            or wrapped.tag not in _WRAPPERS
+        ):
+            return source, translation
+        source, translation = _inner(wrapped), _inner(translated)
+
+
 def _split_whole_lists(
     old: list[Segment],
     new: list[Segment],
@@ -112,6 +145,7 @@ def _split_whole_lists(
         if not sources or len(sources) != len(translated):
             continue
         for source, item_translation in zip(sources, translated):
+            source, item_translation = _unwrap(source, item_translation)
             item = Segment(
                 segment_id=segment.segment_id,
                 file_path=segment.file_path,

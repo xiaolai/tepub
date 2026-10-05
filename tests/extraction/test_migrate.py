@@ -178,3 +178,27 @@ def test_a_whole_list_whose_items_do_not_match_is_translated_again(tmp_path: Pat
 
     assert load_state(state_file).segments == {}
     assert report.finished_not_carried == 1
+
+
+def test_an_item_holding_one_paragraph_carries_the_paragraph_text(tmp_path: Path) -> None:
+    """Format 5 split a list kept whole before into the paragraphs inside its
+    items; each got its item's translation, <p> and all: a <p> inside a <p>."""
+    old = _segment("old-list", 1, '<li><p><a href="#r1">1</a> First note.</p></li><li><p>Second.</p></li>', ExtractMode.HTML)
+    new = [
+        _segment("new-1", 1, '<a href="#r1">1</a> First note.', ExtractMode.HTML),
+        _segment("new-2", 2, "Second."),
+    ]
+    state_file = tmp_path / "state.json"
+    record = TranslationRecord(
+        segment_id="old-list",
+        translation='<li><p><a href="#r1">1</a> 第一条。</p></li><li><p>第二条。</p></li>',
+        status=SegmentStatus.COMPLETED,
+        provider_name="ollama",
+    )
+    save_state(StateDocument(segments={"old-list": record}), state_file)
+
+    import_legacy_workspace(tmp_path, state_file, [old], new)
+
+    state = load_state(state_file)
+    assert state.segments["new-1"].translation == '<a href="#r1">1</a> 第一条。'
+    assert state.segments["new-2"].translation == "第二条。"
