@@ -25,7 +25,7 @@ class DummyParallelProvider:
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
         """Simulate translation with a counter."""
         self.call_count += 1
-        return f"<p>Translation {self.call_count}</p>"
+        return f"Translation {self.call_count}"
 
 
 @pytest.fixture

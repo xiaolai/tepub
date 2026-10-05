@@ -57,11 +57,36 @@ def _describe(counter: Counter, *, kind: str) -> str:
     return ", ".join(parts)
 
 
+_STRUCTURE = frozenset({"ul", "ol", "dl", "table", "thead", "tbody", "tfoot", "tr"})
+
+
+def _loose_text(markup: str) -> int:
+    """Text standing directly in a list or table, outside its items and cells."""
+    root = lxml_html.fragment_fromstring(markup or "", create_parent="tepub-fragment")
+    count = 0
+    # A list unit's source is the inside of its list: items at the top.
+    items_at_top = any(
+        isinstance(child.tag, str) and child.tag.lower() in ("li", "tr", "dt", "dd", "tbody", "thead")
+        for child in root
+    )
+    for node in root.iter():
+        if (node is root and items_at_top) or (
+            isinstance(node.tag, str) and node.tag.lower() in _STRUCTURE
+        ):
+            count += bool((node.text or "").strip())
+            count += sum(bool((child.tail or "").strip()) for child in node)
+    return count
+
+
 def markup_mismatch(source: str, translated: str) -> str | None:
     """None when the markup matches; otherwise a short description for the model."""
     source_tags, source_values = _inventory(source)
     translated_tags, translated_values = _inventory(translated)
     problems = []
+    # A reply fenced as a code block put "```html" inside a list: invalid,
+    # and shown to readers.
+    if _loose_text(translated) > _loose_text(source):
+        problems.append("text outside the list items or table cells")
     if missing := source_tags - translated_tags:
         problems.append("missing " + _describe(missing, kind="tag"))
     if extra := translated_tags - source_tags:
@@ -302,3 +327,30 @@ def restore(reply: str, markers: Markers) -> str:
                 out.append(f"</{tag.name}>" if closing else tag.start + ">")
         out.append(text(piece))
     return "".join(out)
+
+
+_FENCE = re.compile(r"^\s*```[\w-]*[ \t]*\n?(.*?)\n?[ \t]*```\s*$", re.DOTALL)
+_TAG = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)\b[^<>]*>|&lt;/?([a-zA-Z][a-zA-Z0-9]*)\b.*?&gt;")
+
+
+def strip_code_fence(reply: str) -> str:
+    """The reply without a Markdown code fence around it, as models sometimes
+    return a translation: "```html\n...\n```"."""
+    match = _FENCE.match(reply)
+    return match.group(1).strip() if match else reply
+
+
+def stray_tags(source: str, reply: str) -> str | None:
+    """Tags in a reply to plain text that the source does not have.
+
+    Sent text or text with markers, a model sometimes answers in HTML, "<p>"
+    and all, which then reached the page as literal text. Tags the source
+    itself shows, as a book about HTML does, are left alone.
+    """
+    allowed = {name.lower() for pair in _TAG.findall(source) for name in pair if name}
+    stray = sorted(
+        {name.lower() for pair in _TAG.findall(reply) for name in pair if name} - allowed
+    )
+    if not stray:
+        return None
+    return "added HTML tags " + ", ".join(f"<{name}>" for name in stray) + " to plain text"

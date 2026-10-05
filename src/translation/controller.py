@@ -21,7 +21,7 @@ from state.models import ExtractMode, SegmentStatus
 from state.store import backup_state, ensure_state, load_segments, load_state
 from state.writer import StateWriter, exclusive_run
 from translation.languages import describe_language, normalize_language
-from translation.markup import markup_mismatch, protect, restore
+from translation.markup import markup_mismatch, protect, restore, stray_tags, strip_code_fence
 from translation.polish import polish_translation
 from translation.providers import (
     ProviderError,
@@ -136,8 +136,10 @@ class TranslationResult:
 
 def _reply(segment, provider, source_language: str, target_language: str) -> str:
     """One provider call, refused if it declines the task, polished if not."""
-    text = provider.translate(
-        segment, source_language=source_language, target_language=target_language
+    text = strip_code_fence(
+        provider.translate(
+            segment, source_language=source_language, target_language=target_language
+        )
     )
     # A refusal is not a translation. This check used to run only in the debug
     # purge command, so refusals were stored as COMPLETED and exported. A source
@@ -178,12 +180,18 @@ def _translate_checked(
     html_unit = segment.extract_mode == ExtractMode.HTML
     protected = protect(segment.source_content) if html_unit and provider.uses_markers else None
     sent = segment
-    keep = "Keep every tag and every href, src and id value exactly as in the source"
+    if html_unit:
+        keep = "Keep every tag and every href, src and id value exactly as in the source"
+    else:
+        keep = "Return plain text, with no HTML tags and no code fences"
     if protected is not None:
         sent = segment.model_copy(
             update={"source_content": protected[0], "extract_mode": ExtractMode.TEXT}
         )
-        keep = "Keep every numbered marker exactly once, unchanged, and every line break"
+        keep = (
+            "Keep every numbered marker exactly once, unchanged, and every line break, "
+            "and add no HTML tags"
+        )
 
     def rebuild(text: str) -> str:
         return restore(text, protected[1]) if protected is not None else text
@@ -193,12 +201,20 @@ def _translate_checked(
         hints = {term.source: term.target for term in terms}
         sent = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"terms": hints})})
 
-    def problems(text: str) -> tuple[str | None, list[str]]:
-        markup = markup_mismatch(segment.source_content, text) if html_unit else None
+    def problems(raw: str, text: str) -> tuple[str | None, list[str]]:
+        if sent.extract_mode == ExtractMode.HTML:
+            markup = markup_mismatch(segment.source_content, text)
+        else:
+            # Plain text, or text with markers: any tag in the reply is the
+            # model's, and would reach the page as literal text.
+            markup = stray_tags(sent.source_content, raw)
+            if markup is None and html_unit:
+                markup = markup_mismatch(segment.source_content, text)
         return markup, glossary.problems(terms, text) if terms else []
 
-    text = rebuild(_reply(sent, provider, source_language, target_language))
-    markup, missed = problems(text)
+    raw = _reply(sent, provider, source_language, target_language)
+    text = rebuild(raw)
+    markup, missed = problems(raw, text)
     if markup is None and (not missed or not provider.follows_instructions):
         _log_missed(segment, missed)
         return text
@@ -209,8 +225,9 @@ def _translate_checked(
         notes.append(f"Your previous translation did not follow the glossary: {'; '.join(missed)}.")
     retry = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"notes": " ".join(notes)})})
     first, first_markup, first_missed = text, markup, missed
-    text = rebuild(_reply(retry, provider, source_language, target_language))
-    markup, missed = problems(text)
+    raw = _reply(retry, provider, source_language, target_language)
+    text = rebuild(raw)
+    markup, missed = problems(raw, text)
     if markup is not None:
         if first_markup is None:
             # Retried for the glossary alone, and the retry broke the markup:

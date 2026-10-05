@@ -18,7 +18,7 @@ class DummyProvider:
         pass
 
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
-        return "<p>Hola mundo</p>"
+        return "Hola mundo"  # plain text: the source is a text unit
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def test_run_translation_updates_state(monkeypatch, settings, tmp_path):
     state = load_state(settings.state_file)
     record = state.segments[segment.segment_id]
     assert record.status == SegmentStatus.COMPLETED
-    assert record.translation == "<p>Hola mundo</p>"
+    assert record.translation == "Hola mundo"
     assert record.provider_name == "dummy"
     assert record.model_name == "dummy-model"
 
