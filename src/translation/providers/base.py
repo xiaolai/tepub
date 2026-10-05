@@ -14,6 +14,42 @@ class ProviderFatalError(ProviderError):
     """Fatal provider error that should abort the translation run."""
 
 
+# Statuses after which every remaining segment would fail the same way: a key the
+# provider rejects, or a model or endpoint that does not exist.
+FATAL_STATUSES = frozenset({401, 403, 404})
+
+# Statuses that mean "try again later": rate limits, timeouts, overloaded or
+# failing servers (Anthropic reports overload as 529).
+RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
+
+
+def error_for_status(provider_label: str, status: int, detail: str) -> ProviderError:
+    """The one place an HTTP status becomes an error kind.
+
+    Fatal stops the run; anything else fails only this segment, and the run's
+    retry pass tries it again. A 400 used to be fatal, so one segment the
+    provider rejected as too long ended the whole run.
+    """
+    message = f"{provider_label} API error {status}: {detail}"
+    if status in FATAL_STATUSES:
+        return ProviderFatalError(message)
+    return ProviderError(message)
+
+
+def classify_exception(
+    provider_label: str, exc: Exception, *, status: int | None
+) -> ProviderError:
+    """Classify an SDK exception by the HTTP status it carries, if any.
+
+    Anthropic, Gemini and DeepL turned every exception into a fatal error, so a
+    single rate-limit reply ended the run. With no status the failure happened
+    before a reply arrived, a network problem, which is worth retrying.
+    """
+    if status is None:
+        return ProviderError(f"{provider_label} request failed: {exc}")
+    return error_for_status(provider_label, status, str(exc))
+
+
 class BaseProvider(abc.ABC):
     def __init__(self, config: ProviderConfig):
         self.config = config

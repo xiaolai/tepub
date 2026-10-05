@@ -12,7 +12,13 @@ from config import ProviderConfig
 from state.models import Segment
 from translation import prompt_builder
 
-from .base import BaseProvider, ProviderError, ProviderFatalError, ensure_translation_available
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderFatalError,
+    classify_exception,
+    ensure_translation_available,
+)
 
 
 class AnthropicProvider(BaseProvider):
@@ -43,11 +49,15 @@ class AnthropicProvider(BaseProvider):
                 system="You are a precise literary translator.",
                 messages=[{"role": "user", "content": prompt}],
             )
-        except anthropic.APIError as exc:  # pragma: no cover - network dependent
-            raise ProviderFatalError(f"Anthropic request failed: {exc}") from exc
+        except anthropic.APIError as exc:
+            # Rate limits and overload carry a status and are retried; only a
+            # rejected key or unknown model stops the run.
+            raise classify_exception(
+                "Anthropic", exc, status=getattr(exc, "status_code", None)
+            ) from exc
 
         if not response.content:
-            raise ProviderFatalError("Anthropic response missing content")
+            raise ProviderError("Anthropic response missing content")
 
         # A truncated response used to be stored as a complete translation, losing
         # the tail of any segment longer than the limit with no indication.

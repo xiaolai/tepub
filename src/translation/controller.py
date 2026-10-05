@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.console import Group
@@ -94,6 +94,15 @@ def _truncate_text(text: str, max_length: int = 80) -> str:
 
 logger = get_logger(__name__)
 console = get_console()
+
+# Consecutive failures that start a cooldown, how long it lasts, and how many one
+# run may take before it stops and says so.
+FAILURES_BEFORE_COOLDOWN = 3
+COOLDOWN = timedelta(minutes=30)
+MAX_COOLDOWNS_PER_RUN = 3
+
+# Indirection so tests can run a cooldown without waiting thirty minutes.
+_sleep = time.sleep
 
 
 class TranslationResult:
@@ -360,6 +369,7 @@ def run_translation(
             cooldown_remaining=cooldown_remaining,
         )
 
+    cooldowns_taken = 0
     with Live(Group(render_panel(), progress), console=console, refresh_per_second=5) as live:
         try:
             while True:
@@ -378,6 +388,7 @@ def run_translation(
                 pass_successes = 0
                 pass_failures: list[str] = []
                 fatal_error: Exception | None = None
+                cooled_down_this_pass = False
 
                 # Use parallel translation with ThreadPoolExecutor
                 # Not a `with` block: its __exit__ calls shutdown(wait=True), which
@@ -460,8 +471,10 @@ def run_translation(
                                 consecutive = trans_state.consecutive_failures + 1
                                 set_consecutive_failures(settings.state_file, consecutive)
 
-                                if consecutive >= 3:
+                                if consecutive >= FAILURES_BEFORE_COOLDOWN:
                                     in_cooldown = True
+                                    cooled_down_this_pass = True
+                                    cooldowns_taken += 1
                                     # Every pending segment was already submitted, so
                                     # without cancelling, workers kept calling the
                                     # provider throughout the cooldown — exactly what
@@ -470,18 +483,19 @@ def run_translation(
                                     for queued in future_to_segment:
                                         if not queued.done():
                                             queued.cancel()
-                                    cooldown_until = datetime.utcnow() + timedelta(minutes=30)
+                                    cooldown_until = datetime.now(timezone.utc) + COOLDOWN
                                     set_cooldown(settings.state_file, cooldown_until)
-                                    remaining = (cooldown_until - datetime.utcnow()).total_seconds()
-
+                                    # Count down by the time actually slept rather than
+                                    # re-reading the clock, so the wait is bounded.
+                                    remaining = COOLDOWN.total_seconds()
                                     while remaining > 0:
                                         mins = int(remaining // 60)
                                         secs = int(remaining % 60)
                                         cooldown_remaining = f"{mins}m {secs}s"
                                         live.update(Group(render_panel(), progress))
                                         sleep_for = min(5, remaining)
-                                        time.sleep(sleep_for)
-                                        remaining = (cooldown_until - datetime.utcnow()).total_seconds()
+                                        _sleep(sleep_for)
+                                        remaining -= sleep_for
 
                                     set_cooldown(settings.state_file, None)
                                     set_consecutive_failures(settings.state_file, 0)
@@ -524,6 +538,22 @@ def run_translation(
                 if fatal_error is not None:
                     # Retrying cannot help: the provider itself is unusable.
                     break
+
+                # A cooldown cancelled the rest of this pass; the provider has had
+                # its rest, so start the next pass instead of judging this one. It
+                # used to count as "no progress" and end the run after the wait.
+                if cooled_down_this_pass:
+                    if cooldowns_taken >= MAX_COOLDOWNS_PER_RUN:
+                        console.print(
+                            f"[red]The provider kept failing after {cooldowns_taken} "
+                            "cooldowns; stopping. Completed translations are saved; "
+                            "run the command again to continue.[/red]"
+                        )
+                        break
+                    preview_lines = ["waiting…"] * max_workers
+                    preview_index = 0
+                    reset_error_segments(settings.state_file, pass_failures)
+                    continue
 
                 # After each pass, check if we should retry failed segments
                 if pass_failures:

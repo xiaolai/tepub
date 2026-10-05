@@ -133,7 +133,7 @@ Each of these reports success while producing wrong output.
 **Test first:** a fake provider returning a refusal, and one reporting truncation; assert both end as ERROR.
 
 ### WI-2.4 Transient errors are retried, fatal ones stop the run (N1, N2, C8)
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/translation/test_error_classes.py` (17), `test_a_cooldown_resumes_the_run`, `test_cooldowns_are_capped`. Classification lives in `providers/base.py`: 401/403/404 fatal; 408, 409, 425, 429, 5xx and 529 retried with `Retry-After` honoured up to 60 s; other 4xx fail only their segment, where a 400 used to end the run. Anthropic and Gemini classify SDK exceptions by the status they carry; DeepL now posts through the shared helper. A cooldown resumes the next pass, at most 3 per run. The cooldown counts down by time slept, so it is bounded and testable. Not done here: `datetime.utcnow()` deprecations elsewhere, left for WI-3.1, which rewrites the state path.
 **Files:** `src/translation/controller.py`, `src/translation/providers/http.py`, `anthropic.py`, `gemini.py`, `deepl.py`
 **Do:** classify errors in one place: 401 and 403 and missing keys are fatal; 408, 429 and 5xx are transient. Honour `Retry-After`. After a cooldown, resume the pass instead of exiting.
 **Test first:** a fake provider failing three times with 429 then succeeding; assert the run completes with no segment left PENDING, using an injected clock so the test does not sleep.

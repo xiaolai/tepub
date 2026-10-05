@@ -3,13 +3,12 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import requests
-
 from config import ProviderConfig
 from state.models import ExtractMode, Segment
 from translation.languages import describe_language
 
 from .base import BaseProvider, ProviderError, ProviderFatalError, ensure_translation_available
+from .http import post_json
 
 
 class DeepLProvider(BaseProvider):
@@ -56,29 +55,16 @@ class DeepLProvider(BaseProvider):
         if source and source.lower() != "auto":
             data["source_lang"] = source
 
-        try:
-            response = requests.post(
-                self.base_url,
-                headers=headers,
-                data=data,
-                timeout=60,
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network dependent
-            raise ProviderFatalError(f"DeepL request failed: {exc}") from exc
-
-        try:
-            payload: Any = response.json()
-        except ValueError as exc:
-            # Decoding sat outside the guarded request block, so a malformed but
-            # successful response escaped as a raw JSONDecodeError.
-            raise ProviderError(f"DeepL returned a non-JSON response: {exc}") from exc
+        # The shared helper retries rate limits and server errors, honouring
+        # Retry-After, and classifies failures; DeepL used to treat every one of
+        # them, a 429 included, as fatal and end the run.
+        payload: Any = post_json("DeepL", self.base_url, headers=headers, data=data, timeout=60)
 
         translations = payload.get("translations") if isinstance(payload, dict) else None
         if translations and isinstance(translations, list):
             translated = translations[0].get("text")
             return ensure_translation_available(translated)
-        raise ProviderFatalError("DeepL response missing translation")
+        raise ProviderError("DeepL response missing translation")
 
 
 def _deepl_lang_code(language: str) -> str | None:

@@ -17,6 +17,7 @@ from translation import prompt_builder
 from .base import (
     BaseProvider,
     ProviderFatalError,
+    classify_exception,
     ensure_not_truncated,
     ensure_translation_available,
 )
@@ -60,8 +61,10 @@ class GeminiProvider(BaseProvider):
                 model=self.config.model,
                 contents=[{"role": "user", "parts": [prompt]}],
             )
-        except Exception as exc:  # pragma: no cover - network dependent
-            raise ProviderFatalError(f"Gemini request failed: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 - classified, not swallowed
+            # google-genai raises APIError subclasses carrying the HTTP status in
+            # `code`; anything else failed before a reply and is worth retrying.
+            raise classify_exception("Gemini", exc, status=getattr(exc, "code", None)) from exc
 
         candidates_seen: Any = getattr(response, "candidates", None) or []
         if candidates_seen:

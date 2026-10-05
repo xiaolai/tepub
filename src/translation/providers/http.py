@@ -13,11 +13,25 @@ from typing import Any
 
 import requests
 
-from .base import ProviderError, ProviderFatalError
+from .base import RETRYABLE_STATUSES, ProviderError, error_for_status
 
-# 429 (rate limited) and 5xx are transient; retrying is the correct response.
-# Other 4xx (bad key, unknown model) will not improve and should stop the run.
-RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+# A server may ask for a long wait; beyond this the retry pass is the better place
+# to wait, so one request does not hold a worker for an hour.
+MAX_RETRY_AFTER_SECONDS = 60.0
+
+# Indirection so tests can observe waits without sleeping.
+_sleep = time.sleep
+
+
+def _retry_delay(response: Any, attempt: int) -> float:
+    """Seconds to wait before retrying: the server's Retry-After if it gave one."""
+    header = getattr(response, "headers", {}).get("Retry-After") if response is not None else None
+    if header:
+        try:
+            return min(float(header), MAX_RETRY_AFTER_SECONDS)
+        except ValueError:
+            pass  # An HTTP-date; fall back to exponential backoff.
+    return float(2**attempt)
 
 
 def post_json(
@@ -53,7 +67,7 @@ def post_json(
                 raise ProviderError(
                     f"{provider_label} request failed after {attempts} attempts: {exc}"
                 ) from exc
-            time.sleep(2**attempt)
+            _sleep(_retry_delay(None, attempt))
             continue
 
         if response.status_code in RETRYABLE_STATUSES:
@@ -62,13 +76,11 @@ def post_json(
                     f"{provider_label} API error {response.status_code} after "
                     f"{attempts} attempts: {response.text}"
                 )
-            time.sleep(2**attempt)
+            _sleep(_retry_delay(response, attempt))
             continue
 
         if response.status_code >= 400:
-            raise ProviderFatalError(
-                f"{provider_label} API error {response.status_code}: {response.text}"
-            )
+            raise error_for_status(provider_label, response.status_code, response.text)
 
         try:
             return response.json()

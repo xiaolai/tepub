@@ -171,3 +171,88 @@ def test_run_translation_auto_copies_punctuation(monkeypatch, settings, tmp_path
     assert content_record.model_name == "spy-model"
 
     assert spy.calls == ["Hello world"]
+
+
+class FlakyProvider:
+    """Fails the first three calls the way a rate-limited API does, then works."""
+
+    name = "dummy"
+    model = "dummy-model"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
+        from translation.providers.base import ProviderError
+
+        self.calls += 1
+        if self.calls <= 3:
+            raise ProviderError("429 rate limited")
+        return "Hola"
+
+
+def test_a_cooldown_resumes_the_run(monkeypatch, settings, tmp_path):
+    """After a cooldown the run carries on; it used to wait 30 minutes and quit."""
+    from state.models import SegmentsDocument
+
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    segments = [
+        Segment(
+            segment_id=f"c-{i}",
+            file_path=Path("Text/c.xhtml"),
+            xpath=f"/html/body/p[{i}]",
+            extract_mode=ExtractMode.TEXT,
+            source_content=f"Sentence number {i}.",
+            metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=i),
+        )
+        for i in range(1, 6)
+    ]
+    save_segments(
+        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        settings.segments_file,
+    )
+    settings = settings.model_copy(update={"translation_workers": 1})
+    provider = FlakyProvider()
+    slept: list[float] = []
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: provider)
+    monkeypatch.setattr("translation.controller.console", Console(record=True))
+    monkeypatch.setattr("translation.controller._sleep", slept.append)
+
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+
+    state = load_state(settings.state_file)
+    assert {r.status for r in state.segments.values()} == {SegmentStatus.COMPLETED}
+    assert slept, "a cooldown should have been taken"
+
+
+class AlwaysRateLimited:
+    name = "dummy"
+    model = "dummy-model"
+
+    def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
+        from translation.providers.base import ProviderError
+
+        raise ProviderError("429 rate limited")
+
+
+def test_cooldowns_are_capped(monkeypatch, settings, tmp_path):
+    """A provider that never recovers ends the run after a bounded wait."""
+    from translation import controller
+
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    _write_segments(settings, input_epub)
+    settings = settings.model_copy(update={"translation_workers": 1})
+    slept: list[float] = []
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: AlwaysRateLimited())
+    monkeypatch.setattr("translation.controller.console", Console(record=True))
+    monkeypatch.setattr("translation.controller._sleep", slept.append)
+    monkeypatch.setattr("translation.controller.FAILURES_BEFORE_COOLDOWN", 1)
+
+    run_translation(settings, input_epub, source_language="en", target_language="es")
+
+    expected = controller.MAX_COOLDOWNS_PER_RUN * controller.COOLDOWN.total_seconds()
+    assert sum(slept) == expected
+    state = load_state(settings.state_file)
+    assert {r.status for r in state.segments.values()} == {SegmentStatus.ERROR}
