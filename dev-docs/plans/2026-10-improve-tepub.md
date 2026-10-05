@@ -331,7 +331,7 @@ the package identifier they depend on is never edited.
 **Done when:** all three exports run on every fixture; `grep -rn "ebooklib\|text_content\|\.xpath(segment" src` finds nothing outside tests.
 
 ### WI-4.8 A gate that translates (gate objection 10)
-**Status:** open
+**Status:** DONE 2026-10-05. `tests/epub_io/test_translated_output.py`: over the 7 fixtures in both modes it requires no new epubcheck errors, every `<title>` and `<link>` kept, every in-book link resolving and every footnote reference surviving; an opt-in variant runs the 19-book corpus. Its first corpus runs found three defect classes, each fixed with a test: SVG covers rewritten into invalid SVG and sent to the model; the EPUB 3 nav extracted as a chapter when listed in the spine; anchors on empty spans (endnote targets, page-break markers) lost in translated-only output. Final corpus run: 38 of 38 pass, in 10 minutes.
 **Depends:** WI-4.6
 **Files:** `tests/epub_io/test_translated_output.py` (new)
 **Do:** a deterministic fake translation runs through extraction, injection and both output modes over every fixture and, opt-in, the corpus. It asserts every unit is translated, ids are unique, every link target resolves, structure such as tables and footnotes is kept, and epubcheck reports no more occurrences of any error than the input had.

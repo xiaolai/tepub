@@ -140,3 +140,29 @@ def test_translated_output_adds_no_epubcheck_errors(name: str, mode: str, tmp_pa
     assert _noterefs(out) >= _noterefs(book)
     added = _error_counts(epubcheck.check(out)) - _error_counts(epubcheck.check(book))
     assert not added, {f.code: f.message for f in epubcheck.errors(epubcheck.check(out))}
+
+
+CORPUS = __import__("os").environ.get("TEPUB_CORPUS_DIR")
+
+
+def _corpus_books() -> list[Path]:
+    if not CORPUS:
+        return []
+    return sorted(Path(CORPUS).expanduser().glob("*.epub"))
+
+
+@pytest.mark.corpus
+@pytest.mark.skipif(not CORPUS, reason="set TEPUB_CORPUS_DIR to a folder of real EPUBs")
+@pytest.mark.parametrize("mode", ["bilingual", "translated_only"])
+@pytest.mark.parametrize("book", _corpus_books(), ids=lambda p: p.stem[:40])
+def test_real_books_translate_into_valid_epubs(book: Path, mode: str, tmp_path: Path) -> None:
+    settings = AppSettings(work_dir=tmp_path / "work")
+    run_extraction(settings, book)
+    _translate_everything(settings)
+    out = tmp_path / f"out-{mode}.epub"
+
+    run_injection(settings, book, out, mode=mode)
+
+    _assert_heads_kept(book, out)
+    added = _error_counts(epubcheck.check(out)) - _error_counts(epubcheck.check(book))
+    assert not added, dict(added)
