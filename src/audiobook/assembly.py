@@ -172,45 +172,48 @@ def _generate_statement_audio(
         output_path: Where to save the M4A audio file
 
     Returns:
-        Path to generated M4A audio file, or None if generation failed
+        Path to the generated M4A file, or None when the text is empty.
+
+    Raises:
+        Any error from the TTS engine or the conversion; callers decide.
     """
     if not text or not text.strip():
         return None
 
-    try:
-        # Use the same TTS engine as the main audiobook
-        from .tts import create_tts_engine
+    # The output folder may not exist yet: statements are rendered before any
+    # chapter is written into it.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        engine = create_tts_engine(
-            provider=session.tts_provider,
-            voice=session.voice,
-            rate=None,  # Edge TTS only
-            volume=None,  # Edge TTS only
-            model=session.tts_model,
-            speed=session.tts_speed,
-        )
+    # Use the same TTS engine as the main audiobook
+    from .tts import create_tts_engine
 
-        # Determine temp file extension based on provider
-        # OpenAI outputs AAC, Edge outputs MP3
-        temp_ext = ".aac" if session.tts_provider == "openai" else ".mp3"
-        temp_file = output_path.with_suffix(temp_ext)
+    engine = create_tts_engine(
+        provider=session.tts_provider,
+        voice=session.voice,
+        rate=None,  # Edge TTS only
+        volume=None,  # Edge TTS only
+        model=session.tts_model,
+        speed=session.tts_speed,
+    )
 
-        # Generate TTS output
-        engine.synthesize(text.strip(), temp_file)
+    # Determine temp file extension based on provider
+    # OpenAI outputs AAC, Edge outputs MP3
+    temp_ext = ".aac" if session.tts_provider == "openai" else ".mp3"
+    temp_file = output_path.with_suffix(temp_ext)
 
-        # Always convert to M4A (matching renderer.py approach)
-        audio = AudioSegment.from_file(temp_file)
-        audio.export(
-            output_path,
-            format="mp4",
-            codec="aac",
-            parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
-        )
-        temp_file.unlink()  # Remove temporary file
-        return output_path
-    except Exception as exc:
-        logger.warning("Failed to generate statement audio: %s", exc)
-        return None
+    # Generate TTS output
+    engine.synthesize(text.strip(), temp_file)
+
+    # Always convert to M4A (matching renderer.py approach)
+    audio = AudioSegment.from_file(temp_file)
+    audio.export(
+        output_path,
+        format="mp4",
+        codec="aac",
+        parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
+    )
+    temp_file.unlink()  # Remove temporary file
+    return output_path
 
 
 def _prepare_cover(
@@ -406,19 +409,27 @@ def _render_statement(
     if not template:
         return None
 
-    text = template.format(
-        book_name=book_title,
-        author=author_str,
-        narrator_name=_extract_narrator_name(session.voice),
-    )
-    audio_path = output_root / f"{label}_statement.m4a"
     try:
-        if _generate_statement_audio(text, session, audio_path):
-            console.print(f"[cyan]Generated {label} statement audio[/cyan]")
-            return audio_path
+        text = template.format(
+            book_name=book_title,
+            author=author_str,
+            narrator_name=_extract_narrator_name(session.voice),
+        )
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ValueError(
+            f"The audiobook {label} statement template is invalid ({exc!r}). Placeholders "
+            "are {book_name}, {author} and {narrator_name}; write a literal brace as {{ or }}."
+        ) from exc
+    audio_path = output_root / f"{label}_statement.m4a"
+    # A configured statement that cannot be rendered stops assembly. Logging and
+    # carrying on produced a book silently missing its opening or closing.
+    try:
+        rendered = _generate_statement_audio(text, session, audio_path)
     except Exception as exc:
-        logger.warning("Failed to generate %s statement: %s", label, exc)
-    return None
+        raise RuntimeError(f"Could not render the {label} statement: {exc}") from exc
+    if rendered:
+        console.print(f"[cyan]Generated {label} statement audio[/cyan]")
+    return rendered
 
 
 def _tag_audiobook(

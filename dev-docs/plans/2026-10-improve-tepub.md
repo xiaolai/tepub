@@ -103,7 +103,7 @@ Each of these reports success while producing wrong output.
 **Done when:** that test passes and `grep -n "file '" src/audiobook/assembly.py` finds only the helper.
 
 ### WI-1.5 End-to-end assembly test
-**Status:** open
+**Status:** DONE 2026-10-05. Verified: `tests/audiobook/test_assembly_e2e.py` (3 tests) passes; putting back each old defect in turn made it fail: chapter unit (read-back refused, 72.9 s for 3.0 s), 11025 Hz silence (concat refused the mixed rates), unescaped apostrophe (ffmpeg error carried in `ConcatError`). It also found a defect on its first run: statements were rendered into a folder not yet created, and a catch-all logged the failure and assembled the book without them. The folder is now created first, a failed statement stops assembly, and an invalid statement template names its placeholders (part of A9).
 **Depends:** WI-1.1 to WI-1.4
 **Files:** `tests/audiobook/test_assembly_e2e.py` (new)
 **Do:** two chapters of tone segments with a fake TTS engine, through `assemble_audiobook`, checked with ffprobe for duration, chapter count, chapter starts and cover art.
