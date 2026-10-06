@@ -11,23 +11,28 @@ from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 
 
-def create_provider(config: ProviderConfig) -> BaseProvider:
-    registry = {
-        "openai": OpenAIProvider,
-        "ollama": OllamaProvider,
-        "gemini": GeminiProvider,
-        "grok": GrokProvider,
-        "anthropic": AnthropicProvider,
-        "deepl": DeepLProvider,
-    }
+_REGISTRY = {
+    "openai": OpenAIProvider,
+    "ollama": OllamaProvider,
+    "gemini": GeminiProvider,
+    "grok": GrokProvider,
+    "anthropic": AnthropicProvider,
+    "deepl": DeepLProvider,
+}
 
-    provider_cls = registry.get(config.name.lower())
+# The names a config or the command line may give as a provider.
+PROVIDER_NAMES = tuple(sorted(_REGISTRY))
+
+
+def create_provider(config: ProviderConfig) -> BaseProvider:
+    provider_cls = _REGISTRY.get(config.name.lower())
     if not provider_cls:
         raise ProviderError(f"Unsupported provider: {config.name}")
     return provider_cls(config)
 
 
 __all__ = [
+    "PROVIDER_NAMES",
     "BaseProvider",
     "ProviderError",
     "ProviderFatalError",

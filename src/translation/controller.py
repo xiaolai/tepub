@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -311,7 +312,7 @@ def _translate_segment(
         )
 
 
-def run_translation(
+def _run_translation(
     settings: AppSettings,
     input_epub: Path,
     *,
@@ -718,3 +719,122 @@ def run_translation(
 
     # Note: Polish is now applied incrementally after each translation (see line 203)
     # No separate polish pass needed at the end
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    """Where a book stands after a translate run."""
+
+    total: int
+    completed: int
+    failed: tuple[str, ...]
+    pending: int
+    translated_now: int
+    seconds: float
+    glossary_misses: int
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
+
+
+def _completed_ids(settings: AppSettings) -> set[str]:
+    if not settings.state_file.exists():
+        return set()
+    state = load_state(settings.state_file)
+    return {k for k, r in state.segments.items() if r.status == SegmentStatus.COMPLETED}
+
+
+def _summarise(settings: AppSettings, before: set[str], started: float) -> RunSummary:
+    segments = select_for_translation(load_segments(settings.segments_file).segments, settings)
+    state = load_state(settings.state_file) if settings.state_file.exists() else None
+    records = state.segments if state is not None else {}
+    status = {s.segment_id: getattr(records.get(s.segment_id), "status", None) for s in segments}
+    completed = {k for k, v in status.items() if v == SegmentStatus.COMPLETED}
+    failed = tuple(sorted(k for k, v in status.items() if v == SegmentStatus.ERROR))
+    misses = 0
+    glossary = glossary_for(settings.work_root, settings.work_dir, settings.target_language) if state else None
+    if glossary is not None and state is not None:
+        from glossary.report import find_misses
+
+        misses = len({m.segment_id for m in find_misses(segments, state, glossary)})
+    return RunSummary(
+        total=len(segments),
+        completed=len(completed),
+        failed=failed,
+        pending=len(segments) - len(completed) - len(failed),
+        translated_now=len(completed - before),
+        seconds=time.monotonic() - started,
+        glossary_misses=misses,
+    )
+
+
+def _print_summary(summary: RunSummary, input_epub: Path) -> None:
+    minutes, seconds = divmod(int(summary.seconds), 60)
+    took = f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
+    console.print(
+        f"[bold]{summary.completed} of {summary.total} units translated[/bold] "
+        f"({summary.translated_now} in this run, {took})."
+    )
+    if summary.failed:
+        console.print(
+            f"[red]{len(summary.failed)} failed.[/red] Run `tepub translate {input_epub.name}` "
+            f"again to retry them; `tepub status {input_epub.name}` lists them."
+        )
+    if summary.pending:
+        console.print(f"[yellow]{summary.pending} still to translate.[/yellow]")
+    if summary.glossary_misses:
+        console.print(
+            f"[yellow]{summary.glossary_misses} unit(s) miss a glossary rendering;[/yellow] "
+            f"`tepub glossary check {input_epub.name}` lists them."
+        )
+
+
+def run_translation(
+    settings: AppSettings,
+    input_epub: Path,
+    *,
+    source_language: str,
+    target_language: str,
+) -> RunSummary:
+    """Translate what is left of the book, then report where it stands.
+
+    A run used to end with no summary, so one that left units failed looked
+    the same as a clean one, to people and to scripts.
+    """
+    started = time.monotonic()
+    before = _completed_ids(settings)
+    _run_translation(
+        settings, input_epub, source_language=source_language, target_language=target_language
+    )
+    summary = _summarise(settings, before, started)
+    _print_summary(summary, input_epub)
+    return summary
+
+
+@dataclass(frozen=True)
+class Plan:
+    """What a translate run would do, for --dry-run."""
+
+    units: int
+    characters: int
+    provider: str
+    model: str
+    glossary_terms: int
+
+
+def plan_translation(settings: AppSettings, input_epub: Path) -> Plan:
+    """Count what a run would translate, without contacting the provider."""
+    segments_doc = load_segments(settings.segments_file)
+    assert_same_book(segments_doc, input_epub)
+    segments = select_for_translation(segments_doc.segments, settings)
+    done = _completed_ids(settings)
+    todo = [s for s in segments if s.segment_id not in done and not should_auto_copy(s)]
+    glossary = glossary_for(settings.work_root, settings.work_dir, settings.target_language)
+    return Plan(
+        units=len(todo),
+        characters=sum(len(s.source_content) for s in todo),
+        provider=settings.primary_provider.name,
+        model=settings.primary_provider.model,
+        glossary_terms=len(glossary.decided()) if glossary is not None else 0,
+    )

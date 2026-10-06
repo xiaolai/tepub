@@ -233,3 +233,55 @@ def describe_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> tupl
         return False, "segments and translation state share no segment ids"
 
     return True, "reusable"
+
+
+def translation_options(func):
+    """--from, --to, --provider, --model and --allow-failures, shared by
+    translate and pipeline."""
+    from translation.providers import PROVIDER_NAMES
+
+    options = [
+        click.option("--from", "source_language", default=None, help="Source language (code or name)."),
+        click.option("--to", "target_language", default=None, help="Target language (code or name)."),
+        click.option(
+            "--provider",
+            type=click.Choice(PROVIDER_NAMES, case_sensitive=False),
+            help="Translation provider for this run, instead of the configured one.",
+        ),
+        click.option("--model", help="Model for this run, instead of the configured one."),
+        click.option(
+            "--allow-failures",
+            is_flag=True,
+            help="Exit with 0 even when some units failed (otherwise 3).",
+        ),
+    ]
+    for option in reversed(options):
+        func = option(func)
+    return func
+
+
+def with_provider(settings: AppSettings, provider: str | None, model: str | None) -> AppSettings:
+    """Settings using this run's provider and model, when given.
+
+    Comparing two models meant editing the config between runs. Another
+    provider needs its model too: model names do not carry across providers.
+    """
+    from config import ProviderConfig
+
+    if provider is None and model is None:
+        return settings
+    current = settings.primary_provider
+    if provider is None or provider.lower() == current.name:
+        config = current.model_copy(update={"model": model or current.model})
+    elif model is None:
+        raise click.UsageError(
+            f"--provider {provider} needs --model as well; the configured model "
+            f"{current.model!r} belongs to {current.name}."
+        )
+    else:
+        config = ProviderConfig(name=provider, model=model)
+    return settings.model_copy(update={"primary_provider": config})
+
+
+# Exit code for a run that finished with units it could not translate.
+EXIT_UNITS_FAILED = 3
