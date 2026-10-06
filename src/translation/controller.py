@@ -817,6 +817,7 @@ class Plan:
     """What a translate run would do, for --dry-run."""
 
     units: int
+    copied: int
     characters: int
     provider: str
     model: str
@@ -829,10 +830,12 @@ def plan_translation(settings: AppSettings, input_epub: Path) -> Plan:
     assert_same_book(segments_doc, input_epub)
     segments = select_for_translation(segments_doc.segments, settings)
     done = _completed_ids(settings)
-    todo = [s for s in segments if s.segment_id not in done and not should_auto_copy(s)]
+    remaining = [s for s in segments if s.segment_id not in done]
+    todo = [s for s in remaining if not should_auto_copy(s)]
     glossary = glossary_for(settings.work_root, settings.work_dir, settings.target_language)
     return Plan(
-        units=len(todo),
+        units=len(remaining),
+        copied=len(remaining) - len(todo),
         characters=sum(len(s.source_content) for s in todo),
         provider=settings.primary_provider.name,
         model=settings.primary_provider.model,

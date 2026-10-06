@@ -57,9 +57,12 @@ def translate(
 
     if dry_run:
         plan = plan_translation(settings, input_epub)
+        # Counted as status counts pending units; units of punctuation or
+        # numbers alone are copied, not sent, and said so.
+        copied = f", {plan.copied:,} of them copied as they are" if plan.copied else ""
         console.print(
-            f"{plan.units} units to translate, {plan.characters:,} characters, into "
-            f"{target_pref} with {plan.provider} / {plan.model}"
+            f"{plan.units:,} units to translate{copied}: {plan.characters:,} characters "
+            f"for {plan.provider} / {plan.model}, into {target_pref}"
             + (f", holding {plan.glossary_terms} glossary terms." if plan.glossary_terms else ".")
         )
         return
