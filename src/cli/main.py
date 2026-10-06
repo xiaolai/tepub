@@ -122,7 +122,9 @@ class DefaultCommandGroup(click.Group):
         except click.UsageError as exc:
             name = args[0] if args else ""
             close = difflib.get_close_matches(name, self.list_commands(ctx), n=1)
-            if close and "No such command" in exc.message:
+            # Newer Click versions suggest by themselves; add one only where
+            # it does not, or the message says it twice.
+            if close and "No such command" in exc.message and "Did you mean" not in exc.format_message():
                 exc.message = f"No such command '{name}'. Did you mean '{close[0]}'?"
             raise
 

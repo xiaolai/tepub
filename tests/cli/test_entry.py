@@ -27,7 +27,7 @@ def test_a_mistyped_command_is_named_with_a_suggestion(tmp_path: Path) -> None:
     result = _run("transalte", str(book))
     assert result.exit_code == 2
     assert "No such command 'transalte'" in result.output
-    assert "Did you mean 'translate'" in result.output
+    assert result.output.count("Did you mean 'translate'") == 1
 
 
 def test_an_existing_epub_alone_runs_the_pipeline(tmp_path: Path) -> None:
