@@ -19,29 +19,38 @@ def derive_book_workspace(settings: AppSettings, input_epub: Path) -> Path:
     return epub_path.parent / epub_path.stem
 
 
-def with_book_workspace(settings: AppSettings, input_epub: Path) -> AppSettings:
-    """Create settings with book-specific workspace, loading per-book config if exists."""
+def _with_book_config(settings: AppSettings) -> AppSettings:
+    """The settings with the workspace's own config.yaml applied, when it has one.
+
+    Applied wherever the workspace is: under --work-dir it was never read, and
+    a book's file list, prompt and output mode were silently ignored.
+    """
     from config.loader import _parse_yaml_file
 
+    book_config = settings.work_dir / "config.yaml"
+    if not book_config.exists():
+        return settings
+    book_payload = _parse_yaml_file(book_config)
+    if not book_payload or not isinstance(book_payload, dict):
+        return settings
+    updated = settings.model_copy(update=book_payload)
+    # The prompt builder holds global state configured from the *global*
+    # config at load time. Without reconfiguring here, a per-book
+    # prompt_preamble was stored on the settings object and then ignored,
+    # and translation kept using the global prompt.
+    if "prompt_preamble" in book_payload:
+        from translation.prompt_builder import configure_prompt
+
+        configure_prompt(updated.prompt_preamble)
+    return updated
+
+
+def with_book_workspace(settings: AppSettings, input_epub: Path) -> AppSettings:
+    """Create settings with book-specific workspace, loading per-book config if exists."""
     derived = derive_book_workspace(settings, input_epub)
-    new_settings = settings.model_copy(update={"work_root": derived.parent, "work_dir": derived})
-
-    # Load per-book config if it exists
-    book_config = derived / "config.yaml"
-    if book_config.exists():
-        book_payload = _parse_yaml_file(book_config)
-        if book_payload and isinstance(book_payload, dict):
-            new_settings = new_settings.model_copy(update=book_payload)
-            # The prompt builder holds global state configured from the *global*
-            # config at load time. Without reconfiguring here, a per-book
-            # prompt_preamble was stored on the settings object and then ignored,
-            # and translation kept using the global prompt.
-            if "prompt_preamble" in book_payload:
-                from translation.prompt_builder import configure_prompt
-
-                configure_prompt(new_settings.prompt_preamble)
-
-    return new_settings
+    return _with_book_config(
+        settings.model_copy(update={"work_root": derived.parent, "work_dir": derived})
+    )
 
 
 def with_override_root(settings: AppSettings, base_path: Path, input_epub: Path) -> AppSettings:
@@ -54,11 +63,15 @@ def with_override_root(settings: AppSettings, base_path: Path, input_epub: Path)
     segments_exists = (base_path / "segments.json").exists()
     state_exists = (base_path / "state.json").exists()
     if segments_exists or state_exists:
-        return settings.model_copy(update={"work_root": base_path.parent, "work_dir": base_path})
+        return _with_book_config(
+            settings.model_copy(update={"work_root": base_path.parent, "work_dir": base_path})
+        )
 
     # Otherwise use it as root and create book-specific subdir
     work_dir = base_path / build_workspace_name(input_epub)
-    return settings.model_copy(update={"work_root": base_path, "work_dir": work_dir})
+    return _with_book_config(
+        settings.model_copy(update={"work_root": base_path, "work_dir": work_dir})
+    )
 
 
 def epub_digest(path: Path) -> str:

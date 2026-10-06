@@ -66,3 +66,25 @@ def test_resume_finds_what_extract_wrote_under_the_same_work_dir(tmp_path: Path)
     assert resumed.exit_code == 0, resumed.output
     assert "No translation state" not in resumed.output
     assert "Remaining" in resumed.output
+
+
+def test_a_book_config_applies_under_work_dir_too(tmp_path: Path) -> None:
+    """With --work-dir the book's own config.yaml was never read: its file
+    list, prompt and output mode were silently ignored."""
+    from config.workspace import with_book_workspace, with_override_root
+    from tests.epub_builder import build_epub
+
+    book = build_epub(tmp_path / "book.epub", [("c.xhtml", "One", "<p>One.</p>")])
+    root = tmp_path / "work"
+    settings = with_override_root(AppSettings(), root, book)
+    settings.work_dir.mkdir(parents=True)
+    (settings.work_dir / "config.yaml").write_text(
+        "output_mode: translated-only\ntranslation_files:\n  - c.xhtml\n", encoding="utf-8"
+    )
+    applied = with_override_root(AppSettings(), root, book)
+    assert applied.output_mode == "translated_only"
+    assert applied.translation_files == ["c.xhtml"]
+    # and the default workspace still applies its own
+    (tmp_path / "book").mkdir()
+    (tmp_path / "book" / "config.yaml").write_text("output_mode: translated-only\n", encoding="utf-8")
+    assert with_book_workspace(AppSettings(), book).output_mode == "translated_only"
