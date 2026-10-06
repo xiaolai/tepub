@@ -118,7 +118,7 @@ def test_chapter_starts_do_not_depend_on_the_movie_timescale(tmp_path, timescale
     by_ffprobe = _ffprobe_chapter_starts(output)
     for reader, found in (("mutagen", by_mutagen), ("ffprobe", by_ffprobe)):
         assert [t for _, t in found] == [t for _, t in expected], reader
-        for (start, _), (want, _) in zip(found, expected):
+        for (start, _), (want, _) in zip(found, expected, strict=True):
             assert start == pytest.approx(want, abs=0.01), (reader, found)
 
 

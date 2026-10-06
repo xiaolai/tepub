@@ -32,7 +32,9 @@ def _default_state(
     cover_path: Path | None = None,
     tts_provider: str = "edge",
     tts_model: str | None = None,
-    tts_speed: float = 1.0,
+    tts_speed: float | None = None,
+    rate: str | None = None,
+    volume: str | None = None,
 ) -> AudioStateDocument:
     session = AudioSessionConfig(
         voice=voice,
@@ -41,7 +43,10 @@ def _default_state(
         cover_path=cover_path,
         tts_provider=tts_provider,
         tts_model=tts_model,
-        tts_speed=tts_speed,
+        # None means "not chosen"; the session model holds the default.
+        **({"tts_speed": tts_speed} if tts_speed is not None else {}),
+        rate=rate,
+        volume=volume,
     )
     return AudioStateDocument(session=session, segments={})
 
@@ -90,7 +95,7 @@ def ensure_state(
     cover_path: Path | None = None,
     tts_provider: str = "edge",
     tts_model: str | None = None,
-    tts_speed: float = 1.0,
+    tts_speed: float | None = None,
     rate: str | None = None,
     volume: str | None = None,
 ) -> AudioStateDocument:
@@ -114,7 +119,8 @@ def ensure_state(
         if tts_model is not None and state.session.tts_model != tts_model:
             state.session.tts_model = tts_model
             changed = True
-        if state.session.tts_speed != tts_speed:
+        # None (no --tts-speed, nothing configured) keeps the stored speed.
+        if tts_speed is not None and state.session.tts_speed != tts_speed:
             state.session.tts_speed = tts_speed
             changed = True
         if rate is not None and state.session.rate != rate:
@@ -148,9 +154,45 @@ def ensure_state(
         tts_provider=tts_provider,
         tts_model=tts_model,
         tts_speed=tts_speed,
+        rate=rate,
+        volume=volume,
     )
     save_state(state, path)
     return state
+
+
+def apply_text_digests(state_path: Path, digests: dict[str, str]) -> list[str]:
+    """Check completed audio against the text it must speak; returns reset IDs.
+
+    A completed segment whose recorded digest differs from ``digests`` is reset
+    to pending, so its audio is synthesised again. One with no recorded digest
+    predates the field: there is no evidence its text changed, and treating it
+    as stale would re-synthesise (and, on a cloud provider, pay for) every
+    finished audiobook once, so the current digest is recorded instead.
+    """
+    lock = _get_lock(state_path)
+    with lock:
+        state = load_generic_state(state_path, AudioStateDocument)
+        changed = False
+        reset_ids: list[str] = []
+        for seg_id, digest in digests.items():
+            segment = state.segments.get(seg_id)
+            if segment is None or segment.status != AudioSegmentStatus.COMPLETED:
+                continue
+            if segment.text_sha256 is None:
+                segment.text_sha256 = digest
+                changed = True
+            elif segment.text_sha256 != digest:
+                segment.status = AudioSegmentStatus.PENDING
+                segment.audio_path = None
+                segment.duration_seconds = None
+                segment.text_sha256 = None
+                segment.updated_at = datetime.now(timezone.utc)
+                reset_ids.append(seg_id)
+                changed = True
+        if changed:
+            save_generic_state(state, state_path)
+        return reset_ids
 
 
 def update_segment_state(

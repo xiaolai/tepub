@@ -21,6 +21,10 @@ class AudioSegmentState(BaseModel):
     audio_path: Path | None = None
     duration_seconds: float | None = None
     last_error: str | None = None
+    # SHA-256 of the sentences the audio was rendered from. Segment IDs name
+    # document positions, so an edit at the same position kept the old narration.
+    # None on state written before this field existed (see apply_text_digests).
+    text_sha256: str | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

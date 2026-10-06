@@ -1,12 +1,33 @@
 from __future__ import annotations
 
 import os
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import edge_tts
 
+from exceptions import TepubError
+
 from .async_utils import run_coroutine
+
+# Edge TTS accepts prosody only as a signed percentage; anything else failed
+# inside the synthesis workers, after the run had started and retried.
+_PROSODY = re.compile(r"^[+-]\d+%$")
+
+
+class InvalidProsodyError(TepubError):
+    """An Edge TTS rate or volume that is not a signed percentage."""
+
+
+def check_prosody(name: str, value: str | None) -> str | None:
+    """``value`` when Edge TTS accepts it as a rate or volume."""
+    if value is not None and not _PROSODY.match(value):
+        raise InvalidProsodyError(
+            f"The {name} must be a signed percentage such as '+10%' or '-5%', "
+            f"got {value!r}."
+        )
+    return value
 
 try:
     from openai import OpenAI
@@ -136,10 +157,12 @@ def create_tts_engine(
     provider = provider.lower()
 
     if provider == "edge":
+        # Checked here as well as on the command line: a session stored by an
+        # older version, or edited, reached the workers and was retried.
         return EdgeTTSEngine(
             voice=voice,
-            rate=kwargs.get("rate"),
-            volume=kwargs.get("volume"),
+            rate=check_prosody("rate", kwargs.get("rate")),
+            volume=check_prosody("volume", kwargs.get("volume")),
         )
     elif provider == "openai":
         return OpenAITTSEngine(

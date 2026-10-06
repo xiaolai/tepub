@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from audiobook.chapters import ChapterInfo, read_chapters_yaml, write_chapters_yaml
 
 
@@ -49,3 +51,25 @@ def test_metadata_survives_roundtrip(tmp_path):
     assert loaded["source"] == "book.epub"
     assert loaded["note"] == "a: b"
     assert "empty" not in loaded
+
+
+@pytest.mark.parametrize("title", ["1984", "No", "[a, b]"])
+def test_title_that_yaml_reads_as_non_text_is_reported(tmp_path, title):
+    path = tmp_path / "chapters.yaml"
+    path.write_text(f"chapters:\n  - title: {title}\n    start: 0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not text"):
+        read_chapters_yaml(path)
+
+
+@pytest.mark.parametrize(
+    "start",
+    ["1" + "0" * 400, "'1" + "0" * 400 + ":00'", ".inf", ".nan"],
+    ids=["huge-int", "huge-minutes", "inf", "nan"],
+)
+def test_timestamp_that_is_not_a_finite_number_is_reported(tmp_path, start):
+    path = tmp_path / "chapters.yaml"
+    path.write_text(f"chapters:\n  - title: One\n    start: {start}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Chapter timestamp"):
+        read_chapters_yaml(path)

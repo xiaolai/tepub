@@ -29,7 +29,9 @@ def test_files_outside_the_toc_still_reach_a_chapter(tmp_path: Path) -> None:
     )
     reader = EpubReader(book, AppSettings(work_dir=tmp_path / "w"))
     segments = [
-        s for d in reader.iter_documents() for s in iter_segments(d.tree, d.path, d.spine_item.index)
+        s
+        for d in reader.iter_documents()
+        for s in iter_segments(d.tree, d.path, d.spine_item.index)
     ]
 
     chapters = group_segments_into_chapters(

@@ -9,6 +9,11 @@ from PIL import Image
 
 from epub_io.path_utils import normalize_epub_href
 from epub_io.reader import EpubReader
+from exceptions import TepubError
+
+
+class CoverImageError(TepubError):
+    """A cover the user chose cannot be read as an image."""
 
 
 @dataclass
@@ -73,19 +78,28 @@ def _prepare_cover(
     reader: EpubReader,
     explicit_cover: Path | None = None,
 ) -> Path | None:
-    try:
-        if explicit_cover:
+    if explicit_cover:
+        try:
             image = Image.open(explicit_cover)
-            # Preserve original format if PNG
-            original_format = image.format  # 'PNG', 'JPEG', etc.
-        else:
+        except OSError as exc:
+            # Returning None here dropped a cover the user asked for and wrote
+            # the book without one.
+            raise CoverImageError(
+                f"Cover {explicit_cover} cannot be read as an image: {exc}"
+            ) from exc
+        # Preserve original format if PNG
+        original_format = image.format  # 'PNG', 'JPEG', etc.
+    else:
+        try:
             cover_item = _find_cover_item(reader)
             if not cover_item:
                 return None
             image = Image.open(BytesIO(reader.read_bytes(cover_item)))
             original_format = image.format
-    except Exception:
-        return None
+        except Exception:
+            # Detected art is a guess; a book whose images PIL cannot read
+            # simply has no cover.
+            return None
 
     with image:
         # Only convert if necessary

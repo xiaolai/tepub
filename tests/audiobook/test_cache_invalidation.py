@@ -19,7 +19,7 @@ from audiobook.models import (
     AudioSegmentStatus,
     AudioStateDocument,
 )
-from audiobook.state import ensure_state, load_state, save_state
+from audiobook.state import apply_text_digests, ensure_state, load_state, save_state
 from state.models import ExtractMode, Segment, SegmentMetadata
 
 
@@ -155,6 +155,29 @@ class TestAudioSettingInvalidation:
 
         assert load_state(path).segments["s1"].status == AudioSegmentStatus.COMPLETED
 
+    def test_unspecified_speed_keeps_stored_speed(self, tmp_path):
+        path = tmp_path / "audio_state.json"
+        ensure_state(path, tmp_path, "en-US-GuyNeural", tts_speed=1.5, language="en")
+        state = load_state(path)
+        state.segments["s1"] = AudioSegmentState(
+            segment_id="s1", status=AudioSegmentStatus.COMPLETED, audio_path=tmp_path / "a.m4a"
+        )
+        save_state(state, path)
+
+        ensure_state(path, tmp_path, "en-US-GuyNeural", tts_speed=None, language="en")
+
+        reloaded = load_state(path)
+        assert reloaded.session.tts_speed == 1.5
+        assert reloaded.segments["s1"].status == AudioSegmentStatus.COMPLETED
+
+    def test_new_session_records_prosody_and_default_speed(self, tmp_path):
+        path = tmp_path / "audio_state.json"
+
+        ensure_state(path, tmp_path, "en-US-GuyNeural", rate="+10%", volume="-5%")
+
+        session = load_state(path).session
+        assert (session.rate, session.volume, session.tts_speed) == ("+10%", "-5%", 1.0)
+
     def test_cover_change_alone_does_not_discard_audio(self, tmp_path):
         """The cover is container artwork; it does not affect rendered audio."""
         path = self._completed(tmp_path)
@@ -165,3 +188,40 @@ class TestAudioSettingInvalidation:
         )
 
         assert load_state(path).segments["s1"].status == AudioSegmentStatus.COMPLETED
+
+
+class TestTextDigests:
+    """Completed audio is reused only while the text it speaks is unchanged."""
+
+    @staticmethod
+    def _state(tmp_path: Path, digest: str | None) -> Path:
+        path = tmp_path / "audio_state.json"
+        state = _audio_state(tmp_path, "s1")
+        state.segments["s1"].text_sha256 = digest
+        save_state(state, path)
+        return path
+
+    def test_matching_digest_keeps_audio(self, tmp_path):
+        path = self._state(tmp_path, "aaa")
+
+        assert apply_text_digests(path, {"s1": "aaa"}) == []
+        assert load_state(path).segments["s1"].status == AudioSegmentStatus.COMPLETED
+
+    def test_changed_text_resets_audio(self, tmp_path):
+        path = self._state(tmp_path, "aaa")
+
+        assert apply_text_digests(path, {"s1": "bbb"}) == ["s1"]
+        record = load_state(path).segments["s1"]
+        assert record.status == AudioSegmentStatus.PENDING
+        assert record.audio_path is None
+
+    def test_state_without_digest_loads_and_is_backfilled(self, tmp_path):
+        path = self._state(tmp_path, None)
+        payload = path.read_text(encoding="utf-8").replace('"text_sha256": null,', "")
+        path.write_text(payload, encoding="utf-8")
+        assert "text_sha256" not in path.read_text(encoding="utf-8")
+
+        assert apply_text_digests(path, {"s1": "aaa"}) == []
+        record = load_state(path).segments["s1"]
+        assert record.status == AudioSegmentStatus.COMPLETED
+        assert record.text_sha256 == "aaa"

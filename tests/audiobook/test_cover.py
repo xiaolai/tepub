@@ -1,8 +1,9 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
-from audiobook.cover import _prepare_cover
+from audiobook.cover import CoverImageError, _prepare_cover
 from epub_io.path_utils import normalize_epub_href
 
 
@@ -39,3 +40,11 @@ def test_prepare_cover_keeps_dimensions(tmp_path):
     assert result is not None
     saved = Image.open(result)
     assert saved.size == (320, 180)
+
+
+def test_unreadable_explicit_cover_fails_instead_of_vanishing(tmp_path):
+    src = tmp_path / "cover.jpg"
+    src.write_text("not an image")
+
+    with pytest.raises(CoverImageError):
+        _prepare_cover(tmp_path / "output", reader=None, explicit_cover=src)

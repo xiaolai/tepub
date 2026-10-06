@@ -6,7 +6,7 @@ from audiobook.preprocess import segment_to_text
 from state.models import ExtractMode, Segment, SegmentMetadata
 
 
-def test_standalone_roman_I_in_h1_heading():
+def test_standalone_roman_i_in_h1_heading():
     """Test that standalone 'I' in h1 heading converts to 'One'."""
     segment = Segment(
         segment_id="part-1",
@@ -25,7 +25,7 @@ def test_standalone_roman_I_in_h1_heading():
     assert result == "One"
 
 
-def test_standalone_roman_II_in_h1_heading():
+def test_standalone_roman_ii_in_h1_heading():
     """Test that standalone 'II' in h1 heading converts to 'Two'."""
     segment = Segment(
         segment_id="part-2",
@@ -44,7 +44,7 @@ def test_standalone_roman_II_in_h1_heading():
     assert result == "Two"
 
 
-def test_roman_numeral_III_to_X():
+def test_roman_numerals_iii_to_x():
     """Test Roman numerals III through X."""
     test_cases = [
         ("III", "Three"),
@@ -113,7 +113,7 @@ def test_larger_roman_numerals():
         assert result == expected, f"Expected '{roman}' to convert to '{expected}', got '{result}'"
 
 
-def test_pronoun_I_in_sentence_unchanged():
+def test_pronoun_i_in_sentence_unchanged():
     """Test that 'I' as pronoun in sentence is NOT converted."""
     segment = Segment(
         segment_id="p1",

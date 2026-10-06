@@ -146,7 +146,7 @@ def test_chapters_start_where_their_audio_starts(assembled: Path) -> None:
     by_mutagen = [(c.start, c.title) for c in MP4(assembled).chapters]
     for reader, found in (("ffprobe", by_ffprobe), ("mutagen", by_mutagen)):
         assert [title for _, title in found] == [title for _, title in expected], reader
-        for (start, _), (want, _) in zip(found, expected):
+        for (start, _), (want, _) in zip(found, expected, strict=True):
             assert start == pytest.approx(want, abs=0.15), (reader, found)
 
 

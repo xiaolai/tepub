@@ -9,6 +9,8 @@ import logging
 import re
 from pathlib import Path
 
+from rich.markup import escape
+
 from config import AppSettings
 from console_singleton import get_console
 from epub_io.reader import EpubReader
@@ -154,7 +156,7 @@ def _load_custom_chapter_titles(settings: AppSettings) -> dict[str, str]:
                 custom_chapters_map[seg_file] = chapter.title
     except Exception as exc:
         logger.warning(f"Failed to load chapters.yaml: {exc}")
-        console.print(f"[yellow]Warning: Could not load chapters.yaml: {exc}[/yellow]")
+        console.print(f"[yellow]Warning: Could not load chapters.yaml: {escape(str(exc))}[/yellow]")
 
     return custom_chapters_map
 

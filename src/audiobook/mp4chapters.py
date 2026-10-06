@@ -155,7 +155,7 @@ def _verify_chapter_starts(mp4_path: Path, expected: Sequence[ChapterTuple]) -> 
         raise ChapterVerificationError(
             f"{mp4_path.name}: wrote {len(expected)} chapter markers, read back {len(found)}"
         )
-    for index, (chapter, (seconds, _title)) in enumerate(zip(found, expected)):
+    for index, (chapter, (seconds, _title)) in enumerate(zip(found, expected, strict=True)):
         if abs(chapter.start - seconds) > 0.01:
             raise ChapterVerificationError(
                 f"{mp4_path.name}: chapter {index + 1} should start at {seconds:.3f} s "

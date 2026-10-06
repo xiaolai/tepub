@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from click.testing import CliRunner
-
-import sys
 
 from cli.main import app
 from tests.epub_builder import build_epub
@@ -27,7 +26,9 @@ def test_no_voice_and_no_terminal_stops_with_how_to_choose(tmp_path: Path, monke
     )
     assert extracted.exit_code == 0, extracted.output
     result = CliRunner().invoke(
-        app, ["--work-dir", str(tmp_path / "w"), "audiobook", "generate", str(book)], prog_name="tepub"
+        app,
+        ["--work-dir", str(tmp_path / "w"), "audiobook", "generate", str(book)],
+        prog_name="tepub",
     )
     output = " ".join(result.output.split())
     assert result.exit_code == 2, result.output

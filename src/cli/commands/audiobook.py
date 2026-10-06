@@ -1,25 +1,34 @@
 """Audiobook command implementation."""
 
+import math
 import os
 import sys
 from pathlib import Path
 
 import click
+import yaml
+from mutagen import MutagenError
+from PIL import Image
+from rich.markup import escape
 
 from audiobook import run_audiobook
 from audiobook.cover import SpineCoverCandidate, find_spine_cover_candidate
 from audiobook.language import detect_language
+from audiobook.models import AudioSessionConfig
 from audiobook.preprocess import segment_to_text
+from audiobook.selection import audiobook_segments
 from audiobook.state import load_state as load_audio_state
+from audiobook.tts import InvalidProsodyError, check_prosody
 from audiobook.voices import format_voice_entry, list_voices_for_provider
 from cli.core import prepare_settings_for_epub
 from cli.errors import handle_state_errors
 from config import AppSettings
+from config.workspace import assert_same_book
 from console_singleton import get_console
 from epub_io.reader import EpubReader
+from exceptions import CorruptedStateError
 from state.base import safe_load_state
 from state.models import SegmentsDocument
-from state.store import load_segments
 
 console = get_console()
 
@@ -47,7 +56,10 @@ def _write_cover_candidate(
     except (OSError, ValueError, KeyError) as exc:
         # Reporting every failure as "no cover candidate" concealed unreadable or
         # corrupt EPUBs, which look identical to a book that simply has no cover.
-        console.print(f"[yellow]Could not read {input_epub.name} for cover art: {exc}[/yellow]")
+        console.print(
+            f"[yellow]Could not read {escape(input_epub.name)} for cover art: "
+            f"{escape(str(exc))}[/yellow]"
+        )
         return None, None
     candidate = find_spine_cover_candidate(reader)
     if not candidate:
@@ -83,17 +95,276 @@ def audiobook(ctx: click.Context) -> None:
         ctx.exit(0)
 
 
+def _prosody(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    try:
+        return check_prosody(param.name or "value", value)
+    except InvalidProsodyError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def _speed(ctx: click.Context, param: click.Parameter, value: float | None) -> float | None:
+    if value is not None and not (math.isfinite(value) and 0.25 <= value <= 4.0):
+        raise click.BadParameter(f"must be between 0.25 and 4.0, got {value}.")
+    return value
+
+
+def _image_problem(path: Path) -> str | None:
+    """Why ``path`` cannot serve as a cover, or None if it can."""
+    if not path.is_file():
+        return "is not a file"
+    try:
+        # Decode every pixel: verify() reads only the headers and passed
+        # truncated JPEGs that then failed when the cover was embedded.
+        with Image.open(path) as image:
+            image.load()
+    except (OSError, SyntaxError, Image.DecompressionBombError) as exc:
+        return f"is not a readable image ({exc})"
+    return None
+
+
+def _require_image(path: Path, source: str) -> Path:
+    """Stop unless ``path`` is an image file; a bad cover used to vanish silently."""
+    problem = _image_problem(path)
+    if problem:
+        raise click.UsageError(f"Cover from {source} {problem}: {path}")
+    return path
+
+
+def _voice_fits(voice: str, provider: str) -> bool:
+    # Edge voices contain hyphens (en-US-GuyNeural); OpenAI voices are single
+    # names (alloy, nova).
+    return ("-" in voice) == (provider == "edge")
+
+
+def _stored_session(settings: AppSettings, provider: str) -> AudioSessionConfig | None:
+    """The session of an earlier run, searching the selected provider's first.
+
+    The order was always Edge-then-OpenAI, so choosing OpenAI while an Edge
+    workspace existed loaded Edge's voice, model and speed.
+    """
+    edge_state_path = settings.work_dir / "audiobook@edgetts" / "audio_state.json"
+    openai_state_path = settings.work_dir / "audiobook@openaitts" / "audio_state.json"
+    legacy_state_path = settings.work_dir / "audiobook" / "audio_state.json"
+    if provider == "openai":
+        search_order = [openai_state_path, edge_state_path, legacy_state_path]
+    else:
+        search_order = [edge_state_path, openai_state_path, legacy_state_path]
+
+    for state_path in search_order:
+        if not state_path.exists():
+            continue
+        try:
+            return load_audio_state(state_path).session
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            if state_path == search_order[0]:
+                # This run resumes this very file; ignoring it here only moved
+                # the failure into the run.
+                raise CorruptedStateError(state_path, "audiobook", str(exc)) from exc
+            console.print(
+                f"[yellow]Ignoring unreadable audio state at {escape(str(state_path))}: "
+                f"{escape(str(exc))}[/yellow]"
+            )
+    return None
+
+
+def _sample_texts(settings: AppSettings, segments_doc: SegmentsDocument) -> list[str]:
+    """Text for language detection, from the segments the audiobook will speak."""
+    selected = sorted(
+        audiobook_segments(settings, segments_doc.segments),
+        key=lambda seg: (seg.metadata.spine_index, seg.metadata.order_in_file),
+    )
+    sample_texts: list[str] = []
+    for segment in selected:
+        text_sample = segment_to_text(segment)
+        if text_sample:
+            sample_texts.append(text_sample)
+        if len(sample_texts) >= 50:
+            break
+    return sample_texts
+
+
+def _choose_voice(
+    voice: str | None,
+    settings: AppSettings,
+    stored_voice: str | None,
+    provider: str,
+    language: str | None,
+) -> str:
+    """CLI > config > stored (if it suits the provider) > ask."""
+    chosen = voice or settings.audiobook_voice
+    if chosen:
+        if not _voice_fits(chosen, provider):
+            source = "--voice" if voice else "audiobook_voice"
+            raise click.UsageError(
+                f"Voice {chosen!r} from {source} is not a {provider} voice. "
+                f"Pass a voice for {provider}, or choose the matching --tts-provider."
+            )
+        if stored_voice and chosen == stored_voice and not voice:
+            console.print(f"[cyan]Using stored voice:[/cyan] {escape(str(chosen))}")
+        return chosen
+
+    if stored_voice and _voice_fits(stored_voice, provider):
+        return stored_voice
+
+    if provider == "edge":
+        available_voices = list_voices_for_provider("edge", language)
+    else:
+        available_voices = list_voices_for_provider("openai")
+    available_voices = sorted(
+        available_voices,
+        key=lambda v: (v.get("Locale", ""), v.get("ShortName", "")),
+    )
+
+    if not available_voices:
+        # Falling back to an English voice read a book in another language
+        # with the wrong voice, unasked.
+        raise click.UsageError(
+            f"No {provider} voices found for language {language!r}. "
+            "Pass --voice, or set audiobook_voice in the config."
+        )
+    if not sys.stdin.isatty():
+        # With no terminal to ask in, the first voice in a sorted list was
+        # taken: an Australian voice for an American book, chosen silently
+        # before hours of synthesis. Stop and say how to choose.
+        examples = ", ".join(v["ShortName"] for v in available_voices[:4])
+        raise click.UsageError(
+            "No voice chosen and no terminal to ask in. Pass --voice, or set "
+            f"audiobook_voice in the config; voices for this book include {examples}."
+        )
+
+    click.echo(f"\nSelect a {provider.upper()} voice:")
+    for idx, voice_info in enumerate(available_voices, start=1):
+        click.echo(f"  {idx}. {format_voice_entry(voice_info, provider)}")
+    choice = click.prompt(
+        "Voice number",
+        default=1,
+        type=click.IntRange(1, len(available_voices)),
+    )
+    chosen = available_voices[choice - 1]["ShortName"]
+    console.print(f"[cyan]Using voice:[/cyan] {escape(str(chosen))}")
+    return chosen
+
+
+def _choose_cover(
+    cover_path: Path | None,
+    settings: AppSettings,
+    stored_cover_path: Path | None,
+    input_epub: Path,
+) -> Path | None:
+    """CLI > env > config > stored > detected candidate > ask."""
+    if cover_path is not None:
+        return _require_image(cover_path, "--cover-path")
+
+    # Only the source actually used is checked: a stale environment variable
+    # used to reject a run that passed a valid --cover-path.
+    env_cover_value = os.environ.get("TEPUB_AUDIOBOOK_COVER_PATH")
+    if env_cover_value:
+        env_cover_path = Path(env_cover_value).expanduser()
+        if not env_cover_path.exists():
+            raise click.UsageError(
+                f"Cover path from TEPUB_AUDIOBOOK_COVER_PATH does not exist: {env_cover_path}"
+            )
+        return _require_image(env_cover_path, "TEPUB_AUDIOBOOK_COVER_PATH")
+
+    if settings.cover_image_path:
+        # Expanded first: "~/cover.jpg" is not absolute until it is.
+        config_cover = Path(settings.cover_image_path).expanduser()
+        if not config_cover.is_absolute():
+            config_cover = settings.work_dir / config_cover
+        if config_cover.exists():
+            console.print(f"[cyan]Using config cover:[/cyan] {escape(str(config_cover))}")
+            return _require_image(config_cover, "cover_image_path")
+        console.print(
+            f"[yellow]Config cover_image_path not found: {escape(str(config_cover))}. "
+            "Falling back to auto-detection.[/yellow]"
+        )
+
+    if stored_cover_path:
+        stored_cover_fs = Path(stored_cover_path)
+        if stored_cover_fs.exists():
+            # The run would reuse it from the session anyway, so it is checked
+            # here rather than dropped once the audio is already made.
+            _require_image(stored_cover_fs, "the previous run (pass --cover-path to replace it)")
+            console.print(f"[cyan]Using stored cover:[/cyan] {escape(str(stored_cover_fs))}")
+            return stored_cover_fs
+        console.print(
+            "[yellow]Stored cover path no longer exists; ignoring "
+            f"{escape(str(stored_cover_path))}.[/yellow]"
+        )
+
+    image_path = click.Path(exists=True, dir_okay=False, path_type=Path)
+    candidate_path, candidate_info = _write_cover_candidate(settings, input_epub)
+    if candidate_path and candidate_info:
+        problem = _image_problem(candidate_path)
+        if problem:
+            # A detected image is only a guess (SVG covers are common), so an
+            # unusable one is reported and passed over, not made the cover.
+            console.print(
+                f"[yellow]Detected cover candidate {escape(str(candidate_info.href))} "
+                f"{escape(str(problem))}; "
+                "not using it.[/yellow]"
+            )
+            candidate_path = candidate_info = None
+    if candidate_path and candidate_info:
+        click.echo(
+            f"\nDetected cover candidate: {candidate_info.href} "
+            f"(from {candidate_info.document_href})"
+        )
+        click.echo(f"Extracted candidate to: {candidate_path}")
+        if not sys.stdin.isatty():
+            console.print(
+                "[cyan]Non-interactive run; using detected cover candidate automatically.[/cyan]"
+            )
+            return candidate_path
+        choice = click.prompt(
+            "Cover selection",
+            type=click.Choice(["use", "manual", "skip"], case_sensitive=False),
+            default="use",
+        ).lower()
+        if choice == "use":
+            return candidate_path
+        if choice == "manual":
+            return _require_image(
+                click.prompt("Enter path to cover image", type=image_path), "the prompt"
+            )
+        return None
+    if sys.stdin.isatty() and click.confirm(
+        "No cover candidate detected automatically. Specify a cover image?", default=False
+    ):
+        return _require_image(
+            click.prompt("Enter path to cover image", type=image_path), "the prompt"
+        )
+    return None
+
+
 @audiobook.command(name="generate")
 @click.argument("input_epub", type=click.Path(exists=True, path_type=Path))
-@click.option("--voice", default=None, help="Voice name (provider-specific, skip to choose interactively).")
+@click.option(
+    "--voice",
+    default=None,
+    help="Voice name (provider-specific, skip to choose interactively).",
+)
 @click.option("--language", default=None, help="Override detected language (e.g. 'en').")
-@click.option("--rate", default=None, help="Optional speaking rate override for Edge TTS, e.g. '+5%'.")
-@click.option("--volume", default=None, help="Optional volume override for Edge TTS, e.g. '+2dB'.")
+@click.option(
+    "--rate",
+    default=None,
+    callback=_prosody,
+    help="Optional speaking rate override for Edge TTS, e.g. '+5%'.",
+)
+@click.option(
+    "--volume",
+    default=None,
+    callback=_prosody,
+    help="Optional volume override for Edge TTS, e.g. '+2%'.",
+)
 @click.option(
     "--tts-provider",
     default=None,
     type=click.Choice(["edge", "openai"], case_sensitive=False),
-    help="TTS provider: edge (free, 57+ voices) or openai (paid, 6 premium voices). Default from config.",
+    help=(
+        "TTS provider: edge (free, 57+ voices) or openai (paid, 6 premium voices). "
+        "Default from config."
+    ),
 )
 @click.option(
     "--tts-model",
@@ -104,12 +375,13 @@ def audiobook(ctx: click.Context) -> None:
     "--tts-speed",
     default=None,
     type=float,
+    callback=_speed,
     help="Speech speed for OpenAI TTS (0.25-4.0, default 1.0).",
 )
 @click.option(
     "--cover-path",
     default=None,
-    type=click.Path(exists=True, path_type=Path),
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Optional path to an image file to embed as the audiobook cover.",
 )
 @click.option(
@@ -144,246 +416,89 @@ def generate(
     settings: AppSettings = ctx.obj["settings"]
     settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
 
+    if cover_only:
+        # A cover rebuild reuses the existing audio; any of these would change it.
+        overrides = [
+            name
+            for name, value in (
+                ("--voice", voice),
+                ("--language", language),
+                ("--rate", rate),
+                ("--volume", volume),
+                ("--tts-model", tts_model),
+                ("--tts-speed", tts_speed),
+            )
+            if value is not None
+        ]
+        if overrides:
+            raise click.UsageError(
+                f"--cover-only reuses the existing audio, so {', '.join(overrides)} "
+                "cannot apply. Drop them, or run without --cover-only."
+            )
+
     # Validate that segments file exists (required for audiobook) - errors handled by decorator
     from exceptions import StateFileNotFoundError
 
     if not settings.segments_file.exists():
         raise StateFileNotFoundError("segments", input_epub)
-    # Also validate it's not corrupted
-    safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    # Also validate it's not corrupted, and that it is this book's: another
+    # book's workspace would be narrated under this book's title.
+    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    assert_same_book(segments_doc, input_epub)
 
-    # Determine TTS provider (from CLI, config, or stored state)
-    # Try provider-specific paths first, then fall back to legacy path
-    stored_voice = None
-    stored_language = None
-    stored_cover_path: Path | None = None
-    stored_provider = None
-    stored_model = None
-    stored_speed = None
-
-    # Check for stored state in provider-specific folders
-    edge_state_path = settings.work_dir / "audiobook@edgetts" / "audio_state.json"
-    openai_state_path = settings.work_dir / "audiobook@openaitts" / "audio_state.json"
-    legacy_state_path = settings.work_dir / "audiobook" / "audio_state.json"
-
-    # Search the selected provider's state first. The order was always
-    # Edge-then-OpenAI, so choosing OpenAI while an Edge workspace existed loaded
-    # Edge's voice, model and speed — settings that do not apply to OpenAI.
     preferred_provider = (tts_provider or settings.audiobook_tts_provider or "").lower()
-    if preferred_provider == "openai":
-        search_order = [openai_state_path, edge_state_path, legacy_state_path]
-    else:
-        search_order = [edge_state_path, openai_state_path, legacy_state_path]
-
-    for state_path in search_order:
-        if state_path.exists():
-            try:
-                stored_state = load_audio_state(state_path)
-                if stored_state:
-                    stored_voice = stored_state.session.voice
-                    stored_language = stored_state.session.language
-                    stored_cover_path = stored_state.session.cover_path
-                    stored_provider = stored_state.session.tts_provider
-                    stored_model = stored_state.session.tts_model
-                    stored_speed = stored_state.session.tts_speed
-                    break  # Use the first valid state found
-            except (OSError, ValueError, TypeError, KeyError) as exc:
-                # Swallowing every error made a corrupted state file look exactly
-                # like an absent one, silently discarding prior progress.
-                console.print(
-                    f"[yellow]Ignoring unreadable audio state at {state_path}: {exc}[/yellow]"
-                )
-                continue
+    stored = _stored_session(settings, preferred_provider)
+    stored_provider = stored.tts_provider if stored else None
 
     # Determine provider (CLI > config > stored)
     # Config should take precedence over stored state so users can change provider
     selected_provider = (tts_provider or settings.audiobook_tts_provider or stored_provider).lower()
-    selected_model = tts_model or settings.audiobook_tts_model or stored_model
+    selected_model = (
+        tts_model or settings.audiobook_tts_model or (stored.tts_model if stored else None)
+    )
     selected_speed = (
         tts_speed if tts_speed is not None
         else (settings.audiobook_tts_speed if settings.audiobook_tts_speed is not None
-              else stored_speed)
+              else (stored.tts_speed if stored else None))
     )
 
     # Warn if config changed from stored state provider
     if stored_provider and settings.audiobook_tts_provider != stored_provider and not tts_provider:
         console.print(
-            f"[yellow]Note: Provider changed from [bold]{stored_provider}[/bold] to [bold]{settings.audiobook_tts_provider}[/bold] in config. "
-            f"Starting fresh with {settings.audiobook_tts_provider}.[/yellow]"
+            f"[yellow]Note: Provider changed from [bold]{escape(str(stored_provider))}[/bold] to "
+            f"[bold]{escape(str(settings.audiobook_tts_provider))}[/bold] in config. "
+            f"Starting fresh with {escape(str(settings.audiobook_tts_provider))}.[/yellow]"
         )
 
-    console.print(f"[cyan]TTS Provider:[/cyan] {selected_provider}")
+    console.print(f"[cyan]TTS Provider:[/cyan] {escape(str(selected_provider))}")
     if selected_provider == "openai":
-        console.print(f"[cyan]Model:[/cyan] {selected_model or 'tts-1'}")
-        console.print(f"[cyan]Speed:[/cyan] {selected_speed}")
+        console.print(f"[cyan]Model:[/cyan] {escape(str(selected_model or 'tts-1'))}")
+        # None: neither chosen nor stored, so the session default applies.
+        shown_speed = (
+            selected_speed if selected_speed is not None
+            else AudioSessionConfig.model_fields["tts_speed"].default
+        )
+        console.print(f"[cyan]Speed:[/cyan] {shown_speed}")
 
-    segments_doc = load_segments(settings.segments_file)
-    sample_texts: list[str] = []
-    for segment in segments_doc.segments:
-        text_sample = segment_to_text(segment)
-        if text_sample:
-            sample_texts.append(text_sample)
-        if len(sample_texts) >= 50:
-            break
-
-    detected_language = language or stored_language or detect_language(sample_texts)
-    if not language and detected_language:
-        console.print(f"[cyan]Detected language:[/cyan] {detected_language}")
-
-    # Voice selection based on provider
-    # Priority: CLI > config > stored (if compatible with provider)
-    selected_voice = voice or settings.audiobook_voice
-    if not selected_voice:
-        # Check if stored voice is compatible with selected provider
-        if stored_voice:
-            # Edge voices contain hyphens (e.g., en-US-GuyNeural)
-            # OpenAI voices are simple names (e.g., alloy, nova)
-            stored_is_edge = "-" in stored_voice
-            selected_is_edge = selected_provider == "edge"
-
-            # Only use stored voice if provider matches
-            if stored_is_edge == selected_is_edge:
-                selected_voice = stored_voice
-
-    if not selected_voice:
-        # Get voices for the selected provider
-        if selected_provider == "edge":
-            available_voices = list_voices_for_provider("edge", detected_language)
-        else:  # openai
-            available_voices = list_voices_for_provider("openai")
-
-        available_voices = sorted(
-            available_voices,
-            key=lambda v: (v.get("Locale", ""), v.get("ShortName", "")),
+    if cover_only:
+        # The runner keeps the stored session; voice and language are not used.
+        detected_language = stored.language if stored else None
+        selected_voice = stored.voice if stored else ""
+    else:
+        detected_language = (
+            language
+            or (stored.language if stored else None)
+            or detect_language(_sample_texts(settings, segments_doc))
+        )
+        if not language and detected_language:
+            console.print(f"[cyan]Detected language:[/cyan] {escape(str(detected_language))}")
+        selected_voice = _choose_voice(
+            voice, settings, stored.voice if stored else None, selected_provider, detected_language
         )
 
-        if not available_voices:
-            # Fallback based on provider
-            if selected_provider == "edge":
-                console.print(
-                    "[yellow]No voices found for detected language; falling back to en-US-GuyNeural.[/yellow]"
-                )
-                selected_voice = "en-US-GuyNeural"
-            else:  # openai
-                console.print("[yellow]Falling back to OpenAI 'alloy' voice.[/yellow]")
-                selected_voice = "alloy"
-        else:
-            if selected_voice and any(v.get("ShortName") == selected_voice for v in available_voices):
-                # Voice was already set from stored state (and validated as compatible)
-                console.print(f"[cyan]Using stored voice:[/cyan] {selected_voice}")
-            elif sys.stdin.isatty():
-                click.echo(f"\nSelect a {selected_provider.upper()} voice:")
-                default_choice = 1
-                for idx, voice_info in enumerate(available_voices, start=1):
-                    click.echo(f"  {idx}. {format_voice_entry(voice_info, selected_provider)}")
-                    if stored_voice and voice_info.get("ShortName") == stored_voice:
-                        default_choice = idx
-                choice = click.prompt(
-                    "Voice number",
-                    default=default_choice,
-                    type=click.IntRange(1, len(available_voices)),
-                )
-                selected_voice = available_voices[choice - 1]["ShortName"]
-                console.print(f"[cyan]Using voice:[/cyan] {selected_voice}")
-            else:
-                # With no terminal to ask in, the first voice in a sorted list was
-                # taken: an Australian voice for an American book, chosen silently
-                # before hours of synthesis. Stop and say how to choose.
-                examples = ", ".join(v["ShortName"] for v in available_voices[:4])
-                raise click.UsageError(
-                    "No voice chosen and no terminal to ask in. Pass --voice, or set "
-                    f"audiobook_voice in the config; voices for this book include {examples}."
-                )
-    else:
-        if stored_voice and selected_voice == stored_voice and not voice:
-            console.print(f"[cyan]Using stored voice:[/cyan] {selected_voice}")
-
-    if not selected_voice:
-        selected_voice = "alloy" if selected_provider == "openai" else "en-US-GuyNeural"
-
-    env_cover_value = os.environ.get("TEPUB_AUDIOBOOK_COVER_PATH")
-    env_cover_path = None
-    if env_cover_value:
-        env_cover_path = Path(env_cover_value).expanduser()
-        if not env_cover_path.exists():
-            raise click.UsageError(
-                f"Cover path from TEPUB_AUDIOBOOK_COVER_PATH does not exist: {env_cover_path}"
-            )
-
-    # Priority: CLI > env > config > stored
-    selected_cover_path = cover_path or env_cover_path or settings.cover_image_path
-
-    # Handle config cover path (may be relative)
-    if selected_cover_path and not (cover_path or env_cover_path):
-        # This is from config, convert to Path if needed and resolve relative paths
-        if not isinstance(selected_cover_path, Path):
-            selected_cover_path = Path(selected_cover_path)
-
-        if not selected_cover_path.is_absolute():
-            selected_cover_path = settings.work_dir / selected_cover_path
-        selected_cover_path = selected_cover_path.expanduser()
-
-        if not selected_cover_path.exists():
-            console.print(
-                f"[yellow]Config cover_image_path not found: {selected_cover_path}. Falling back to auto-detection.[/yellow]"
-            )
-            selected_cover_path = None
-        else:
-            console.print(f"[cyan]Using config cover:[/cyan] {selected_cover_path}")
-
-    if selected_cover_path and not selected_cover_path.exists():
-        raise click.UsageError(f"Cover path does not exist: {selected_cover_path}")
-
-    candidate_path: Path | None = None
-    candidate_info: SpineCoverCandidate | None = None
-
-    if selected_cover_path is None:
-        if stored_cover_path:
-            stored_cover_fs = Path(stored_cover_path)
-            if stored_cover_fs.exists():
-                selected_cover_path = stored_cover_fs
-                console.print(f"[cyan]Using stored cover:[/cyan] {stored_cover_fs}")
-            else:
-                console.print(
-                    f"[yellow]Stored cover path no longer exists; ignoring {stored_cover_path}.[/yellow]"
-                )
-
-    if selected_cover_path is None:
-        candidate_path, candidate_info = _write_cover_candidate(settings, input_epub)
-        if candidate_path and candidate_info:
-            click.echo(
-                f"\nDetected cover candidate: {candidate_info.href} (from {candidate_info.document_href})"
-            )
-            click.echo(f"Extracted candidate to: {candidate_path}")
-            if sys.stdin.isatty():
-                choice = click.prompt(
-                    "Cover selection",
-                    type=click.Choice(["use", "manual", "skip"], case_sensitive=False),
-                    default="use",
-                )
-                choice = choice.lower()
-                if choice == "use":
-                    selected_cover_path = candidate_path
-                elif choice == "manual":
-                    selected_cover_path = click.prompt(
-                        "Enter path to cover image",
-                        type=click.Path(exists=True, path_type=Path),
-                    )
-                else:
-                    selected_cover_path = None
-            else:
-                selected_cover_path = candidate_path
-                console.print(
-                    "[cyan]Non-interactive run; using detected cover candidate automatically.[/cyan]"
-                )
-        elif sys.stdin.isatty():
-            if click.confirm(
-                "No cover candidate detected automatically. Specify a cover image?", default=False
-            ):
-                selected_cover_path = click.prompt(
-                    "Enter path to cover image",
-                    type=click.Path(exists=True, path_type=Path),
-                )
+    selected_cover_path = _choose_cover(
+        cover_path, settings, stored.cover_path if stored else None, input_epub
+    )
 
     run_audiobook(
         settings=settings,
@@ -447,7 +562,10 @@ def export_chapters(ctx: click.Context, source: Path, output: Path | None) -> No
     elif source.suffix.lower() in {".m4a", ".mp4"}:
         # Extract from audiobook
         console.print("[cyan]Reading chapter markers from audiobook...[/cyan]")
-        chapters, metadata = extract_chapters_from_mp4(source)
+        try:
+            chapters, metadata = extract_chapters_from_mp4(source)
+        except (ValueError, MutagenError) as exc:
+            raise click.ClickException(f"Cannot read chapters from {source}: {exc}") from exc
 
         # Default output to source directory
         if output is None:
@@ -461,13 +579,13 @@ def export_chapters(ctx: click.Context, source: Path, output: Path | None) -> No
     # Write YAML
     write_chapters_yaml(chapters, metadata, output)
 
-    console.print(f"\n[green]✓ Exported {len(chapters)} chapters to:[/green] {output}")
+    console.print(f"\n[green]✓ Exported {len(chapters)} chapters to:[/green] {escape(str(output))}")
     console.print("\n[cyan]Edit the file to customize chapter titles/timestamps, then use:[/cyan]")
     if source.suffix.lower() == ".epub":
-        console.print(f"  tepub audiobook generate {source.name}")
+        console.print(f"  tepub audiobook generate {escape(source.name)}")
         console.print("[dim](Audiobook generation will use custom titles from chapters.yaml)[/dim]")
     else:
-        console.print(f"  tepub audiobook update-chapters {source.name} chapters.yaml")
+        console.print(f"  tepub audiobook update-chapters {escape(source.name)} chapters.yaml")
 
 
 @audiobook.command(name="update-chapters")
@@ -492,19 +610,26 @@ def update_chapters(ctx: click.Context, audiobook_file: Path, chapters_file: Pat
         )
 
     # Read chapters from YAML
-    console.print(f"[cyan]Loading chapter configuration from:[/cyan] {chapters_file}")
-    chapters, metadata = read_chapters_yaml(chapters_file)
+    console.print(f"[cyan]Loading chapter configuration from:[/cyan] {escape(str(chapters_file))}")
+    # Expected input mistakes are reported as such, not as a traceback.
+    try:
+        chapters, _ = read_chapters_yaml(chapters_file)
+    except (yaml.YAMLError, ValueError, KeyError, TypeError) as exc:
+        raise click.ClickException(f"Invalid chapters file {chapters_file}: {exc}") from exc
 
     console.print(f"[cyan]Found {len(chapters)} chapters[/cyan]")
 
     # Update audiobook
-    console.print(f"[cyan]Updating chapter markers in:[/cyan] {audiobook_file}")
-    update_mp4_chapters(audiobook_file, chapters)
+    console.print(f"[cyan]Updating chapter markers in:[/cyan] {escape(str(audiobook_file))}")
+    try:
+        update_mp4_chapters(audiobook_file, chapters)
+    except (ValueError, MutagenError) as exc:
+        raise click.ClickException(f"Cannot update {audiobook_file}: {exc}") from exc
 
     console.print(f"\n[green]✓ Successfully updated {len(chapters)} chapter markers[/green]")
     console.print("\n[dim]Chapters:[/dim]")
     for i, ch in enumerate(chapters[:5], 1):  # Show first 5
         start_time = f"{ch.start:.1f}s" if ch.start is not None else "N/A"
-        console.print(f"  {i}. {start_time:>8} - {ch.title}")
+        console.print(f"  {i}. {start_time:>8} - {escape(str(ch.title))}")
     if len(chapters) > 5:
         console.print(f"  ... and {len(chapters) - 5} more")

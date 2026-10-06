@@ -21,11 +21,13 @@ from tests.epub_builder import build_epub
 CHAPTER = """
 <section epub:type="chapter">
   <h1>The Voyage</h1>
-  <p id="body">The ship sailed at dawn<a epub:type="noteref" href="#fn1"><sup>1</sup></a> and the crew cheered.</p>
+  <p id="body">The ship sailed at dawn<a epub:type="noteref"
+     href="#fn1"><sup>1</sup></a> and the crew cheered.</p>
   <div class="note"><p>Note: this admonition is part of the text and must be read.</p></div>
   <aside epub:type="footnote" id="fn1"><p>Some sources say it was dusk.</p></aside>
   <div class="footnote"><p>An EPUB 2 style footnote body, marked only by its class.</p></div>
-  <div id="div3"><p id="ftn3"><a href="#ftn3a">*1</a> Two historians claimed it was the uncle.</p></div>
+  <div id="div3"><p id="ftn3"><a
+     href="#ftn3a">*1</a> Two historians claimed it was the uncle.</p></div>
   <div><p id="note-42">This is the endnote text.</p></div>
 </section>
 """

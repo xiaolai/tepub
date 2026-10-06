@@ -4,13 +4,21 @@ import hashlib
 import os
 import random
 import tempfile
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
 os.environ.setdefault("PYDUB_SIMPLE_AUDIOOP", "1")
 from pydub import AudioSegment
+from pydub.exceptions import CouldntEncodeError
 
 from .tts import OpenAITTSEngine, TTSEngine
+
+__all__ = ["CouldntEncodeError", "RenderStoppedError", "SegmentRenderer"]
+
+
+class RenderStoppedError(Exception):
+    """A cooldown began part-way through a segment; nothing was written."""
 
 
 class SegmentRenderer:
@@ -30,7 +38,11 @@ class SegmentRenderer:
             self.tts_extension = ".mp3"
 
     def render_segment(
-        self, segment_id: str, sentences: Sequence[str], output_dir: Path
+        self,
+        segment_id: str,
+        sentences: Sequence[str],
+        output_dir: Path,
+        stop: threading.Event | None = None,
     ) -> tuple[Path, float]:
         if not sentences:
             raise ValueError("No sentences to render")
@@ -44,6 +56,10 @@ class SegmentRenderer:
         with tempfile.TemporaryDirectory(prefix=f"{segment_id}-tts-") as tmp_dir:
             tmp_root = Path(tmp_dir)
             for idx, sentence in enumerate(sentences):
+                # Checked per sentence: a long segment otherwise kept sending
+                # requests to the provider throughout a cooldown.
+                if stop is not None and stop.is_set():
+                    raise RenderStoppedError(segment_id)
                 sentence_file = tmp_root / f"{idx:03d}{self.tts_extension}"
                 self.engine.synthesize(sentence, sentence_file)
                 part = AudioSegment.from_file(sentence_file)

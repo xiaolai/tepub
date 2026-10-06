@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +30,23 @@ def _parse_timestamp(value: str | int | float) -> float:
 
     Returns:
         float: Timestamp in seconds
+
+    Raises:
+        ValueError: If the value is not a timestamp, or is not a finite number
+            of seconds (an integer too large for a float, ``.inf``, ``.nan``).
     """
+    try:
+        seconds = _timestamp_seconds(value)
+    except OverflowError:
+        # float() of a huge YAML integer raised this uncaught, past the
+        # command's ValueError handling, as a traceback.
+        raise ValueError(f"Chapter timestamp {value!r} is too large") from None
+    if not math.isfinite(seconds):
+        raise ValueError(f"Chapter timestamp {value!r} is not a finite number of seconds")
+    return seconds
+
+
+def _timestamp_seconds(value: str | int | float) -> float:
     if isinstance(value, (int, float)):
         return float(value)
 
@@ -87,8 +104,15 @@ class ChapterInfo:
     @staticmethod
     def from_dict(data: dict) -> ChapterInfo:
         """Create from dictionary loaded from YAML."""
+        title = data["title"]
+        # YAML reads `title: 1984` as a number and `title: No` as a boolean;
+        # either one used to fail later with an AttributeError on .strip().
+        if title is not None and not isinstance(title, str):
+            raise ValueError(
+                f"Chapter title {title!r} is not text; put it in quotes, e.g. title: '{title}'"
+            )
         return ChapterInfo(
-            title=data["title"],
+            title=title,
             start=_parse_timestamp(data["start"]) if "start" in data else None,
             segments=data.get("segments", []),
         )
@@ -281,7 +305,8 @@ def validate_chapters(
             for i, ch in enumerate(chapters):
                 if ch.start is not None and ch.start > duration:
                     errors.append(
-                        f"Chapter {i + 1}: Timestamp {ch.start}s exceeds audiobook duration {duration}s"
+                        f"Chapter {i + 1}: Timestamp {ch.start}s exceeds audiobook "
+                        f"duration {duration}s"
                     )
 
     return errors
