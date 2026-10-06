@@ -84,3 +84,13 @@ def isolated_machine(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.T
     for name in [key for key in os.environ if key.startswith("TEPUB_")]:
         monkeypatch.delenv(name, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _wide_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests assert on phrases in command output. At rich's default 80 columns
+    a long temporary path wrapped a phrase across lines, so a test passed or
+    failed with the length of the folder pytest happened to use."""
+    from console_singleton import get_console
+
+    monkeypatch.setattr(get_console(), "_width", 500)
