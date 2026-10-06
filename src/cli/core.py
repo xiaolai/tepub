@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 
 import click
@@ -108,67 +107,6 @@ def bookless_settings(ctx: click.Context) -> AppSettings:
     return settings
 
 
-def resolve_export_flags(epub_flag: bool, web_flag: bool) -> tuple[bool, bool]:
-    """Determine which exports to run based on user flags.
-
-    Args:
-        epub_flag: User requested EPUB export
-        web_flag: User requested web export
-
-    Returns:
-        Tuple of (export_epub, export_web) booleans
-    """
-    if not epub_flag and not web_flag:
-        # Default: export both
-        return True, True
-    return epub_flag, web_flag
-
-
-def derive_epub_paths(
-    input_epub: Path, requested: Path | None, work_dir: Path
-) -> tuple[Path, Path]:
-    """Derive bilingual and translated EPUB output paths.
-
-    Args:
-        input_epub: Source EPUB path
-        requested: User-requested output path (optional)
-        work_dir: Workspace directory
-
-    Returns:
-        Tuple of (bilingual_path, translated_path)
-    """
-    if requested:
-        bilingual = requested
-    else:
-        # Export to workspace directory, not alongside EPUB
-        bilingual = work_dir / f"{input_epub.stem}_bilingual{input_epub.suffix}"
-
-    stem = bilingual.stem
-    if stem.endswith("_bilingual"):
-        base_stem = stem[: -len("_bilingual")]
-    else:
-        base_stem = stem
-
-    translated = bilingual.with_name(f"{base_stem}_translated{bilingual.suffix}")
-    return bilingual, translated
-
-
-def create_web_archive(web_dir: Path) -> Path:
-    """Create ZIP archive of web export.
-
-    Args:
-        web_dir: Directory containing web export
-
-    Returns:
-        Path to created ZIP archive
-    """
-    base_name = web_dir.parent / web_dir.name
-    archive = shutil.make_archive(
-        str(base_name), "zip", root_dir=web_dir.parent, base_dir=web_dir.name
-    )
-    return Path(archive)
-
-
 def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
     """Check if valid pipeline artifacts exist for resuming.
 
@@ -206,18 +144,15 @@ def describe_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> tupl
         # surfacing the real problem.
         return False, f"artifacts could not be read ({exc})"
 
-    # Validate EPUB path matches
-    try:
-        saved_epub_path = Path(segments_doc.epub_path)
-    except TypeError:
-        saved_epub_path = Path(str(segments_doc.epub_path))
+    # The book is identified by its content, as translate and export do: a
+    # moved or renamed book was re-extracted when its path was compared.
+    from config.workspace import assert_same_book
+    from exceptions import ArtifactMismatchError
 
     try:
-        mismatched = saved_epub_path.resolve() != input_epub.resolve()
-    except OSError:
-        mismatched = saved_epub_path != input_epub
-    if mismatched:
-        return False, f"artifacts belong to a different EPUB ({saved_epub_path})"
+        assert_same_book(segments_doc, input_epub)
+    except ArtifactMismatchError:
+        return False, f"artifacts belong to a different EPUB ({segments_doc.epub_path})"
 
     # Validate segments match state.
     # Requiring *every* extracted segment id to appear in state was too strict:
