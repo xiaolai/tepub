@@ -23,6 +23,13 @@ The command line, audited command by command against a real book.
 - **Only an existing `.epub` runs the pipeline by itself**: a typo is now
   "No such command … Did you mean …?" instead of a missing-file error.
 - **`resume` is now `status`**; `resume` still works this release.
+- **`export` exits with 3 when translated units could not be inserted**, and
+  refuses to run while a translation holds the same workspace.
+- **A config file must hold settings**: one holding a lone value, a list or an
+  explicit `null` is an error instead of being read as no settings.
+- **A book's `skip_rules` add to the inherited ones**, as its `config.yaml`
+  says; they replaced them. A `base_url` the book sets is kept over
+  `OLLAMA_BASE_URL`.
 
 ### ✨ Added
 
@@ -42,6 +49,18 @@ The command line, audited command by command against a real book.
 - An audiobook run with no terminal no longer picks a voice by itself.
 - `format` and the debug commands take the book like every other command.
 - The config's `output_mode` accepts `translated`, as `--mode` does.
+- Re-extracting an edited book resets the translations of units whose text
+  changed, and keeps the rest; a translation was kept by position and
+  exported as another paragraph's. Units a skip rule leaves out keep theirs.
+- Commands given a book refuse a workspace that belongs to another book.
+- `format` and translate leave link targets and other attributes alone; Chinese
+  spacing was applied inside them.
+- Audiobooks: edited text is narrated again instead of reusing old audio; a
+  chapter title can no longer steer which folder is deleted; failed rebuilds
+  keep the previous output; permanent errors are not retried.
+- Paths and names with brackets print as they are; `[draft]` vanished from
+  messages, and some errors crashed the error printer.
+- EPUBs made on Windows no longer unzip into folders that cannot be opened.
 
 ---
 

@@ -295,10 +295,12 @@ mybook.epub                      # Original
 mybook.zh-CN.bilingual.epub      # Output: both languages
 mybook.zh-CN.epub                # Output: translation only (--mode translated)
 mybook.zh-CN.web.zip             # Web viewer (--format web)
+mybook.zh-CN.bilingual.web.zip   # Bilingual web viewer (--format web --mode both)
 mybook/                          # Workspace
 ├── config.yaml                  # Per-book settings
 ├── segments.json                # Extracted content
 ├── state.json                   # Translation progress
+├── exports.json                 # What export wrote, and where
 └── markdown/                    # Only with extract --markdown
 ```
 
