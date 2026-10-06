@@ -178,6 +178,7 @@ def app(
     settings = prepare_initial_settings(config_file, work_dir, verbose)
     ctx.ensure_object(dict)
     ctx.obj["settings"] = settings
+    ctx.obj["config_file"] = config_file
     if work_dir:
         # Record the override in the context too. prepare_settings_for_epub reads
         # it from here; storing it only on `settings` meant the per-book workspace

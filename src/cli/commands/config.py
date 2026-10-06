@@ -494,3 +494,86 @@ def _format_value(value) -> str:
         return f"[magenta][...]  [/magenta][dim]({len(value)} items)[/dim]"
     else:
         return f"[dim]{type(value).__name__}[/dim]"
+
+
+# Keys shown by `config show`, with how to find each in a config file.
+_SHOWN = (
+    ("primary_provider.name", ("primary_provider", "name")),
+    ("primary_provider.model", ("primary_provider", "model")),
+    ("primary_provider.base_url", ("primary_provider", "base_url")),
+    ("primary_provider.think", ("primary_provider", "think")),
+    ("primary_provider.max_tokens", ("primary_provider", "max_tokens")),
+    ("source_language", ("source_language",)),
+    ("target_language", ("target_language",)),
+    ("output_mode", ("output_mode",)),
+    ("translation_workers", ("translation_workers",)),
+    ("skip_after_back_matter", ("skip_after_back_matter",)),
+    ("prompt_preamble", ("prompt_preamble",)),
+)
+# Never printed: only whether they are set.
+_SECRET_ENV = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROK_API_KEY", "DEEPL_API_KEY")
+
+
+def _lookup(payload: dict, path: tuple[str, ...]):
+    value = payload
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+_MISSING = object()
+
+
+@config.command("show")
+@click.argument("input_epub", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=False)
+@click.pass_context
+def show(ctx: click.Context, input_epub: Path | None) -> None:
+    """Show the settings in effect, and the file each one came from.
+
+    Files are read in this order, each overriding the ones before:
+    ~/.tepub/config.yaml, .env, ./config.yaml, --config FILE, and the book's
+    own config.yaml when a book is given. API keys are never printed.
+    """
+    import os
+
+    settings: AppSettings = ctx.obj["settings"]
+    sources: list[tuple[str, Path]] = [
+        ("global", Path.home() / ".tepub" / "config.yaml"),
+        (".env", Path(".env")),
+        ("./config.yaml", Path("config.yaml")),
+    ]
+    if ctx.obj.get("config_file"):
+        sources.append(("--config", Path(ctx.obj["config_file"]).expanduser()))
+    if input_epub is not None:
+        settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
+        sources.append(("book", settings.work_dir / "config.yaml"))
+
+    console.print("[bold]Files[/bold] (later ones override earlier ones)")
+    payloads: list[tuple[str, dict]] = []
+    for label, path in sources:
+        exists = path.exists()
+        console.print(f"  {label:14} {path}  {'[green]found[/green]' if exists else '[dim]absent[/dim]'}")
+        if exists and path.suffix.lower() in (".yaml", ".yml"):
+            payload = _parse_yaml_file(path)
+            if isinstance(payload, dict):
+                payloads.append((label, payload))
+
+    console.print("\n[bold]Settings[/bold]")
+    for name, path in _SHOWN:
+        value = settings
+        for key in path:
+            value = getattr(value, key)
+        origin = "default"
+        for label, payload in payloads:
+            if _lookup(payload, path) is not _MISSING:
+                origin = label
+        if name == "primary_provider.base_url" and os.getenv("OLLAMA_BASE_URL") and settings.primary_provider.name == "ollama":
+            origin = "OLLAMA_BASE_URL"
+        shown = value if name != "prompt_preamble" or value is None else (str(value).splitlines() or [""])[0][:60] + " …"
+        console.print(f"  {name:28} {shown!s:40} [dim]{origin}[/dim]")
+
+    console.print("\n[bold]API keys[/bold]")
+    for variable in _SECRET_ENV:
+        console.print(f"  {variable:28} {'set' if os.getenv(variable) else '[dim]not set[/dim]'}")
