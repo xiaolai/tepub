@@ -6,13 +6,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.console import Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from config import AppSettings
-from console_singleton import get_console
+from console_singleton import PlainProgress, get_console
+from console_singleton import live as live_display
 from state.models import Segment, SegmentStatus
 from state.store import load_segments
 from state.store import load_state as load_translation_state
@@ -435,7 +435,8 @@ class AudiobookRunner:
             )
 
         try:
-            with Live(
+            plain = PlainProgress("Synthesised", total_segments, console=console)
+            with live_display(
                 Group(render_panel(), progress),
                 console=console,
                 refresh_per_second=5,
@@ -590,6 +591,7 @@ class AudiobookRunner:
                                 # Update live dashboard
                                 progress.advance(task_id)
                                 live.update(Group(render_panel(), progress))
+                                plain.report(int(progress.tasks[0].completed))
 
                         except KeyboardInterrupt:
                             interrupted = True

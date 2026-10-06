@@ -54,7 +54,8 @@ def test_run_translation_updates_state(monkeypatch, settings, tmp_path):
 
     monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
 
-    test_console = Console(record=True)
+    # A terminal shows the live dashboard.
+    test_console = Console(record=True, force_terminal=True)
     monkeypatch.setattr("translation.controller.console", test_console)
 
     run_translation(
@@ -75,6 +76,35 @@ def test_run_translation_updates_state(monkeypatch, settings, tmp_path):
     assert "Dashboard" in output
     assert "files" in output
     assert "Hola mundo" in output
+
+
+def test_without_a_terminal_progress_is_plain_lines(monkeypatch, settings, tmp_path):
+    """A live dashboard drawn into a log file filled it with escape codes."""
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    _write_segments(settings, input_epub)
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
+    log = Console(record=True, force_terminal=False)
+    monkeypatch.setattr("translation.controller.console", log)
+
+    run_translation(settings, input_epub, source_language="en", target_language="zh-CN")
+
+    output = log.export_text()
+    assert "Dashboard" not in output and "\x1b" not in output
+    assert "Translated: 1 of 1" in output
+
+
+def test_quiet_prints_nothing(monkeypatch, settings, tmp_path):
+    input_epub = tmp_path / "book.epub"
+    input_epub.write_text("stub", encoding="utf-8")
+    _write_segments(settings, input_epub)
+    monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
+    quiet = Console(record=True, force_terminal=True, quiet=True)
+    monkeypatch.setattr("translation.controller.console", quiet)
+
+    run_translation(settings, input_epub, source_language="en", target_language="zh-CN")
+
+    assert quiet.export_text() == ""
 
 
 class FailingProvider:

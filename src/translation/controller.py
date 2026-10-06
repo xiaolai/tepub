@@ -7,14 +7,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.console import Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from config import AppSettings
 from config.workspace import assert_same_book
-from console_singleton import get_console
+from console_singleton import PlainProgress, get_console
+from console_singleton import live as live_display
 from glossary import glossary_for
 from logging_utils.logger import get_logger
 from state.models import ExtractMode, SegmentStatus
@@ -478,9 +478,8 @@ def run_translation(
             )
 
         cooldowns_taken = 0
-        dashboard = Live(
-            Group(render_panel(), progress), console=console, refresh_per_second=5
-        )
+        dashboard = live_display(Group(render_panel(), progress), console=console, refresh_per_second=5)
+        plain = PlainProgress("Translated", len(segments_doc.segments), console=console)
         with StateWriter(settings.state_file) as writer, dashboard as live:
             # Failures in a row are counted within a run. The count is saved with
             # the state, and one left at 3 by an earlier run started a 30-minute
@@ -666,6 +665,7 @@ def run_translation(
 
                             progress.advance(task_id)
                             live.update(Group(render_panel(), progress))
+                            plain.report(int(progress.tasks[0].completed))
 
                     except KeyboardInterrupt:
                         # Anywhere in the pass, submitting included: an interrupt

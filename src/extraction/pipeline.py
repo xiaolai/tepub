@@ -7,7 +7,7 @@ from rich.progress import Progress
 
 from config import AppSettings
 from config.workspace import epub_digest
-from console_singleton import get_console
+from console_singleton import get_console, live_display_enabled
 from epub_io.container import metadata_summary
 from epub_io.reader import EpubReader
 from epub_io.selector import build_skip_map
@@ -30,7 +30,7 @@ def run_extraction(settings: AppSettings, input_epub: Path) -> None:
     skipped_documents: list[SkippedDocument] = []
 
     segments: list[Segment] = []
-    with Progress() as progress:
+    with Progress(console=console, disable=not live_display_enabled(console)) as progress:
         task = progress.add_task("Extracting", total=None)
         nav = reader.package.nav_item()
         nav_href = reader.package.package_href(nav.path) if nav is not None else None

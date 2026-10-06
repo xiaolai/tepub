@@ -10,7 +10,7 @@ from mutagen.mp4 import MP4, MP4Cover
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from config import AppSettings
-from console_singleton import get_console
+from console_singleton import get_console, live_display_enabled
 from epub_io.reader import EpubReader
 from epub_io.toc_utils import parse_toc_to_dict
 from state.models import Segment
@@ -151,6 +151,7 @@ def assemble_audiobook(
             TextColumn("{task.completed}/{task.total}"),
             TimeElapsedColumn(),
             console=console,
+            disable=not live_display_enabled(console),
         )
 
         with progress:
