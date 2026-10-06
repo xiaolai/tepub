@@ -5,6 +5,15 @@ run against a real book with the mistakes users make: typos, steps out of
 order, options in the wrong place, and flag combinations. Exit codes were
 measured directly, not through a pipe.
 
+## Status
+
+Implemented on branch `feat/cli`, 2026-10-06: every finding in A, B and C,
+the help text in D, and the proposed design below, with the mitigations listed
+for its breaking changes. Two defects found while doing it were fixed too: a
+book's own config.yaml was ignored under `--work-dir`, and `format` exited with
+0 when it had nothing to format. Re-run against a real book afterwards, every
+scenario here behaves as designed.
+
 ## What works
 
 - Running steps out of order is caught with a clear next step: "No extraction
