@@ -65,7 +65,7 @@ def test_resume_finds_what_extract_wrote_under_the_same_work_dir(tmp_path: Path)
     resumed = runner.invoke(app, ["--work-dir", str(root), "resume"])
     assert resumed.exit_code == 0, resumed.output
     assert "No translation state" not in resumed.output
-    assert "Remaining" in resumed.output
+    assert "0 of 2 translated" in resumed.output  # the workspace extract wrote
 
 
 def test_a_book_config_applies_under_work_dir_too(tmp_path: Path) -> None:

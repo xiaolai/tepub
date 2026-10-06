@@ -1,8 +1,10 @@
 """Format command implementation."""
 
+from pathlib import Path
+
 import click
 
-from cli.core import bookless_settings
+from cli.core import optional_book, settings_for_book
 from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError
@@ -14,11 +16,16 @@ console = get_console()
 
 
 @click.command()
+@optional_book
 @click.pass_context
-def format_cmd(ctx: click.Context) -> None:
-    """Format translated text for Chinese typography."""
+def format_cmd(ctx: click.Context, book: Path | None) -> None:
+    """Apply Chinese typography to a book's finished translations.
 
-    settings: AppSettings = bookless_settings(ctx)
+    Translate already does this for each reply; run it after editing the
+    state by hand, or to apply a newer version of the rules.
+    """
+
+    settings: AppSettings = settings_for_book(ctx, book)
     settings.ensure_directories()
 
     # Load state first: whether formatting applies depends on the language the
@@ -30,7 +37,7 @@ def format_cmd(ctx: click.Context) -> None:
         state = load_state(settings.state_file)
     except FileNotFoundError:
         console.print("[red]State file not found. Run extract/translate first.[/red]")
-        return
+        raise SystemExit(1)
     except (ValueError, TypeError, KeyError, CorruptedStateError) as exc:
         # Only FileNotFoundError was handled before, so a malformed or
         # schema-invalid state file surfaced as a raw traceback.

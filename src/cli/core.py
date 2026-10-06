@@ -220,3 +220,22 @@ def with_provider(settings: AppSettings, provider: str | None, model: str | None
 
 # Exit code for a run that finished with units it could not translate.
 EXIT_UNITS_FAILED = 3
+
+
+def settings_for_book(ctx: click.Context, book: Path | None) -> AppSettings:
+    """Settings for a command that takes the book optionally.
+
+    resume, format and several debug commands took no book and looked for a
+    workspace in the current folder or --work-dir, unlike every other
+    command; given the book, they use its workspace as the others do.
+    """
+    if book is None:
+        return bookless_settings(ctx)
+    return prepare_settings_for_epub(ctx, ctx.obj["settings"], book, override=None)
+
+
+def optional_book(func):
+    """An optional BOOK argument for commands that also work without one."""
+    return click.argument(
+        "book", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path)
+    )(func)

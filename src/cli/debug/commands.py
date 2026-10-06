@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from cli.core import bookless_settings, prepare_settings_for_epub
+from cli.core import bookless_settings, optional_book, prepare_settings_for_epub, settings_for_book
 from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError
@@ -29,22 +29,24 @@ def show_skip_list_cmd(ctx: click.Context) -> None:
 
 
 @click.command("show-pending")
+@optional_book
 @click.pass_context
-def show_pending_cmd(ctx: click.Context) -> None:
+def show_pending_cmd(ctx: click.Context, book: Path | None) -> None:
     """Show pending segments."""
     from debug_tools.pending import show_pending
 
-    settings: AppSettings = bookless_settings(ctx)
+    settings: AppSettings = settings_for_book(ctx, book)
     show_pending(settings)
 
 
 @click.command("purge-refusals")
 @click.option("--dry-run", is_flag=True, help="Only report matches without modifying state.")
+@optional_book
 @click.pass_context
-def purge_refusals(ctx: click.Context, dry_run: bool) -> None:
+def purge_refusals(ctx: click.Context, dry_run: bool, book: Path | None) -> None:
     """Reset segments whose translations look like provider refusals."""
 
-    settings: AppSettings = bookless_settings(ctx)
+    settings: AppSettings = settings_for_book(ctx, book)
 
     try:
         state = load_state(settings.state_file)
@@ -102,22 +104,24 @@ def purge_refusals(ctx: click.Context, dry_run: bool) -> None:
 
 @click.command("inspect-segment")
 @click.argument("segment_id")
+@optional_book
 @click.pass_context
-def inspect_segment_cmd(ctx: click.Context, segment_id: str) -> None:
+def inspect_segment_cmd(ctx: click.Context, segment_id: str, book: Path | None) -> None:
     """Inspect a specific segment."""
     from debug_tools.inspect import inspect_segment
 
-    settings: AppSettings = bookless_settings(ctx)
+    settings: AppSettings = settings_for_book(ctx, book)
     inspect_segment(settings, segment_id)
 
 
 @click.command("list-files")
+@optional_book
 @click.pass_context
-def list_files_cmd(ctx: click.Context) -> None:
+def list_files_cmd(ctx: click.Context, book: Path | None) -> None:
     """List all processed files."""
     from debug_tools.files import list_files
 
-    settings: AppSettings = bookless_settings(ctx)
+    settings: AppSettings = settings_for_book(ctx, book)
     list_files(settings)
 
 
