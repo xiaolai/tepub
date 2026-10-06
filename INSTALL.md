@@ -289,7 +289,7 @@ tepub --version
 
 You should see something like:
 ```
-tepub, version 0.1.0
+tepub, version 0.4.1
 ```
 
 ### 3. Check Python Version
@@ -381,8 +381,10 @@ OpenAI's premium voices (~$11-22 per 300-page book) need an OpenAI key.
 ```bash
 tepub extract yourbook.epub
 tepub translate yourbook.epub --to "Simplified Chinese"
+tepub export yourbook.epub
 ```
 
+The translated book appears next to yours, as `yourbook.zh-CN.bilingual.epub`.
 If it works without errors, you're all set!
 
 ---

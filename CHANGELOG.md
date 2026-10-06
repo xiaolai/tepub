@@ -4,6 +4,47 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [Unreleased]
+
+The command line, audited command by command against a real book.
+
+### ⬆️ Upgrading
+
+- **`export` writes beside the book**, named after it and the language
+  (`book.zh-CN.bilingual.epub`, `book.zh-CN.epub`, `book.zh-CN.web.zip`), and
+  writes what its options say: `--mode bilingual|translated|both` (default the
+  config's `output_mode`), `--format epub|web`, `--out DIR`. It used to write
+  both EPUBs and a web version inside the workspace whatever `--epub` or
+  `--output-mode` said. The old flags still work this release, with a warning.
+- **`extract` writes only the workspace.** The full unzip and the Markdown
+  export, hundreds of files, are now `--raw` and `--markdown`.
+- **`translate` and `pipeline` exit with 3 when units failed**;
+  `--allow-failures` keeps 0.
+- **Only an existing `.epub` runs the pipeline by itself**: a typo is now
+  "No such command … Did you mean …?" instead of a missing-file error.
+- **`resume` is now `status`**; `resume` still works this release.
+
+### ✨ Added
+
+- `tepub status BOOK`: units translated, failed and pending, the engines used,
+  glossary misses, outputs, the failed units and the next command.
+- `translate --model`, `--provider` and `--dry-run`; an end-of-run summary.
+- `tepub config show [BOOK]`: the settings in effect and the file each came
+  from, API keys never printed.
+- `--version`; global options accepted after the command too; help in
+  workflow order with an example.
+
+### 🐛 Fixed
+
+- A book's own `config.yaml` is applied under `--work-dir` too; it was ignored.
+- `-q` silences progress bars, and without a terminal progress is plain lines
+  instead of escape codes.
+- An audiobook run with no terminal no longer picks a voice by itself.
+- `format` and the debug commands take the book like every other command.
+- The config's `output_mode` accepts `translated`, as `--mode` does.
+
+---
+
 ## [0.4.1] - 2026-10-06
 
 Local translation by default, a glossary that holds a book's terms to one

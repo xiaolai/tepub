@@ -100,14 +100,15 @@ echo 'OPENAI_API_KEY=sk-your-key-here' > .env
 ```bash
 tepub extract mybook.epub
 tepub translate mybook.epub --to "Simplified Chinese"
-tepub export mybook.epub --epub
+tepub export mybook.epub          # writes mybook.zh-CN.bilingual.epub beside the book
+tepub status mybook.epub          # where the book stands, and the next step
 ```
 
 **Create audiobook (Free Edge TTS):**
 ```bash
 tepub extract mybook.epub
 tepub audiobook generate mybook.epub
-# Interactive voice selection will appear
+# Interactive voice selection will appear; in a script, pass --voice
 ```
 
 **Create audiobook (Premium OpenAI TTS):**
@@ -118,7 +119,7 @@ tepub audiobook generate mybook.epub --tts-provider openai --voice nova
 
 **All-in-one pipeline:**
 ```bash
-tepub pipeline mybook.epub --to Spanish --epub
+tepub mybook.epub --to Spanish    # extract, translate and export
 ```
 
 ---
@@ -129,13 +130,19 @@ tepub pipeline mybook.epub --to Spanish --epub
 
 **Translate to different languages:**
 ```bash
-tepub pipeline book.epub --to "Simplified Chinese" --epub
-tepub pipeline book.epub --to Spanish --epub
-tepub pipeline book.epub --to French --epub
+tepub pipeline book.epub --to "Simplified Chinese"
+tepub pipeline book.epub --to Spanish
+tepub pipeline book.epub --to French
 ```
 
 **Choose translation provider:** set `primary_provider` in `~/.tepub/config.yaml`
 (all books) or in the book's `config.yaml` (one book); see [Configuration](#configuration).
+For one run: `tepub translate book.epub --model qwen3.5:9b`, or `--provider openai
+--model gpt-4o`. `--dry-run` shows what a run would translate. `tepub config show`
+lists the settings in effect and where each came from.
+
+`translate` and `pipeline` exit with 3 when some units failed (`--allow-failures`
+exits with 0); run the same command again to retry them.
 
 **Reasoning models on Ollama:** models that think before answering, such as
 Qwen 3, can take minutes per paragraph. `think: false` turns that off:
@@ -147,9 +154,10 @@ primary_provider:
   think: false
 ```
 
-**Translation-only output (smaller file):**
+**Translation-only output, or both editions:**
 ```bash
-tepub export book.epub --epub --output-mode translated-only
+tepub export book.epub --mode translated      # book.zh-CN.epub
+tepub export book.epub --mode both --out ~/Books
 ```
 
 ### Audiobooks
@@ -211,14 +219,12 @@ tepub audiobook update-chapters audiobook.m4a chapters.yaml
 
 **Create web version:**
 ```bash
-tepub export book.epub --web
-# Opens browser with interactive viewer
+tepub export book.epub --format web           # book.zh-CN.web.zip
 ```
 
 **Export to markdown:**
 ```bash
-tepub extract book.epub
-# Markdown files created automatically in: book/markdown/
+tepub extract book.epub --markdown            # into book/markdown/
 ```
 
 ---
@@ -286,16 +292,14 @@ See [config.example.yaml](config.example.yaml) for all available options with de
 ### Translation
 ```
 mybook.epub                      # Original
+mybook.zh-CN.bilingual.epub      # Output: both languages
+mybook.zh-CN.epub                # Output: translation only (--mode translated)
+mybook.zh-CN.web.zip             # Web viewer (--format web)
 mybook/                          # Workspace
 ├── config.yaml                  # Per-book settings
 ├── segments.json                # Extracted content
 ├── state.json                   # Translation progress
-└── markdown/                    # Markdown export
-    ├── 001_chapter-1.md
-    └── images/
-mybook_bilingual.epub            # Output: both languages
-mybook_translated.epub           # Output: translation only
-mybook_web/                      # Web viewer
+└── markdown/                    # Only with extract --markdown
 ```
 
 ### Audiobooks
@@ -317,9 +321,9 @@ Provider-specific folders let you create both versions for comparison.
 
 ### Resume Interrupted Work
 
-TEPUB automatically saves progress. To resume:
+TEPUB automatically saves progress. To resume, run the same command again;
+`tepub status book.epub` shows how far a book has got.
 ```bash
-# Just run the same command again
 tepub translate book.epub --to Spanish
 tepub audiobook generate book.epub
 ```
