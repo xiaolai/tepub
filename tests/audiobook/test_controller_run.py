@@ -11,7 +11,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import httpx
 import openai
 import pytest
 from rich.console import Console
@@ -399,27 +398,34 @@ def test_network_error_is_still_retried(monkeypatch) -> None:
     assert not result.permanent
 
 
-def _openai_error(cls: type[openai.APIStatusError], status: int) -> openai.APIStatusError:
-    request = httpx.Request("POST", "https://api.openai.com/v1/audio/speech")
-    return cls("rejected", response=httpx.Response(status, request=request), body=None)
+def _openai_error(cls: type[openai.OpenAIError]) -> openai.OpenAIError:
+    """An instance of an openai error class, made without its HTTP objects.
+
+    Errors are classified by class alone. Their constructors take the HTTP
+    library openai depends on, which changed from httpx to httpx2 between
+    versions, so building real responses tied the tests to one of them.
+    """
+    error = cls.__new__(cls)
+    Exception.__init__(error, "rejected")
+    return error
 
 
 PERMANENT_ERRORS = [
-    pytest.param(_openai_error(openai.AuthenticationError, 401), id="openai-401"),
-    pytest.param(_openai_error(openai.PermissionDeniedError, 403), id="openai-403"),
-    pytest.param(_openai_error(openai.BadRequestError, 400), id="openai-400"),
-    pytest.param(_openai_error(openai.NotFoundError, 404), id="openai-404"),
-    pytest.param(_openai_error(openai.UnprocessableEntityError, 422), id="openai-422"),
+    pytest.param(_openai_error(openai.AuthenticationError), id="openai-401"),
+    pytest.param(_openai_error(openai.PermissionDeniedError), id="openai-403"),
+    pytest.param(_openai_error(openai.BadRequestError), id="openai-400"),
+    pytest.param(_openai_error(openai.NotFoundError), id="openai-404"),
+    pytest.param(_openai_error(openai.UnprocessableEntityError), id="openai-422"),
     pytest.param(OSError(28, "No space left on device"), id="enospc-no-filename"),
     pytest.param(OSError(30, "Read-only file system"), id="erofs-no-filename"),
     pytest.param(CouldntEncodeError("ffmpeg returned 1"), id="encode"),
 ]
 
 TRANSIENT_ERRORS = [
-    pytest.param(_openai_error(openai.RateLimitError, 429), id="openai-429"),
-    pytest.param(_openai_error(openai.InternalServerError, 503), id="openai-503"),
+    pytest.param(_openai_error(openai.RateLimitError), id="openai-429"),
+    pytest.param(_openai_error(openai.InternalServerError), id="openai-503"),
     pytest.param(
-        openai.APIConnectionError(request=httpx.Request("POST", "https://api.openai.com")),
+        _openai_error(openai.APIConnectionError),
         id="openai-connection",
     ),
     pytest.param(TimeoutError("timed out"), id="timeout"),
@@ -452,7 +458,7 @@ def test_transient_provider_error_is_retried(monkeypatch, error) -> None:
 
 def test_rejected_credentials_do_not_start_a_cooldown(book, monkeypatch) -> None:
     FakeRenderer.raises = {
-        seg_id: _openai_error(openai.AuthenticationError, 401) for seg_id in book.ids
+        seg_id: _openai_error(openai.AuthenticationError) for seg_id in book.ids
     }
     waited: list[datetime] = []
     monkeypatch.setattr(
