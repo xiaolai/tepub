@@ -171,8 +171,11 @@ class AppSettings(BaseModel):
         if not value:
             return "bilingual"
         normalised = value.replace("-", "_").strip().lower()
+        # The same words export --mode takes: "translated" was refused here.
+        if normalised == "translated":
+            normalised = "translated_only"
         if normalised not in {"bilingual", "translated_only"}:
-            raise ValueError("output_mode must be 'bilingual' or 'translated_only'")
+            raise ValueError("output_mode must be 'bilingual' or 'translated' (also 'translated-only')")
         return normalised
 
     @field_validator("audiobook_tts_provider")
