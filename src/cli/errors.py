@@ -5,6 +5,7 @@ from functools import wraps
 from typing import TypeVar, cast
 
 import click
+from rich.markup import escape
 
 from console_singleton import get_console
 from exceptions import (
@@ -43,8 +44,8 @@ def handle_state_errors(func: F) -> F:
             CorruptedStateError,
             WorkspaceBusyError,
         ) as e:
-            console.print(f"[red]{e}[/red]")
-            raise click.exceptions.Exit(1)
+            console.print(f"[red]{escape(str(e))}[/red]")
+            raise click.exceptions.Exit(1) from e
 
     return cast(F, wrapper)
 
@@ -62,7 +63,7 @@ def handle_run_errors(func: F) -> F:
         try:
             return func(*args, **kwargs)
         except (ProviderFatalError, GlossaryError) as e:
-            console.print(f"[red]{e}[/red]")
-            raise click.exceptions.Exit(1)
+            console.print(f"[red]{escape(str(e))}[/red]")
+            raise click.exceptions.Exit(1) from e
 
     return cast(F, wrapper)

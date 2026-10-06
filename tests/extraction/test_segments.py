@@ -3,6 +3,7 @@ from pathlib import Path
 
 from epub_io.xhtml import parse_xhtml
 from extraction.segments import iter_segments
+from state.models import ExtractMode
 
 
 def _xhtml(markup: str):
@@ -15,7 +16,7 @@ def _xhtml(markup: str):
             1,
         )
     return parse_xhtml(markup.encode("utf-8")).root
-from state.models import ExtractMode
+
 
 
 def test_iter_segments_classifies_simple_and_atomic():
@@ -173,7 +174,9 @@ def test_iter_segments_handles_complex_markup():
       <body>
         <section epub:type='frontmatter' id='fm'>
           <h2 class='heading'>Preface &amp; Overview</h2>
-          <p id='p1' class='lead'>This <span>preface</span> has <a href='#'>links</a> &amp; inline elements.</p>
+          <p id='p1'
+             class='lead'>This <span>preface</span> has <a
+             href='#'>links</a> &amp; inline elements.</p>
           <div id='blurb' style='color:red;'>Solo text block.</div>
           <div class='skip'><p>Nested paragraph should not produce div segment.</p></div>
           <table id='stats' class='table table-striped' style='width:100%'>
@@ -232,7 +235,9 @@ def test_iter_segments_handles_complex_markup():
 
     # The link makes it HTML: sent as text, the link was lost from the output.
     assert first_para.extract_mode == ExtractMode.HTML
-    assert first_para.source_content == 'This preface has <a href="#">links</a> &amp; inline elements.'
+    assert (
+        first_para.source_content == 'This preface has <a href="#">links</a> &amp; inline elements.'
+    )
 
     assert blurb_div.extract_mode == ExtractMode.TEXT
     assert blurb_div.source_content == "Solo text block."
@@ -381,7 +386,9 @@ def test_a_small_container_with_its_own_text_stays_whole() -> None:
     from epub_io.xhtml import XHTML_NS
     from extraction.segments import iter_units
 
-    body = etree.fromstring(f'<body xmlns="{XHTML_NS}"><div>Lead text<p>A paragraph.</p></div></body>')
+    body = etree.fromstring(
+        f'<body xmlns="{XHTML_NS}"><div>Lead text<p>A paragraph.</p></div></body>'
+    )
     assert [(etree.QName(e).localname, m.value) for e, m in iter_units(body)] == [("div", "html")]
 
 
@@ -393,7 +400,8 @@ def test_a_figure_with_a_drawing_is_walked_so_its_caption_is_the_unit() -> None:
     from extraction.segments import iter_units
 
     body = etree.fromstring(
-        f'<body xmlns="{XHTML_NS}"><figure><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
+        f'<body xmlns="{XHTML_NS}"><figure>'
+        '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
         "<figcaption>Figure 1. Income shares.</figcaption></figure>"
         '<figure><img src="a.png" alt=""/><figcaption>Figure 2.</figcaption></figure></body>'
     )

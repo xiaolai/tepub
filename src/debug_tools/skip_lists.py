@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.markup import escape
 from rich.table import Table
 
 from config import AppSettings
@@ -30,9 +31,9 @@ def show_skip_list(settings: AppSettings) -> None:
         auto_table.add_column("Source")
         for skipped in auto_skips:
             auto_table.add_row(
-                skipped.file_path.as_posix(),
-                skipped.reason,
-                skipped.source,
+                escape(skipped.file_path.as_posix()),
+                escape(str(skipped.reason)),
+                escape(str(skipped.source)),
             )
         console.print(auto_table)
 
@@ -47,5 +48,7 @@ def show_skip_list(settings: AppSettings) -> None:
             if not segment:
                 continue
             reason = state.segments[seg_id].error_message or segment.metadata.notes or ""
-            manual_table.add_row(seg_id, segment.file_path.as_posix(), reason)
+            manual_table.add_row(
+                escape(str(seg_id)), escape(segment.file_path.as_posix()), escape(str(reason))
+            )
         console.print(manual_table)

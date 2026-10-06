@@ -30,7 +30,7 @@ _OPAQUE = re.compile(rb"(<!--.*?-->|<!\[CDATA\[.*?\]\]>)", re.S)
 _ENTITY = re.compile(rb"&([A-Za-z][A-Za-z0-9]*);")
 
 
-class NotWellFormed(TepubError):
+class NotWellFormedError(TepubError):
     """A content document is not well-formed XML; it is left untranslated."""
 
 
@@ -74,7 +74,7 @@ def parse_xhtml(data: bytes) -> XhtmlDocument:
     try:
         root = etree.fromstring(_replace_html_entities(data), parser=secure_xml_parser())
     except etree.XMLSyntaxError as exc:
-        raise NotWellFormed(f"not well-formed XML: {exc}") from exc
+        raise NotWellFormedError(f"not well-formed XML: {exc}") from exc
     docinfo = root.getroottree().docinfo
     return XhtmlDocument(
         root=root,
@@ -128,9 +128,7 @@ def parse_fragment(markup: str) -> tuple[str, list[etree._Element]]:
     unclosed <br>, a bare &), it is parsed as HTML and its elements moved into
     the XHTML namespace, so they never land in the book in no namespace.
     """
-    wrapped = f'<wrapper xmlns="{XHTML_NS}" xmlns:epub="{OPS_NS}">{markup}</wrapper>'.encode(
-        "utf-8"
-    )
+    wrapped = f'<wrapper xmlns="{XHTML_NS}" xmlns:epub="{OPS_NS}">{markup}</wrapper>'.encode()
     try:
         wrapper = etree.fromstring(_replace_html_entities(wrapped), parser=secure_xml_parser())
     except etree.XMLSyntaxError:

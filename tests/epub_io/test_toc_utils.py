@@ -54,7 +54,10 @@ def test_nested_entries_are_all_read():
                     TocEntry(
                         "Chapter 1",
                         "chapter1.xhtml",
-                        [TocEntry("Section 1.1", "section1.xhtml"), TocEntry("Section 1.2", "section2.xhtml")],
+                        [
+                            TocEntry("Section 1.1", "section1.xhtml"),
+                            TocEntry("Section 1.2", "section2.xhtml"),
+                        ],
                     )
                 ],
             ),

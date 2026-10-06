@@ -44,7 +44,9 @@ class FixedReply:
 
 
 def test_a_refusal_is_an_error() -> None:
-    result = _translate_segment(_segment(), FixedReply("I can't help with that request."), "fr", "en")
+    result = _translate_segment(
+        _segment(), FixedReply("I can't help with that request."), "fr", "en"
+    )
     assert result.translation is None
     assert isinstance(result.error, ProviderError)
     assert "refused" in str(result.error)
@@ -74,8 +76,11 @@ def _provider(name: str, **extra) -> object:
 @pytest.mark.parametrize(
     "body",
     [
-        {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
-         "output": [{"content": [{"type": "output_text", "text": "Half a sent"}]}]},
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"content": [{"type": "output_text", "text": "Half a sent"}]}],
+        },
         {"choices": [{"finish_reason": "length", "message": {"content": "Half a sent"}}]},
     ],
 )
@@ -112,7 +117,10 @@ def test_gemini_truncation_is_an_error(monkeypatch) -> None:
 
 
 def test_a_complete_openai_reply_passes(monkeypatch) -> None:
-    body = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": "Fine."}]}]}
+    body = {
+        "status": "completed",
+        "output": [{"content": [{"type": "output_text", "text": "Fine."}]}],
+    }
     monkeypatch.setattr(openai_module, "post_json", lambda *a, **k: body)
     assert _provider("openai").translate(_segment(), "fr", "en") == "Fine."
 

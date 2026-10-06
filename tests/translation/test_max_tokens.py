@@ -30,7 +30,10 @@ def _config(name: str) -> ProviderConfig:
         (
             "openai",
             openai_module,
-            {"status": "completed", "output": [{"content": [{"type": "output_text", "text": "x"}]}]},
+            {
+                "status": "completed",
+                "output": [{"content": [{"type": "output_text", "text": "x"}]}],
+            },
             lambda sent: sent["max_output_tokens"],
         ),
         (

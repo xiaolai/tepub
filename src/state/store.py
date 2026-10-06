@@ -123,3 +123,20 @@ def compute_resume_info(state: StateDocument) -> ResumeInfo:
         completed_segments=sorted(completed),
         skipped_segments=sorted(skipped),
     )
+
+
+def reset_to_pending(state: StateDocument, segment_ids: Iterable[str]) -> None:
+    """Return these records to pending, their translation and its provider
+    cleared. The source digest stays: the unit's text has not changed."""
+    for segment_id in segment_ids:
+        payload = state.segments[segment_id].model_dump()
+        payload.update(
+            {
+                "translation": None,
+                "status": SegmentStatus.PENDING,
+                "provider_name": None,
+                "model_name": None,
+                "error_message": None,
+            }
+        )
+        state.segments[segment_id] = TranslationRecord.model_validate(payload)

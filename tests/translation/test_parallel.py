@@ -1,4 +1,5 @@
 """Tests for parallel translation processing."""
+
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,7 @@ def _write_segments(settings: AppSettings, input_epub: Path, count: int = 5) -> 
         segment = Segment(
             segment_id=f"seg-{i:03d}",
             file_path=Path("Text/chapter1.xhtml"),
-            xpath=f"/html/body/p[{i+1}]",
+            xpath=f"/html/body/p[{i + 1}]",
             extract_mode=ExtractMode.TEXT,
             source_content=f"Text segment {i}",
             metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=i + 1),
@@ -84,7 +85,7 @@ def test_parallel_translation_processes_all_segments(monkeypatch, settings, tmp_
     # Verify all segments were translated
     state = load_state(settings.state_file)
     assert len(state.segments) == 10
-    for i, segment in enumerate(segments):
+    for segment in segments:
         record = state.segments[segment.segment_id]
         assert record.status == SegmentStatus.COMPLETED
         assert record.translation is not None

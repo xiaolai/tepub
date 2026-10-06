@@ -19,12 +19,11 @@ translated again: a plain translation cannot carry a link the unit now keeps.
 
 from __future__ import annotations
 
+import html
 import json
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import html
 
 from lxml import html as lxml_html
 
@@ -140,12 +139,16 @@ def _split_whole_lists(
     used: set[str] = set()
     for segment in old:
         record = records.get(segment.segment_id)
-        if segment.segment_id in mapping or record is None or segment.extract_mode != ExtractMode.HTML:
+        if (
+            segment.segment_id in mapping
+            or record is None
+            or segment.extract_mode != ExtractMode.HTML
+        ):
             continue
         sources, translated = _items(segment.source_content), _items(record.translation or "")
         if not sources or len(sources) != len(translated):
             continue
-        for source, item_translation in zip(sources, translated):
+        for source, item_translation in zip(sources, translated, strict=True):
             source, item_translation = _unwrap(source, item_translation)
             item = Segment(
                 segment_id=segment.segment_id,
@@ -190,17 +193,53 @@ def legacy_mapping(old: list[Segment], new: list[Segment]) -> dict[str, str]:
     return mapping
 
 
+# Written once the migrated files are prepared and before any is replaced;
+# removed once the new segments are saved (finish_legacy_import).
+_JOURNAL = "migration.json"
+
+
+def _journal_sources(work_dir: Path, state_file: Path) -> dict[Path, Path]:
+    """live file -> the copy an interrupted import took of it before
+    rewriting it; empty when no import was interrupted."""
+    journal = work_dir / _JOURNAL
+    if not journal.exists():
+        return {}
+    data = json.loads(journal.read_text(encoding="utf-8"))
+    sources = {}
+    for name, backup in data["backups"].items():
+        live = state_file if name == "state" else work_dir / name
+        sources[live] = live.with_name(backup)
+    return sources
+
+
+def finish_legacy_import(work_dir: Path) -> None:
+    """Called once the new segments document is saved: the import is final."""
+    (work_dir / _JOURNAL).unlink(missing_ok=True)
+
+
 def import_legacy_workspace(
     work_dir: Path, state_file: Path, old: list[Segment], new: list[Segment]
 ) -> ImportReport:
+    """Rewrite the state and audio states under the new segment ids.
+
+    Every migrated document is built before any is written, so a file that
+    fails to read or convert changes nothing. The caller saves the new
+    segments document after this returns, then calls finish_legacy_import; if
+    it never gets there, the next extraction imports again. The files are by
+    then keyed by new ids, and those are positional, like the old ones: the
+    same id can name another paragraph in each, so they cannot be told apart
+    and imported a second time. A journal names the copies taken before the
+    first rewrite, and a retry imports from those.
+    """
     mapping = legacy_mapping(old, new)
     report = ImportReport(mapped=len(mapping))
     old_by_id = {segment.segment_id: segment for segment in old}
     new_by_id = {segment.segment_id: segment for segment in new}
+    sources = _journal_sources(work_dir, state_file)
 
+    state = None
     if state_file.exists():
-        report.backups.append(backup_state(state_file))
-        state = load_state(state_file)
+        state = load_state(sources.get(state_file, state_file))
         carried = {}
         for old_id, record in state.segments.items():
             new_id = mapping.get(old_id)
@@ -224,11 +263,11 @@ def import_legacy_workspace(
         report.mapped += len(split)
         report.finished_not_carried -= len(split_from)
         state.segments = carried
-        save_state(state, state_file)
 
+    audio_states: list[tuple[Path, dict]] = []
     for audio_state in sorted(work_dir.glob("audiobook*/audio_state.json")):
-        report.backups.append(backup_state(audio_state))
-        data = json.loads(audio_state.read_text(encoding="utf-8"))
+        source = sources.get(audio_state, audio_state)
+        data = json.loads(source.read_text(encoding="utf-8"))
         remapped = {}
         for old_id, record in data.get("segments", {}).items():
             if old_id in mapping:
@@ -236,6 +275,24 @@ def import_legacy_workspace(
                 remapped[mapping[old_id]] = record
         report.audio_files_remapped += len(remapped)
         data["segments"] = remapped
+        audio_states.append((audio_state, data))
+
+    targets = ([state_file] if state is not None else []) + [path for path, _ in audio_states]
+    if not sources:
+        for target in targets:
+            sources[target] = backup_state(target)
+        backups = {
+            "state" if target == state_file else target.relative_to(work_dir).as_posix(): (
+                sources[target].name
+            )
+            for target in targets
+        }
+        atomic_write(work_dir / _JOURNAL, {"backups": backups})
+    report.backups = [sources[target] for target in targets if target in sources]
+
+    if state is not None:
+        save_state(state, state_file)
+    for audio_state, data in audio_states:
         atomic_write(audio_state, data)
 
     return report

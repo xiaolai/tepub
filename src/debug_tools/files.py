@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from rich.markup import escape
 from rich.table import Table
 
 from config import AppSettings
@@ -17,6 +18,6 @@ def list_files(settings: AppSettings) -> None:
     table.add_column("File")
     table.add_column("Segments")
     for file_path, count in sorted(counter.items()):
-        table.add_row(file_path, str(count))
+        table.add_row(escape(str(file_path)), str(count))
 
     console.print(table)

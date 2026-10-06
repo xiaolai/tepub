@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from lxml import html as lxml_html
@@ -10,7 +11,7 @@ from epub_io.container import TocEntry
 from epub_io.path_utils import safe_relative_member
 from epub_io.reader import EpubReader
 from epub_io.xhtml import document_title
-from injection.engine import apply_translations
+from injection.engine import Injection, apply_translations
 
 from .assets import BookData, copy_static_assets, render_index
 from .dom import clean_html, ensure_parseable
@@ -73,13 +74,24 @@ def _copy_static_resources(reader: EpubReader, content_dir: Path) -> None:
         dest.write_bytes(reader.read_bytes(item))
 
 
+@dataclass(frozen=True)
+class WebExport:
+    """The site written, and the units that could not be inserted into it."""
+
+    site: Path
+    failed: tuple[str, ...] = ()
+
+
 def export_web(
     settings: AppSettings,
     input_epub: Path,
     *,
     output_dir: Path | None = None,
     output_mode: str | None = None,
-) -> Path:
+    injection: Injection | None = None,
+) -> WebExport:
+    """``injection``: apply_translations' result for the same mode, when the
+    caller already has it, as export has when it also writes the EPUB."""
     output_root = (
         Path(output_dir) if output_dir else _default_output_dir(input_epub, settings.work_dir)
     )
@@ -95,7 +107,9 @@ def export_web(
     reader = EpubReader(input_epub, settings)
     # mode was not forwarded, so an explicit output_mode differing from the
     # configured one was ignored for the injection step.
-    updated_html, title_updates = apply_translations(settings, input_epub, mode=mode)
+    if injection is None:
+        injection = apply_translations(settings, input_epub, mode=mode)
+    updated_html, title_updates = injection.updated_html, injection.title_updates
 
     if output_root.exists():
         shutil.rmtree(output_root)
@@ -158,4 +172,4 @@ def export_web(
         ),
     )
 
-    return output_root
+    return WebExport(output_root, injection.failed)

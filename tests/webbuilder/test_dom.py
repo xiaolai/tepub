@@ -11,7 +11,6 @@ def test_clean_html_removes_font_and_styles():
     assert "文本" in cleaned
 
 
-
 def test_clean_html_adds_image_attrs():
     html_doc = "<html><body><img src='a.jpg' class='cover' /><img src='b.jpg' /></body></html>"
     cleaned = clean_html(html_doc)
@@ -23,13 +22,14 @@ def test_clean_html_adds_image_attrs():
     assert cleaned.count("tepub-img") == 2
 
 
-
 def test_clean_html_rewrites_media_urls(tmp_path):
     html_doc = """
     <html><body>
       <img src="images/a.jpg" srcset="images/a@2x.jpg 2x" />
       <audio src="audio/sample.mp3"></audio>
-      <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="images/cover.jpg" href="images/cover.jpg" /></svg>
+      <svg xmlns="http://www.w3.org/2000/svg"
+           xmlns:xlink="http://www.w3.org/1999/xlink"><image
+           xlink:href="images/cover.jpg" href="images/cover.jpg" /></svg>
       <p><a href="../chapter2.xhtml#section">Next chapter</a></p>
     </body></html>
     """

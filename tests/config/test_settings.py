@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from config.loader import load_settings
@@ -198,3 +200,27 @@ class TestAppSettingsValidation:
 
         assert exc_info.value.state_type == "segments"
         assert exc_info.value.epub_path == epub_path
+
+
+def test_tts_speed_is_unset_unless_configured(tmp_path) -> None:
+    """A default speed could not be told from a chosen one, so it overrode the
+    speed a resumed audiobook session was started with."""
+    assert AppSettings(work_dir=tmp_path).audiobook_tts_speed is None
+    assert AppSettings(work_dir=tmp_path, audiobook_tts_speed=1.5).audiobook_tts_speed == 1.5
+    with pytest.raises(ValueError):
+        AppSettings(work_dir=tmp_path, audiobook_tts_speed=5.0)
+
+
+def test_load_settings_records_what_each_file_set(tmp_path) -> None:
+    """config show names origins from this record instead of rereading files."""
+    Path(".env").write_text("target_language=German\nOPENAI_API_KEY=sk-x\n", encoding="utf-8")
+    extra = tmp_path / "extra.yaml"
+    extra.write_text("translation_workers: 5\n", encoding="utf-8")
+    settings = load_settings(extra)
+    layers = {layer.label: layer for layer in settings.config_layers}
+    assert list(layers) == ["global", ".env", "./config.yaml", "--config"]
+    assert not layers["global"].found and layers["global"].payload == {}
+    assert layers[".env"].found and layers[".env"].payload == {"target_language": "German"}
+    assert layers["--config"].path == extra and layers["--config"].payload == {
+        "translation_workers": 5
+    }

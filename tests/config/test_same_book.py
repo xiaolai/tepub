@@ -47,7 +47,9 @@ def test_a_different_book_is_refused(tmp_path: Path, extracted) -> None:
         assert_same_book(segments, other)
 
 
-def test_an_older_workspace_without_a_digest_still_compares_paths(tmp_path: Path, extracted) -> None:
+def test_an_older_workspace_without_a_digest_still_compares_paths(
+    tmp_path: Path, extracted
+) -> None:
     book, segments = extracted
     legacy = segments.model_copy(update={"epub_sha256": None})
     assert_same_book(legacy, book)

@@ -10,8 +10,8 @@ from click.testing import CliRunner
 
 import translation.controller as controller
 from cli.main import app
-from translation.providers import ProviderError
 from tests.epub_builder import build_epub
+from translation.providers import ProviderError
 
 
 class Model:
@@ -37,9 +37,13 @@ class Model:
 
 @pytest.fixture
 def book(tmp_path: Path) -> tuple[Path, Path]:
-    epub = build_epub(tmp_path / "book.epub", [("c.xhtml", "C", "<p>Alpha.</p><p>Beta.</p><p>Gamma.</p>")])
+    epub = build_epub(
+        tmp_path / "book.epub", [("c.xhtml", "C", "<p>Alpha.</p><p>Beta.</p><p>Gamma.</p>")]
+    )
     root = tmp_path / "w"
-    result = CliRunner().invoke(app, ["--work-dir", str(root), "extract", str(epub)], prog_name="tepub")
+    result = CliRunner().invoke(
+        app, ["--work-dir", str(root), "extract", str(epub)], prog_name="tepub"
+    )
     assert result.exit_code == 0, result.output
     return epub, root
 
@@ -48,7 +52,9 @@ def _translate(book, monkeypatch, *flags, fail_on=None):
     epub, root = book
     Model.seen = []
     monkeypatch.setattr(controller, "create_provider", lambda config: Model(config, fail_on))
-    result = CliRunner().invoke(app, ["--work-dir", str(root), "translate", str(epub), *flags], prog_name="tepub")
+    result = CliRunner().invoke(
+        app, ["--work-dir", str(root), "translate", str(epub), *flags], prog_name="tepub"
+    )
     return result, " ".join(result.output.split())
 
 
@@ -70,12 +76,18 @@ def test_allow_failures_exits_0(book, monkeypatch) -> None:
 
 
 def test_model_and_provider_are_taken_for_this_run(book, monkeypatch) -> None:
-    _translate(book, monkeypatch, "--model", "qwen3.5:9b")
+    # One unit is left failed, so the last run still has work and creates a
+    # provider: with nothing pending, none is created.
+    _translate(book, monkeypatch, "--model", "qwen3.5:9b", fail_on="Beta")
     assert Model.seen[-1].name == "ollama" and Model.seen[-1].model == "qwen3.5:9b"
     result, output = _translate(book, monkeypatch, "--provider", "openai")
     assert result.exit_code == 2 and "--model" in output  # another provider needs its model
     _translate(book, monkeypatch, "--provider", "openai", "--model", "gpt-4o")
-    assert (Model.seen[-1].name, Model.seen[-1].model, Model.seen[-1].base_url) == ("openai", "gpt-4o", None)
+    assert (Model.seen[-1].name, Model.seen[-1].model, Model.seen[-1].base_url) == (
+        "openai",
+        "gpt-4o",
+        None,
+    )
 
 
 def test_dry_run_reports_and_translates_nothing(book, monkeypatch) -> None:
@@ -83,3 +95,30 @@ def test_dry_run_reports_and_translates_nothing(book, monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert "3 units to translate" in output and "ollama" in output
     assert Model.seen == []  # no provider was even created
+
+
+@pytest.mark.parametrize("flags", [(), ("--dry-run",)])
+def test_a_corrupt_state_file_is_reported_not_a_traceback(book, monkeypatch, flags) -> None:
+    epub, root = book
+    (state_file,) = root.rglob("state.json")
+    state_file.write_text("{not json", encoding="utf-8")
+    result, output = _translate(book, monkeypatch, *flags)
+    assert result.exit_code == 1, result.output
+    assert "State file is corrupted: state.json" in output
+
+
+def test_a_folder_is_not_taken_for_the_book(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app, ["translate", str(tmp_path)], prog_name="tepub")
+    assert result.exit_code == 2 and "is a directory" in result.output
+
+
+@pytest.mark.parametrize("command", [("translate", "--dry-run"), ("translate",), ("export",)])
+def test_a_book_not_extracted_leaves_no_workspace_behind(tmp_path: Path, command) -> None:
+    """The workspace was created before the check that it was extracted."""
+    epub = build_epub(tmp_path / "book.epub", [("c.xhtml", "C", "<p>Alpha.</p>")])
+    root = tmp_path / "w"
+    result = CliRunner().invoke(
+        app, ["--work-dir", str(root), command[0], str(epub), *command[1:]], prog_name="tepub"
+    )
+    assert result.exit_code != 0
+    assert not root.exists()

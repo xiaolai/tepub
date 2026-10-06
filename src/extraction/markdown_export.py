@@ -7,6 +7,7 @@ from urllib.parse import unquote
 
 import html2text
 from lxml import html as lxml_html
+from rich.markup import escape
 
 from config import AppSettings
 from console_singleton import get_console
@@ -268,7 +269,9 @@ def _html_to_markdown(
         # Fall back to parser-based text extraction. The previous regex fallback
         # (`<[^>]+>` -> "") deleted any legitimate text containing angle brackets
         # and left HTML entities unresolved, silently corrupting the export.
-        console.print(f"[yellow]Warning: HTML to markdown conversion failed: {e}[/yellow]")
+        console.print(
+            f"[yellow]Warning: HTML to markdown conversion failed: {escape(str(e))}[/yellow]"
+        )
         try:
             fallback_tree = lxml_html.fromstring(f"<div>{html_content}</div>")
             return fallback_tree.text_content().strip()
@@ -326,6 +329,60 @@ def _render_block_body(
     return lines
 
 
+def _write_chapter_files(
+    blocks: list[ChapterBlock], bodies: list[list[str]], output_dir: Path
+) -> list[Path]:
+    """One numbered file per chapter block."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    created_files: list[Path] = []
+    for idx, (block, body) in enumerate(zip(blocks, bodies, strict=True), start=1):
+        md_path = output_dir / f"{idx:03d}_{_sanitize_filename(block.title)}.md"
+        md_path.write_text("\n".join([f"# {block.title}", "", *body]), encoding="utf-8")
+        created_files.append(md_path)
+    return created_files
+
+
+def _write_combined_file(
+    input_epub: Path, blocks: list[ChapterBlock], bodies: list[list[str]], output_dir: Path
+) -> Path:
+    """Every block in one file named after the EPUB, a ## heading per block."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    all_lines = [f"# {input_epub.stem}", "", "---", ""]
+    for idx, (block, body) in enumerate(zip(blocks, bodies, strict=True), start=1):
+        all_lines += [f"## {block.title}", "", *body]
+        # A separator between chapters, not after the last.
+        if idx < len(blocks):
+            all_lines += ["---", ""]
+    combined_path = output_dir / f"{input_epub.stem}.md"
+    combined_path.write_text("\n".join(all_lines), encoding="utf-8")
+    return combined_path
+
+
+def _rendered_blocks(
+    settings: AppSettings, input_epub: Path, image_mapping: dict[str, str] | None
+) -> tuple[list[ChapterBlock], list[list[str]]]:
+    by_file, blocks, img_map = _prepare_export(settings, input_epub, image_mapping)
+    return blocks, [_render_block_body(block, by_file, img_map) for block in blocks]
+
+
+def export_markdown(
+    settings: AppSettings,
+    input_epub: Path,
+    output_dir: Path,
+    image_mapping: dict[str, str] | None = None,
+) -> tuple[list[Path], Path]:
+    """Both exports, the chapter files and the combined file.
+
+    The segments are loaded, the book parsed and every unit converted once for
+    the two; called one after the other, each did all of it again.
+    """
+    blocks, bodies = _rendered_blocks(settings, input_epub, image_mapping)
+    return (
+        _write_chapter_files(blocks, bodies, output_dir),
+        _write_combined_file(input_epub, blocks, bodies, output_dir),
+    )
+
+
 def export_to_markdown(
     settings: AppSettings,
     input_epub: Path,
@@ -347,27 +404,8 @@ def export_to_markdown(
     Returns:
         List of created markdown file paths
     """
-    by_file, blocks, img_map = _prepare_export(settings, input_epub, image_mapping)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    created_files: list[Path] = []
-
-    for idx, block in enumerate(blocks, start=1):
-        # Use chapter title for filename
-        safe_title = _sanitize_filename(block.title)
-        md_filename = f"{idx:03d}_{safe_title}.md"
-        md_path = output_dir / md_filename
-
-        # Build markdown content from all files in this block
-        lines = [f"# {block.title}", ""]
-        lines.extend(_render_block_body(block, by_file, img_map))
-
-        # Write file
-        md_content = "\n".join(lines)
-        md_path.write_text(md_content, encoding="utf-8")
-        created_files.append(md_path)
-
-    return created_files
+    blocks, bodies = _rendered_blocks(settings, input_epub, image_mapping)
+    return _write_chapter_files(blocks, bodies, output_dir)
 
 
 def export_combined_markdown(
@@ -391,40 +429,5 @@ def export_combined_markdown(
     Returns:
         Path to the created combined markdown file
     """
-    by_file, blocks, img_map = _prepare_export(settings, input_epub, image_mapping)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Use EPUB filename (without extension) for combined markdown
-    combined_filename = f"{input_epub.stem}.md"
-    combined_path = output_dir / combined_filename
-
-    # Build combined content
-    all_lines = []
-
-    # Add book title
-    book_title = input_epub.stem
-    all_lines.append(f"# {book_title}")
-    all_lines.append("")
-    all_lines.append("---")
-    all_lines.append("")
-
-    # Add each chapter block
-    for idx, block in enumerate(blocks, start=1):
-        # Add chapter heading (one per block, not per file)
-        all_lines.append(f"## {block.title}")
-        all_lines.append("")
-
-        # Add content from all files in this block
-        all_lines.extend(_render_block_body(block, by_file, img_map))
-
-        # Add separator between chapters (except after last chapter)
-        if idx < len(blocks):
-            all_lines.append("---")
-            all_lines.append("")
-
-    # Write combined file
-    combined_content = "\n".join(all_lines)
-    combined_path.write_text(combined_content, encoding="utf-8")
-
-    return combined_path
+    blocks, bodies = _rendered_blocks(settings, input_epub, image_mapping)
+    return _write_combined_file(input_epub, blocks, bodies, output_dir)

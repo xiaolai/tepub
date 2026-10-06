@@ -217,7 +217,7 @@ def safe_load_state(
             path,
             state_type,
             f"Invalid JSON format (line {e.lineno}, column {e.colno})",
-        )
+        ) from e
     except ValidationError as e:
         error_count = len(e.errors())
         first_error = e.errors()[0]
@@ -225,5 +225,6 @@ def safe_load_state(
         raise CorruptedStateError(
             path,
             state_type,
-            f"Schema validation failed: {field} - {first_error['msg']} ({error_count} error(s) total)",
-        )
+            f"Schema validation failed: {field} - {first_error['msg']} "
+            f"({error_count} error(s) total)",
+        ) from e

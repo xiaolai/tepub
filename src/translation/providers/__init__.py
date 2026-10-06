@@ -10,7 +10,6 @@ from .grok import GrokProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 
-
 _REGISTRY = {
     "openai": OpenAIProvider,
     "ollama": OllamaProvider,

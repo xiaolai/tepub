@@ -29,22 +29,30 @@ def test_epub3_nav_gives_titles_and_package_relative_hrefs(tmp_path: Path) -> No
     )
     package = read_package(book)
     assert _titles(package.toc) == ["One -> text/ch1.xhtml", "Two -> text/ch2.xhtml"]
-    assert [s.href.as_posix() for s in package.spine_items()] == ["text/ch1.xhtml", "text/ch2.xhtml"]
+    assert [s.href.as_posix() for s in package.spine_items()] == [
+        "text/ch1.xhtml",
+        "text/ch2.xhtml",
+    ]
 
 
 def test_epub2_ncx_is_read(tmp_path: Path) -> None:
     book = build_epub(
-        tmp_path / "b.epub", [("text/ch1.xhtml", "One", "<p>1</p>"), ("text/ch2.xhtml", "Two", "<p>2</p>")], version=2
+        tmp_path / "b.epub",
+        [("text/ch1.xhtml", "One", "<p>1</p>"), ("text/ch2.xhtml", "Two", "<p>2</p>")],
+        version=2,
     )
     assert _titles(read_package(book).toc) == ["One -> text/ch1.xhtml", "Two -> text/ch2.xhtml"]
 
 
 def test_nested_nav_in_a_subfolder_with_fragments_and_encoded_names(tmp_path: Path) -> None:
-    book = build_epub(tmp_path / "b.epub", [("text/my ch.xhtml", "Ch", "<h1 id='s1'>A</h1><h2 id='s2'>B</h2>")])
+    book = build_epub(
+        tmp_path / "b.epub", [("text/my ch.xhtml", "Ch", "<h1 id='s1'>A</h1><h2 id='s2'>B</h2>")]
+    )
     nav = (
         '<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" '
         'xmlns:epub="http://www.idpf.org/2007/ops"><head><title>t</title></head><body>'
-        '<nav epub:type="landmarks"><ol><li><a epub:type="bodymatter" href="../text/my%20ch.xhtml">Start</a></li></ol></nav>'
+        '<nav epub:type="landmarks"><ol><li><a epub:type="bodymatter" '
+        'href="../text/my%20ch.xhtml">Start</a></li></ol></nav>'
         '<nav epub:type="toc"><ol><li><a href="../text/my%20ch.xhtml#s1">Part</a>'
         '<ol><li><a href="../text/my%20ch.xhtml#s2">Section</a></li></ol></li>'
         "<li><span>Heading only</span></li></ol></nav></body></html>"
@@ -63,7 +71,8 @@ def test_a_nav_with_landmarks_only_falls_back_to_the_ncx_or_nothing(tmp_path: Pa
     nav = (
         '<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" '
         'xmlns:epub="http://www.idpf.org/2007/ops"><head><title>t</title></head><body>'
-        '<nav epub:type="landmarks"><ol><li><a href="ch1.xhtml">Start</a></li></ol></nav></body></html>'
+        '<nav epub:type="landmarks"><ol><li><a href="ch1.xhtml">Start</a></li></ol></nav>'
+        "</body></html>"
     )
     _move_nav(book, "OEBPS/nav.xhtml", nav)
     assert read_package(book).toc == []  # ebooklib raised IndexError here

@@ -7,7 +7,9 @@ import pytest
 from config import AppSettings
 
 
-@pytest.mark.parametrize("value", ["translated", "translated-only", "translated_only", "Translated-Only"])
+@pytest.mark.parametrize(
+    "value", ["translated", "translated-only", "translated_only", "Translated-Only"]
+)
 def test_every_spelling_of_translated(value: str) -> None:
     assert AppSettings(output_mode=value).output_mode == "translated_only"
 

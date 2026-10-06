@@ -86,5 +86,6 @@ def test_a_book_config_applies_under_work_dir_too(tmp_path: Path) -> None:
     assert applied.translation_files == ["c.xhtml"]
     # and the default workspace still applies its own
     (tmp_path / "book").mkdir()
-    (tmp_path / "book" / "config.yaml").write_text("output_mode: translated-only\n", encoding="utf-8")
+    book_config = tmp_path / "book" / "config.yaml"
+    book_config.write_text("output_mode: translated-only\n", encoding="utf-8")
     assert with_book_workspace(AppSettings(), book).output_mode == "translated_only"

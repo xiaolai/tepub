@@ -93,7 +93,11 @@ def _links_resolve(output: Path) -> list[str]:
             if not href or "://" in href or href.startswith("mailto:"):
                 continue
             path, _, fragment = href.partition("#")
-            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(path))) if path else name
+            target = (
+                posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(path)))
+                if path
+                else name
+            )
             if target not in ids or (fragment and fragment not in ids[target]):
                 broken.append(f"{name}: {href}")
     return broken
@@ -109,6 +113,26 @@ def _noterefs(output: Path) -> int:
 
 def _error_counts(findings) -> collections.Counter:
     return collections.Counter(f.code for f in epubcheck.errors(findings))
+
+
+def _new_kinds_of_error(book: Path, out: Path) -> set[tuple[str, str]]:
+    """Kinds of error the output has and the book does not.
+
+    Real books often break their own schema, and a translated copy repeats its
+    paragraph's markup, so an existing violation can occur more often. That
+    cannot be counted: epubcheck caps the locations it lists per message, and
+    counting its messages miscounted when the cap split one kind into two.
+    A kind is the message up to "; expected": what follows lists the
+    attributes still allowed, which changes when a copy loses its id.
+    """
+
+    def kinds(epub: Path) -> set[tuple[str, str]]:
+        return {
+            (f.code, f.message.split("; expected")[0])
+            for f in epubcheck.errors(epubcheck.check(epub))
+        }
+
+    return kinds(out) - kinds(book)
 
 
 CASES = [(name, mode) for name in sorted(FIXTURES) for mode in ("bilingual", "translated_only")]
@@ -130,9 +154,10 @@ def test_translated_output_adds_no_epubcheck_errors(name: str, mode: str, tmp_pa
     _translate_everything(settings)
     out = tmp_path / f"out-{mode}.epub"
 
-    updated, _ = run_injection(settings, book, out, mode=mode)
+    injection = run_injection(settings, book, out, mode=mode)
 
-    assert updated, "nothing was injected"
+    assert injection.updated_html, "nothing was injected"
+    assert not injection.failed
     _assert_heads_kept(book, out)
     assert _links_resolve(out) == []
     # Footnote references survive translation in both modes; translated-only
@@ -164,5 +189,5 @@ def test_real_books_translate_into_valid_epubs(book: Path, mode: str, tmp_path: 
     run_injection(settings, book, out, mode=mode)
 
     _assert_heads_kept(book, out)
-    added = _error_counts(epubcheck.check(out)) - _error_counts(epubcheck.check(book))
-    assert not added, dict(added)
+    added = _new_kinds_of_error(book, out)
+    assert not added, added

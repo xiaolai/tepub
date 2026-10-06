@@ -38,7 +38,10 @@ def test_polish_fixes_existing_emdash_spacing():
     # Both rules with existing em-dash
     assert polish_translation("中文）——（中文") == "中文）——（中文"
     # Real example from translation
-    assert polish_translation("优素福·阿萨尔·亚萨尔——阿拉伯最后一位统治的犹太国王") == "优素福·阿萨尔·亚萨尔 —— 阿拉伯最后一位统治的犹太国王"
+    assert (
+        polish_translation("优素福·阿萨尔·亚萨尔——阿拉伯最后一位统治的犹太国王")
+        == "优素福·阿萨尔·亚萨尔 —— 阿拉伯最后一位统治的犹太国王"
+    )
 
 
 def test_target_is_chinese():

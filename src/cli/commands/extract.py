@@ -1,10 +1,14 @@
 """Extract command implementation."""
 
 import shutil
+import tempfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import click
+from rich.markup import escape
 
 from cli.core import prepare_settings_for_epub
 from config import AppSettings, create_book_config_template
@@ -18,9 +22,11 @@ from state.store import load_segments
 
 console = get_console()
 
+T = TypeVar("T")
+
 
 @click.command()
-@click.argument("input_epub", type=click.Path(exists=True, path_type=Path))
+@click.argument("input_epub", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--output",
     type=click.Path(path_type=Path),
@@ -29,11 +35,16 @@ console = get_console()
 @click.option(
     "--include-back-matter",
     is_flag=True,
-    help="Include back-matter continuation pages (index, notes, etc.). By default, files after back-matter triggers are skipped.",
+    help="Include back-matter continuation pages (index, notes, etc.). "
+    "By default, files after back-matter triggers are skipped.",
 )
-@click.option("--raw", is_flag=True, help="Also unzip the whole book into the workspace (epub_raw/).")
 @click.option(
-    "--markdown", is_flag=True, help="Also export the book as Markdown, with its images (markdown/)."
+    "--raw", is_flag=True, help="Also unzip the whole book into the workspace (epub_raw/)."
+)
+@click.option(
+    "--markdown",
+    is_flag=True,
+    help="Also export the book as Markdown, with its images (markdown/).",
 )
 @click.pass_context
 def extract(
@@ -60,7 +71,7 @@ def extract(
         settings = settings.model_copy(update={"skip_after_back_matter": False})
 
     run_extraction(settings=settings, input_epub=input_epub)
-    console.print(f"[green]Segments written to {settings.segments_file}[/green]")
+    console.print(f"[green]Segments written to {escape(str(settings.segments_file))}[/green]")
 
     # Load extracted metadata and create config.yaml with filled values
     segments_doc = load_segments(settings.segments_file)
@@ -81,74 +92,116 @@ def extract(
         _write_markdown(settings, input_epub)
 
 
-def _write_raw(settings: AppSettings, input_epub: Path) -> None:
-    # Extract complete EPUB structure.
-    # Clear the previous tree first: it was reused in place, so files removed from
-    # a re-published EPUB lingered and the raw tree drifted out of sync with the
-    # book actually being processed.
-    epub_raw_dir = settings.work_dir / "epub_raw"
-    if epub_raw_dir.exists():
-        shutil.rmtree(epub_raw_dir, ignore_errors=True)
-    try:
-        structure_mapping = extract_epub_structure(
-            input_epub, epub_raw_dir, preserve_structure=True
-        )
-        console.print(
-            f"[green]Extracted complete EPUB structure ({len(structure_mapping)} files) to {epub_raw_dir.relative_to(Path.cwd()) if epub_raw_dir.is_relative_to(Path.cwd()) else epub_raw_dir}[/green]"
-        )
+def _replace_dir(target: Path, build: Callable[[Path], T]) -> T:
+    """Build into a fresh sibling of `target`, then swap it in.
 
-        # Show key metadata files
+    Writing in place kept files the book no longer has, and clearing first
+    lost the last good copy when the new one failed.
+    """
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
+    try:
+        result = build(staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    previous = staging.with_name(f"{staging.name}.old")
+    try:
+        if target.exists():
+            target.rename(previous)
+        try:
+            staging.rename(target)
+        except BaseException:
+            # Put the last good copy back rather than leave none at all.
+            if previous.exists():
+                previous.rename(target)
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if previous.exists():
+        shutil.rmtree(previous)
+    return result
+
+
+def _write_raw(settings: AppSettings, input_epub: Path) -> None:
+    epub_raw_dir = settings.work_dir / "epub_raw"
+
+    def build(staging: Path) -> tuple[int, dict[str, Path]]:
+        structure_mapping = extract_epub_structure(input_epub, staging, preserve_structure=True)
         metadata_files = get_epub_metadata_files(structure_mapping)
-        if metadata_files:
-            console.print("[cyan]Key EPUB files extracted:[/cyan]")
-            for key, path in sorted(metadata_files.items()):
-                rel_path = path.relative_to(epub_raw_dir)
-                console.print(f"  {key}: {rel_path}")
+        return len(structure_mapping), {
+            key: path.relative_to(staging) for key, path in metadata_files.items()
+        }
+
+    try:
+        count, metadata_files = _replace_dir(epub_raw_dir, build)
     except UnsafeArchiveMemberError:
         # A malicious or malformed archive is not a "warning" case — surface it.
         raise
     except (OSError, zipfile.BadZipFile) as e:
-        # Narrowed from `except Exception`, which also hid permission errors and
-        # programming defects behind a warning while extraction continued with a
-        # partial raw tree.
-        console.print(f"[yellow]Warning: Could not extract EPUB structure: {e}[/yellow]")
+        # --raw asked for the tree; a failure to write it is the command failing.
+        raise click.ClickException(f"Could not unzip the book into {epub_raw_dir}: {e}") from e
 
+    cwd = Path.cwd()
+    shown = epub_raw_dir.relative_to(cwd) if epub_raw_dir.is_relative_to(cwd) else epub_raw_dir
+    console.print(
+        f"[green]Extracted complete EPUB structure ({count} files) to "
+        f"{escape(str(shown))}[/green]"
+    )
+    if metadata_files:
+        console.print("[cyan]Key EPUB files extracted:[/cyan]")
+        for key, rel_path in sorted(metadata_files.items()):
+            console.print(f"  {escape(str(key))}: {escape(str(rel_path))}")
 
 
 def _write_markdown(settings: AppSettings, input_epub: Path) -> None:
-    # Extract images to markdown/images directory
-    markdown_dir = settings.work_dir / "markdown"
-    images_dir = markdown_dir / "images"
+    # Imported lazily so that commands other than `extract` do not pay the
+    # html2text import cost at CLI startup. html2text is a declared dependency,
+    # so a failure here means a broken install rather than a missing extra.
+    try:
+        from extraction.markdown_export import export_markdown
+    except ImportError as exc:
+        console.print(f"[red]Markdown export unavailable: {escape(str(exc))}[/red]")
+        console.print(
+            "[yellow]Reinstall tepub to repair the environment: pip install -e .[/yellow]"
+        )
+        raise SystemExit(1) from exc
 
-    extracted_images = extract_images(settings, input_epub, images_dir)
-    image_mapping = get_image_mapping(extracted_images)
+    markdown_dir = settings.work_dir / "markdown"
+
+    def build(staging: Path):
+        # Images go to markdown/images; the Markdown refers to them by file name.
+        extracted_images = extract_images(settings, input_epub, staging / "images")
+        image_mapping = get_image_mapping(extracted_images)
+        created_files, combined_file = export_markdown(
+            settings, input_epub, staging, image_mapping
+        )
+        return extracted_images, created_files, combined_file
+
+    try:
+        extracted_images, created_files, combined_file = _replace_dir(markdown_dir, build)
+    except OSError as e:
+        # As for --raw: asked for, so a failure to write it fails the command.
+        raise click.ClickException(
+            f"Could not write the Markdown export to {markdown_dir}: {e}"
+        ) from e
 
     if extracted_images:
-        console.print(f"[green]Extracted {len(extracted_images)} images to {images_dir}[/green]")
+        images_dir = markdown_dir / "images"
+        console.print(
+            f"[green]Extracted {len(extracted_images)} images to "
+            f"{escape(str(images_dir))}[/green]"
+        )
 
         # Report cover candidates
         cover_candidates = [img for img in extracted_images if img.is_cover_candidate]
         if cover_candidates:
             console.print("[cyan]Potential cover candidates:[/cyan]")
             for img in cover_candidates[:3]:  # Show top 3
-                console.print(f"  - {img.extracted_path.name}")
+                console.print(f"  - {escape(img.extracted_path.name)}")
 
-    # Export markdown files with image references
-    # Imported lazily so that commands other than `extract` do not pay the
-    # html2text import cost at CLI startup. html2text is a declared dependency,
-    # so a failure here means a broken install rather than a missing extra.
-    try:
-        from extraction.markdown_export import export_combined_markdown, export_to_markdown
-    except ImportError as exc:
-        console.print(f"[red]Markdown export unavailable: {exc}[/red]")
-        console.print(
-            "[yellow]Reinstall tepub to repair the environment: pip install -e .[/yellow]"
-        )
-        raise SystemExit(1) from exc
-
-    created_files = export_to_markdown(settings, input_epub, markdown_dir, image_mapping)
-    console.print(f"[green]Exported {len(created_files)} markdown files to {markdown_dir}[/green]")
-
-    # Export combined markdown file
-    combined_file = export_combined_markdown(settings, input_epub, markdown_dir, image_mapping)
-    console.print(f"[green]Created combined markdown: {combined_file.name}[/green]")
+    console.print(
+        f"[green]Exported {len(created_files)} markdown files to "
+        f"{escape(str(markdown_dir))}[/green]"
+    )
+    console.print(f"[green]Created combined markdown: {escape(combined_file.name)}[/green]")

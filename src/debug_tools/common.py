@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.markup import escape
+
 from config import AppSettings
 from console_singleton import get_console
 from state.store import load_segments, load_state
@@ -11,7 +13,9 @@ console = get_console()
 
 def require_file(path: Path, description: str) -> None:
     if not path.exists():
-        console.print(f"[bold red]{description} not found:[/bold red] {path}")
+        console.print(
+            f"[bold red]{escape(str(description))} not found:[/bold red] {escape(str(path))}"
+        )
         raise SystemExit(1)
 
 

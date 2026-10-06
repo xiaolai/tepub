@@ -116,7 +116,7 @@ def test_a_missing_closing_marker_is_not_guessed_otherwise() -> None:
 
 def test_an_inline_formula_travels_as_one_marker_and_comes_back_unchanged() -> None:
     math = '<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi><mo>=</mo><mn>2</mn></math>'
-    source = f"Let {math} hold, see <a href=\"#n\">note</a>."
+    source = f'Let {math} hold, see <a href="#n">note</a>.'
     text, markers = protect(source)
     assert text == "Let ⟦1⟧ hold, see ⟦2⟧note⟦/2⟧."
     rebuilt = restore("设 ⟦1⟧ 成立，见⟦2⟧注释⟦/2⟧。", markers)

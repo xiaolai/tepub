@@ -182,9 +182,8 @@ def _rewrite_media_urls(doc: html.HtmlElement, relative_path: Path) -> None:
                             continue
                         if " " in candidate:
                             url_part, descriptor = candidate.split(" ", 1)
-                            parts.append(
-                                f"{_prefix_content_path(relative_path, url_part)} {descriptor.strip()}"
-                            )
+                            prefixed = _prefix_content_path(relative_path, url_part)
+                            parts.append(f"{prefixed} {descriptor.strip()}")
                         else:
                             parts.append(_prefix_content_path(relative_path, candidate))
                     if parts:

@@ -10,14 +10,26 @@ from collections.abc import Callable
 from pathlib import Path
 
 import click
+import pydantic
+import yaml
+from rich.markup import escape
 
 from cli.commands import register_commands
 from cli.core import prepare_initial_settings
 from cli.debug import register_debug_commands
+from config.loader import ConfigFileError
 from console_singleton import configure_console, get_console
 from exceptions import TepubError
 
-console = get_console()
+
+def _is_flag_cluster(token: str, short_flags: set[str]) -> bool:
+    """Whether `token` is short global flags written together, as in -vq."""
+    return (
+        len(token) > 2
+        and token[0] == "-"
+        and token[1] != "-"
+        and all(char in short_flags for char in token[1:])
+    )
 
 
 class DefaultCommandGroup(click.Group):
@@ -39,27 +51,35 @@ class DefaultCommandGroup(click.Group):
         first = [name for name in self.WORKFLOW if name in names]
         return first + sorted(name for name in names if name not in first)
 
-    def _value_options(self) -> set[str]:
-        value_opts: set[str] = set()
-        for param in self.params:
-            if getattr(param, "is_flag", False):
-                continue
-            value_opts.update(param.opts)
-            value_opts.update(param.secondary_opts)
-        return value_opts
-
     def _global_options(self) -> tuple[set[str], set[str]]:
         """(options taking a value, flags) of the group itself."""
+        value_opts: set[str] = set()
         flags: set[str] = set()
         for param in self.params:
-            if getattr(param, "is_flag", False):
-                flags.update(param.opts)
-                flags.update(param.secondary_opts)
-        return self._value_options(), flags
+            names = flags if getattr(param, "is_flag", False) else value_opts
+            names.update(param.opts)
+            names.update(param.secondary_opts)
+        return value_opts, flags
+
+    def _command_value_options(self, name: str | None) -> dict[str, int]:
+        """Options of the command `name`, and of its subcommands, that take
+        values: each with the number of values it takes."""
+        arity: dict[str, int] = {}
+        stack = [self.commands.get(name)] if name else []
+        while stack:
+            command = stack.pop()
+            if command is None:
+                continue
+            for param in command.params:
+                if isinstance(param, click.Option) and not param.is_flag and not param.count:
+                    arity.update(dict.fromkeys(param.opts, param.nargs))
+            if isinstance(command, click.Group):
+                stack.extend(command.commands.values())
+        return arity
 
     def _first_argument_index(self, args: list[str]) -> int | None:
         """Index of the first non-option token, skipping group options and values."""
-        value_opts = self._value_options()
+        value_opts = self._global_options()[0]
         index = 0
         while index < len(args):
             token = args[index]
@@ -80,7 +100,14 @@ class DefaultCommandGroup(click.Group):
         options were accepted only before the command. No command defines an
         option of the same name (a test holds that), so the move is unambiguous.
         """
+        if "--" in args[:start]:
+            # Everything after "--" is an argument, global-option look-alikes too.
+            return args
         value_opts, flags = self._global_options()
+        short_flags = {flag[1] for flag in flags if len(flag) == 2}
+        # The command's own options keep their values: `--model -q` names a model.
+        command = args[start] if args[start] in self.commands else self.default_command
+        command_opts = self._command_value_options(command)
         front, rest = list(args[:start]), []
         index = start
         while index < len(args):
@@ -89,7 +116,10 @@ class DefaultCommandGroup(click.Group):
                 rest.extend(args[index:])
                 break
             name = token.split("=", 1)[0]
-            if name in flags:
+            if name in command_opts and "=" not in token:
+                rest.extend(args[index : index + 1 + command_opts[name]])
+                index += 1 + command_opts[name]
+            elif name in flags or _is_flag_cluster(token, short_flags):
                 front.append(token)
                 index += 1
             elif name in value_opts and "=" in token:
@@ -124,7 +154,11 @@ class DefaultCommandGroup(click.Group):
             close = difflib.get_close_matches(name, self.list_commands(ctx), n=1)
             # Newer Click versions suggest by themselves; add one only where
             # it does not, or the message says it twice.
-            if close and "No such command" in exc.message and "Did you mean" not in exc.format_message():
+            if (
+                close
+                and "No such command" in exc.message
+                and "Did you mean" not in exc.format_message()
+            ):
                 exc.message = f"No such command '{name}'. Did you mean '{close[0]}'?"
             raise
 
@@ -133,7 +167,7 @@ class DefaultCommandGroup(click.Group):
 @click.option(
     "--config",
     "config_file",
-    type=click.Path(exists=True, path_type=Path),
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
     help="Path to config.yaml file.",
 )
 @click.option(
@@ -176,8 +210,14 @@ def app(
     \b
     tepub status book.epub shows how far a book has got.
     """
-    configure_console(quiet=quiet, verbose=verbose)
-    settings = prepare_initial_settings(config_file, work_dir, verbose)
+    configure_console(quiet=quiet)
+    # Log records go to a console of their own, which --quiet does not reach;
+    # errors still show. Set either way, as the setting is process-wide.
+    logging.disable(logging.WARNING if quiet else logging.NOTSET)
+    try:
+        settings = prepare_initial_settings(config_file, work_dir, verbose)
+    except (yaml.YAMLError, pydantic.ValidationError, ConfigFileError) as exc:
+        raise click.ClickException(f"The configuration is not valid: {exc}") from exc
     ctx.ensure_object(dict)
     ctx.obj["settings"] = settings
     ctx.obj["config_file"] = config_file
@@ -209,12 +249,18 @@ def run_guarded(func: Callable[[], object]) -> object:
     """
     try:
         return func()
-    except (KeyboardInterrupt, click.exceptions.Abort):
-        get_console().print("[yellow]Interrupted. Progress is saved.[/yellow]")
-        logging.shutdown()
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(EXIT_INTERRUPTED)
+    except KeyboardInterrupt:
+        pass
+    except click.exceptions.Abort as exc:
+        # click raises Abort for Ctrl-C, but also for a declined confirmation
+        # or the end of input, which interrupt nothing.
+        if not isinstance(exc.__context__, KeyboardInterrupt):
+            raise
+    get_console().print("[yellow]Interrupted. Progress is saved.[/yellow]")
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(EXIT_INTERRUPTED)
 
 
 def run() -> None:
@@ -229,13 +275,16 @@ def run() -> None:
         result = run_guarded(invoke)
     except click.exceptions.Exit as exc:
         sys.exit(exc.exit_code)
+    except click.exceptions.Abort:
+        click.echo("Aborted!", err=True)
+        sys.exit(1)
     except click.ClickException as exc:
         exc.show()
         sys.exit(exc.exit_code)
     except TepubError as exc:
         # tepub's own errors say what is wrong and what to do; a damaged EPUB
         # used to end in a traceback. Other exceptions are defects and keep it.
-        get_console().print(f"[red]{exc}[/red]")
+        get_console().print(f"[red]{escape(str(exc))}[/red]")
         sys.exit(1)
     sys.exit(result if isinstance(result, int) else 0)
 

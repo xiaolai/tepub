@@ -19,7 +19,8 @@ SOURCE = (
 
 def test_a_faithful_translation_passes() -> None:
     reply = (
-        '一个<em>强调的</em>论断<a epub:type="noteref" id="r1" href="notes.xhtml#n1"><sup>1</sup></a>'
+        "一个<em>强调的</em>论断"
+        '<a epub:type="noteref" id="r1" href="notes.xhtml#n1"><sup>1</sup></a>'
         '，还有<img src="i.png" alt="图"/>。'
     )
     assert markup_mismatch(SOURCE, reply) is None
@@ -68,5 +69,7 @@ def test_emphasis_may_differ() -> None:
 def test_a_line_break_may_be_lost() -> None:
     """Reordered into Chinese, "co-author of The Chinese Heroin Trade<br/>and
     author of ..." has no place left for its break; untranslated is worse."""
-    source = "Ko-lin Chin, co-author of The Chinese Heroin Trade<br/>and author of The Golden Triangle"
+    source = (
+        "Ko-lin Chin, co-author of The Chinese Heroin Trade<br/>and author of The Golden Triangle"
+    )
     assert markup_mismatch(source, "《中国海洛因贸易》合著者、《金三角》作者陈国霖") is None

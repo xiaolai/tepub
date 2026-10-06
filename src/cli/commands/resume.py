@@ -15,6 +15,7 @@ from console_singleton import get_console
 def resume(ctx: click.Context, book: Path | None) -> None:
     """Deprecated: use `tepub status`."""
     get_console().print(
-        "[yellow]resume is deprecated; use `tepub status`. It will be removed in a later release.[/yellow]"
+        "[yellow]resume is deprecated; use `tepub status`. "
+        "It will be removed in a later release.[/yellow]"
     )
     show_status(ctx, book)

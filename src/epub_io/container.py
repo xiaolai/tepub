@@ -278,7 +278,9 @@ def _metadata(opf: etree._Element) -> Metadata:
     return Metadata(
         title=_first_text(meta, f"{{{DC_NS}}}title"),
         creators=[
-            (n.text or "").strip() for n in meta.iterfind(f"{{{DC_NS}}}creator") if (n.text or "").strip()
+            (n.text or "").strip()
+            for n in meta.iterfind(f"{{{DC_NS}}}creator")
+            if (n.text or "").strip()
         ],
         publisher=_first_text(meta, f"{{{DC_NS}}}publisher"),
         date=_first_text(meta, f"{{{DC_NS}}}date"),
@@ -327,7 +329,9 @@ def _ncx_entries(package: Package, ncx_path: str, parent: etree._Element) -> lis
         entries.append(
             TocEntry(
                 title=" ".join((label.text or "").split()) if label is not None else "",
-                href=_toc_href(package, ncx_path, content.get("src") if content is not None else None),
+                href=_toc_href(
+                    package, ncx_path, content.get("src") if content is not None else None
+                ),
                 children=_ncx_entries(package, ncx_path, point),
             )
         )
@@ -376,8 +380,11 @@ def write_copy(source: Path, output: Path, replacements: dict[str, bytes]) -> No
         with zipfile.ZipFile(tmp, "w") as out:
             mimetype = next((i for i in entries if i.filename == "mimetype"), None)
             data = archive.read(mimetype) if mimetype is not None else MIMETYPE
-            out.writestr(zipfile.ZipInfo("mimetype", date_time=_date(mimetype)), data,
-                         compress_type=zipfile.ZIP_STORED)
+            out.writestr(
+                zipfile.ZipInfo("mimetype", date_time=_date(mimetype)),
+                data,
+                compress_type=zipfile.ZIP_STORED,
+            )
             for info in entries:
                 if info.filename == "mimetype":
                     continue
@@ -385,6 +392,10 @@ def write_copy(source: Path, output: Path, replacements: dict[str, bytes]) -> No
                 if payload is None:
                     payload = archive.read(info)
                 copy = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+                # The attributes mean what the creating system says they mean:
+                # a FAT book's zero attributes, relabelled as Unix, became
+                # Python's stand-in mode 600, and folders unzipped unopenable.
+                copy.create_system = info.create_system
                 copy.external_attr = info.external_attr
                 copy.compress_type = info.compress_type
                 out.writestr(copy, payload)

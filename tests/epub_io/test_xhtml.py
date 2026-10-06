@@ -10,14 +10,16 @@ from __future__ import annotations
 import pytest
 from lxml import etree
 
-from epub_io.xhtml import NotWellFormed, parse_xhtml, serialize_xhtml
+from epub_io.xhtml import NotWellFormedError, parse_xhtml, serialize_xhtml
 
 SVG_DOC = b"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="fr" lang="fr">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"
+      xml:lang="fr" lang="fr">
 <head><title>T</title></head>
 <body>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" preserveAspectRatio="xMidYMid"><linearGradient id="g"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"
+     preserveAspectRatio="xMidYMid"><linearGradient id="g"/></svg>
 <epub:switch id="s"><epub:default><p>y</p></epub:default></epub:switch>
 <p>Text<br/>more</p>
 </body>
@@ -69,9 +71,7 @@ def test_escaped_markup_stays_escaped() -> None:
 
 
 def test_entities_inside_cdata_and_comments_are_left_alone() -> None:
-    data = SVG_DOC.replace(
-        b"<p>Text<br/>more</p>", b"<!-- &nbsp; --><p><![CDATA[&nbsp;]]></p>"
-    )
+    data = SVG_DOC.replace(b"<p>Text<br/>more</p>", b"<!-- &nbsp; --><p><![CDATA[&nbsp;]]></p>")
     doc = parse_xhtml(data)
     assert "&nbsp;" in "".join(doc.root.itertext())
     assert b"<!-- &nbsp; -->" in serialize_xhtml(doc)
@@ -88,7 +88,7 @@ def test_external_entities_are_never_resolved(tmp_path) -> None:
     )
     try:
         doc = parse_xhtml(data)
-    except NotWellFormed:
+    except NotWellFormedError:
         return  # refusing the document is also safe
     assert b"TOP SECRET" not in serialize_xhtml(doc)
     assert "TOP SECRET" not in "".join(doc.root.itertext())
@@ -103,5 +103,5 @@ def test_external_entities_are_never_resolved(tmp_path) -> None:
     ],
 )
 def test_a_malformed_document_is_reported_not_repaired(broken: bytes) -> None:
-    with pytest.raises(NotWellFormed):
+    with pytest.raises(NotWellFormedError):
         parse_xhtml(broken)

@@ -22,7 +22,10 @@ from webbuilder import export_web
 @pytest.mark.parametrize("version", [2, 3])
 def test_web_export_keeps_markers_and_language(tmp_path: Path, version: int) -> None:
     book = build_epub(
-        tmp_path / "b.epub", [("ch1.xhtml", "One", "<p>Hello there.</p>")], version=version, lang="en"
+        tmp_path / "b.epub",
+        [("ch1.xhtml", "One", "<p>Hello there.</p>")],
+        version=version,
+        lang="en",
     )
     settings = AppSettings(work_dir=tmp_path / "w")
     run_extraction(settings, book)
@@ -33,7 +36,7 @@ def test_web_export_keeps_markers_and_language(tmp_path: Path, version: int) -> 
         )
     settings.state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
-    web = export_web(settings, book, output_dir=tmp_path / "web")
+    web = export_web(settings, book, output_dir=tmp_path / "web").site
 
     page = next((web / "content").rglob("ch1.xhtml")).read_text(encoding="utf-8")
     assert "tepub-original" in page and "tepub-translation" in page

@@ -75,4 +75,7 @@ def test_escaped_tags_in_a_marker_reply_are_caught() -> None:
 
 def test_tags_the_source_itself_shows_are_allowed() -> None:
     assert stray_tags("Write <p> for a paragraph.", "用 <p> 写段落。") is None
-    assert stray_tags("A plain sentence.", "一个 <em>普通</em> 句子。") == "added HTML tags <em> to plain text"
+    assert (
+        stray_tags("A plain sentence.", "一个 <em>普通</em> 句子。")
+        == "added HTML tags <em> to plain text"
+    )

@@ -6,6 +6,9 @@ from pathlib import Path
 
 from config.models import _NON_SLUG_CHARS, _WORD_SPLIT_PATTERN, _WORKSPACE_HASH_LENGTH, AppSettings
 from exceptions import StateFileNotFoundError, WorkspaceNotFoundError
+from logging_utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def derive_book_workspace(settings: AppSettings, input_epub: Path) -> Path:
@@ -25,23 +28,71 @@ def _with_book_config(settings: AppSettings) -> AppSettings:
     Applied wherever the workspace is: under --work-dir it was never read, and
     a book's file list, prompt and output mode were silently ignored.
     """
-    from config.loader import _parse_yaml_file
+    import pydantic
+
+    from config.loader import (
+        ConfigFileError,
+        _parse_yaml_file,
+        _prepare_provider_credentials,
+        yaml,
+    )
+    from config.provenance import BOOK, ConfigLayer
+    from translation.prompt_builder import configure_prompt
 
     book_config = settings.work_dir / "config.yaml"
-    if not book_config.exists():
-        return settings
-    book_payload = _parse_yaml_file(book_config)
-    if not book_payload or not isinstance(book_payload, dict):
-        return settings
-    updated = settings.model_copy(update=book_payload)
-    # The prompt builder holds global state configured from the *global*
-    # config at load time. Without reconfiguring here, a per-book
-    # prompt_preamble was stored on the settings object and then ignored,
-    # and translation kept using the global prompt.
-    if "prompt_preamble" in book_payload:
-        from translation.prompt_builder import configure_prompt
-
-        configure_prompt(updated.prompt_preamble)
+    # A file holding a list or a lone value is refused by the parser; it used
+    # to be skipped, and the book ran on settings it did not ask for.
+    # Errors become ConfigFileError, which the entry point reports in one
+    # line: malformed YAML or a bad value here escaped as a traceback.
+    try:
+        book_payload = _parse_yaml_file(book_config)
+    except yaml.YAMLError as exc:
+        raise ConfigFileError(f"{book_config} is not valid YAML: {exc}") from exc
+    # Recorded with what the loader read, replacing a book layer an earlier
+    # workspace choice added, so `config show` can name where each value came
+    # from. The path is the one read, before the book's config can move work_dir.
+    layers = (
+        *(layer for layer in settings.config_layers if layer.label != BOOK),
+        ConfigLayer(BOOK, book_config, book_config.exists(), book_payload),
+    )
+    updated = settings
+    if book_payload:
+        unknown = sorted(set(book_payload) - set(AppSettings.model_fields))
+        if unknown:
+            logger.warning(
+                "Ignoring settings tepub does not use in %s: %s", book_config, ", ".join(unknown)
+            )
+        try:
+            updated = settings.model_copy(update=book_payload)
+        except pydantic.ValidationError as exc:
+            raise ConfigFileError(f"{book_config} has invalid settings:\n{exc}") from exc
+        if "skip_rules" in book_payload:
+            # A book's rules add to the ones it inherits, as its config.yaml
+            # says; they used to replace them, so adding "prologue" dropped
+            # "copyright", "index" and the rest.
+            # Keywords are normalised, so each is kept once, the book's own
+            # repeats included.
+            seen = {rule.keyword for rule in settings.skip_rules}
+            added = []
+            for rule in updated.skip_rules:
+                if rule.keyword not in seen:
+                    seen.add(rule.keyword)
+                    added.append(rule)
+            updated = updated.model_copy(update={"skip_rules": [*settings.skip_rules, *added]})
+        if "primary_provider" in book_payload:
+            # The main loader fills a provider's key and address from the
+            # environment; a book's own provider lost OLLAMA_BASE_URL without
+            # it. The book's config sits above the environment, so a key or
+            # address the book sets itself is kept: re-applying the variable
+            # over it replaced the book's explicit base_url.
+            book_fields = updated.primary_provider.model_fields_set
+            updated = _prepare_provider_credentials(updated, keep=frozenset(book_fields))
+    # The prompt builder holds global state. Configured only when a book set a
+    # prompt, the next book in the same process kept that prompt.
+    configure_prompt(updated.prompt_preamble)
+    if updated is settings:
+        updated = settings.model_copy()
+    updated.config_layers = layers
     return updated
 
 
@@ -105,6 +156,25 @@ def assert_same_book(segments_doc, input_epub: Path) -> None:
         raise ArtifactMismatchError(input_epub, recorded)
 
 
+def _check_workspace(settings: AppSettings, input_epub: Path, *, with_state: bool) -> None:
+    """The workspace exists, its files load, and its segments are this book's."""
+    from state.base import safe_load_state
+    from state.models import SegmentsDocument, StateDocument
+
+    if not settings.work_dir.exists():
+        raise WorkspaceNotFoundError(input_epub, settings.work_dir)
+    if not settings.segments_file.exists():
+        raise StateFileNotFoundError("segments", input_epub)
+    if with_state and not settings.state_file.exists():
+        raise StateFileNotFoundError("translation", input_epub)
+
+    # Validate that files can actually be loaded (not corrupted)
+    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+    if with_state:
+        safe_load_state(settings.state_file, StateDocument, "translation")
+    assert_same_book(segments_doc, input_epub)
+
+
 def validate_for_export(settings: AppSettings, input_epub: Path) -> None:
     """Validate that all required files exist for export operations.
 
@@ -117,22 +187,7 @@ def validate_for_export(settings: AppSettings, input_epub: Path) -> None:
         StateFileNotFoundError: If required state files are missing
         CorruptedStateError: If state files are corrupted
     """
-    from state.base import safe_load_state
-    from state.models import SegmentsDocument, StateDocument
-
-    if not settings.work_dir.exists():
-        raise WorkspaceNotFoundError(input_epub, settings.work_dir)
-
-    if not settings.segments_file.exists():
-        raise StateFileNotFoundError("segments", input_epub)
-
-    if not settings.state_file.exists():
-        raise StateFileNotFoundError("translation", input_epub)
-
-    # Validate that files can actually be loaded (not corrupted)
-    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
-    safe_load_state(settings.state_file, StateDocument, "translation")
-    assert_same_book(segments_doc, input_epub)
+    _check_workspace(settings, input_epub, with_state=True)
 
 
 def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
@@ -147,18 +202,7 @@ def validate_for_translation(settings: AppSettings, input_epub: Path) -> None:
         StateFileNotFoundError: If segments file is missing
         CorruptedStateError: If segments file is corrupted
     """
-    from state.base import safe_load_state
-    from state.models import SegmentsDocument
-
-    if not settings.work_dir.exists():
-        raise WorkspaceNotFoundError(input_epub, settings.work_dir)
-
-    if not settings.segments_file.exists():
-        raise StateFileNotFoundError("segments", input_epub)
-
-    # Validate that segments file can actually be loaded (not corrupted)
-    segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
-    assert_same_book(segments_doc, input_epub)
+    _check_workspace(settings, input_epub, with_state=False)
 
 
 def build_workspace_name(input_epub: Path) -> str:
@@ -167,7 +211,7 @@ def build_workspace_name(input_epub: Path) -> str:
     digest = hashlib.sha1(
         str(input_epub.expanduser().resolve(strict=False)).encode("utf-8")
     ).hexdigest()[:_WORKSPACE_HASH_LENGTH]
-    return f"{first_word}-{digest}" if digest else first_word
+    return f"{first_word}-{digest}"
 
 
 def _extract_first_word(input_epub: Path) -> str:
@@ -180,10 +224,3 @@ def _extract_first_word(input_epub: Path) -> str:
     ascii_candidate = _NON_SLUG_CHARS.sub("", ascii_candidate)
     return ascii_candidate or "book"
 
-
-# Attach workspace methods to AppSettings for backward compatibility
-AppSettings.derive_book_workspace = derive_book_workspace  # type: ignore
-AppSettings.with_book_workspace = with_book_workspace  # type: ignore
-AppSettings.with_override_root = with_override_root  # type: ignore
-AppSettings.validate_for_export = validate_for_export  # type: ignore
-AppSettings.validate_for_translation = validate_for_translation  # type: ignore

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from rich.markup import escape
 from rich.table import Table
 
 from config import AppSettings
@@ -54,6 +55,6 @@ def show_pending(settings: AppSettings) -> None:
     table.add_column("File")
     table.add_column("Count")
     for file_path, count in sorted(pending_by_file.items()):
-        table.add_row(file_path, str(count))
+        table.add_row(escape(str(file_path)), str(count))
 
     console.print(table)

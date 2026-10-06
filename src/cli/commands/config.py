@@ -7,12 +7,14 @@ from pathlib import Path
 
 import click
 from pydantic import ValidationError
+from rich.markup import escape
 from rich.panel import Panel
 from rich.tree import Tree
 
-from cli.core import prepare_settings_for_epub
 from config import AppSettings
-from config.loader import _parse_yaml_file
+from config.loader import ConfigFileError, _parse_yaml_file
+from config.provenance import shown_settings
+from config.workspace import _with_book_config, build_workspace_name, derive_book_workspace
 from console_singleton import get_console
 
 console = get_console()
@@ -22,6 +24,39 @@ console = get_console()
 def config() -> None:
     """Configuration management commands."""
     pass
+
+
+def _book_settings(ctx: click.Context, input_epub: Path) -> AppSettings:
+    """The settings pointed at the book's workspace, before its config.yaml applies.
+
+    prepare_settings_for_epub creates the workspace and applies the book's own
+    config, so inspecting a config wrote to disk, failed when the config being
+    inspected was itself invalid, and lost the config's path when that config
+    moved work_dir. This mirrors its workspace choice without either effect.
+    """
+    settings: AppSettings = ctx.obj["settings"]
+    override = ctx.obj.get("work_dir_override_path")
+    if override is None:
+        work_dir = derive_book_workspace(settings, input_epub)
+        return settings.model_copy(update={"work_root": work_dir.parent, "work_dir": work_dir})
+    base = Path(override).expanduser()
+    if not base.is_absolute():
+        base = Path.cwd() / base
+    if (base / "segments.json").exists() or (base / "state.json").exists():
+        return settings.model_copy(update={"work_root": base.parent, "work_dir": base})
+    work_dir = base / build_workspace_name(input_epub)
+    return settings.model_copy(update={"work_root": base, "work_dir": work_dir})
+
+
+def _config_target(
+    ctx: click.Context, input_epub: Path | None, use_global: bool, config_file_path: Path | None
+) -> tuple[Path, str]:
+    """The config file a validate or reset acts on, and its kind."""
+    if config_file_path:
+        return config_file_path, "Custom"
+    if use_global or input_epub is None:
+        return _get_global_config_path(), "Global"
+    return _book_settings(ctx, input_epub).work_dir / "config.yaml", "Per-book"
 
 
 @config.command()
@@ -39,7 +74,9 @@ def config() -> None:
     help="Path to specific config file to validate.",
 )
 @click.pass_context
-def validate(ctx: click.Context, input_epub: Path | None, use_global: bool, config_file_path: Path | None) -> None:
+def validate(
+    ctx: click.Context, input_epub: Path | None, use_global: bool, config_file_path: Path | None
+) -> None:
     """Validate configuration file syntax and values.
 
     Examples:
@@ -48,221 +85,210 @@ def validate(ctx: click.Context, input_epub: Path | None, use_global: bool, conf
       tepub config validate book.epub          # Validate per-book config
       tepub config validate --file path.yaml   # Validate specific file
     """
-    # Determine which config to validate
-    if config_file_path:
-        config_path = config_file_path
-        config_type = "Custom"
-    elif use_global or input_epub is None:
-        config_path = _get_global_config_path()
-        config_type = "Global"
-    else:
-        # Get per-book config path
-        # We need settings, but it might not be available if global config is broken
-        # So we'll construct the path manually
-        settings: AppSettings = ctx.obj.get("settings")
-        if settings:
-            temp_settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
-            config_path = temp_settings.work_dir / "config.yaml"
-        else:
-            # Fallback: construct path manually
-            config_path = input_epub.parent / input_epub.stem / "config.yaml"
-        config_type = "Per-book"
+    config_path, config_type = _config_target(ctx, input_epub, use_global, config_file_path)
+    # A per-book config is checked as it applies: over the settings in effect.
+    # Any other file is checked on its own; deciding this from the book alone
+    # made `--file X book.epub` reach for settings it had never loaded.
+    base: AppSettings | None = ctx.obj["settings"] if config_type == "Per-book" else None
 
-    # Check if config exists
     if not config_path.exists():
         console.print(Panel(
-            f"[yellow]Config file not found:[/yellow]\n{config_path}",
+            f"[yellow]Config file not found:[/yellow]\n{escape(str(config_path))}",
             title="⚠ Configuration Not Found",
             border_style="yellow",
         ))
-        if not use_global and input_epub:
-            console.print(f"\n[dim]Hint: Run [bold]tepub extract {input_epub.name}[/bold] to create the config file.[/dim]")
-        raise click.Abort()
+        if input_epub is not None and base is not None:
+            console.print(
+                f"\n[dim]Hint: Run [bold]tepub extract {escape(input_epub.name)}[/bold] "
+                "to create the config file.[/dim]"
+            )
+        # click.Abort is reported as an interrupt ("Progress is saved", exit 130).
+        raise SystemExit(1)
 
-    # Display header
     console.print()
     console.print(Panel(
         f"[bold]{config_type} Configuration Validation[/bold]\n"
-        f"[dim]File: {config_path}[/dim]",
+        f"[dim]File: {escape(str(config_path))}[/dim]",
         border_style="cyan",
     ))
     console.print()
 
-    # Parse YAML
+    yaml_data = _read_config_file(config_path)
+    _warn_unknown_keys(yaml_data)
+    errors_by_field = _settings_errors(yaml_data, base)
+    for message in _voice_errors(yaml_data):
+        errors_by_field.setdefault("audiobook_voice", []).append(message)
+    valid_count, invalid_count = _print_field_tree(yaml_data, errors_by_field)
+    success = not errors_by_field
+    _print_summary(valid_count, invalid_count, success)
+
+    if not success:
+        raise SystemExit(1)
+
+
+def _fail(title: str, message: str) -> None:
+    console.print(Panel(message, title=title, border_style="red"))
+
+
+def _read_config_file(config_path: Path) -> dict:
+    """The file's settings; exits when it is not YAML or not a mapping."""
     try:
-        yaml_data = _parse_yaml_file(config_path)
+        return _parse_yaml_file(config_path)
+    except ConfigFileError as e:
+        # Every check reads the file as a mapping of setting names; a list or a
+        # bare value crashed them, and `false` or `0` passed as no settings.
+        _fail("✗ Validation Failed", f"[red]{escape(str(e))}[/red]")
+        raise SystemExit(1) from e
     except Exception as e:
-        console.print(Panel(
-            f"[red]YAML Syntax Error:[/red]\n{str(e)}",
-            title="✗ Validation Failed",
-            border_style="red",
-        ))
-        raise click.Abort()
+        _fail("✗ Validation Failed", f"[red]YAML Syntax Error:[/red]\n{escape(str(e))}")
+        raise SystemExit(1) from e
 
-    if not yaml_data:
-        yaml_data = {}
 
-    # Report keys Pydantic will silently ignore. AppSettings does not set
-    # extra="forbid" — and making it do so would hard-fail existing configs on
-    # upgrade — so a misspelled key ("target_lanugage") would otherwise validate
-    # cleanly while having no effect whatsoever.
+def _warn_unknown_keys(yaml_data: dict) -> None:
+    """Report keys Pydantic will silently ignore.
+
+    AppSettings does not set extra="forbid" — and making it do so would
+    hard-fail existing configs on upgrade — so a misspelled key
+    ("target_lanugage") would otherwise validate cleanly while having no effect.
+    """
     unknown_keys = sorted(set(yaml_data) - set(AppSettings.model_fields))
     if unknown_keys:
         console.print(Panel(
             "[yellow]These keys are not recognised and will be ignored:[/yellow]\n"
-            + "\n".join(f"  • {key}" for key in unknown_keys)
+            + "\n".join(f"  • {escape(str(key))}" for key in unknown_keys)
             + "\n\n[dim]Check for typos — an ignored key has no effect.[/dim]",
             title="⚠ Unknown settings",
             border_style="yellow",
         ))
 
-    # Validate with Pydantic
-    errors_by_field = {}
 
+def _settings_errors(yaml_data: dict, base: AppSettings | None) -> dict[str, list[str]]:
+    """Each top-level setting's validation errors; the file is checked over
+    `base` when given, on its own otherwise.
+
+    Errors are kept under their top-level setting: a nested one
+    (primary_provider.max_tokens) used to match no displayed field, so the field
+    showed a green check and its error was never printed.
+    """
+    errors_by_field: dict[str, list[str]] = {}
     try:
-        # Try to create AppSettings from the YAML data
-        if use_global or input_epub is None:
-            # For global config, validate as standalone settings
-            # Use a temporary work_dir to satisfy required fields
-            temp_data = yaml_data.copy()
-            if "work_dir" not in temp_data:
-                temp_data["work_dir"] = "~/.tepub"
-            # Constructed for its validation side effect; the object is not used.
-            AppSettings(**temp_data)
+        if base is None:
+            # Checked as standalone settings; a work_dir satisfies required fields.
+            AppSettings(**{"work_dir": "~/.tepub", **yaml_data})
         else:
-            # For per-book config, overlay on existing settings.
-            # model_copy(update=...) assigns without running validators, so this
-            # command — whose entire job is validation — reported success for
-            # configs with invalid values. Re-validate the merged mapping instead.
-            merged = {**settings.model_dump(), **yaml_data}
-            AppSettings.model_validate(merged)
-
-        # If we get here, validation passed
-        success = True
+            # model_copy(update=...) used to assign without running validators,
+            # so this command reported success for invalid values. Re-validate
+            # the merged mapping instead.
+            AppSettings.model_validate({**base.model_dump(), **yaml_data})
     except ValidationError as e:
-        success = False
-        # Parse validation errors
         for error in e.errors():
-            field_path = ".".join(str(loc) for loc in error["loc"])
-            errors_by_field[field_path] = error["msg"]
+            loc = error["loc"]
+            field = str(loc[0]) if loc else "(file)"
+            where = ".".join(str(part) for part in loc[1:])
+            errors_by_field.setdefault(field, []).append(
+                f"{where}: {error['msg']}" if where else error["msg"]
+            )
     except Exception as e:
-        console.print(Panel(
-            f"[red]Validation Error:[/red]\n{str(e)}",
-            title="✗ Validation Failed",
-            border_style="red",
-        ))
-        raise click.Abort()
+        _fail("✗ Validation Failed", f"[red]Validation Error:[/red]\n{escape(str(e))}")
+        raise SystemExit(1) from e
+    return errors_by_field
 
-    # Additional validation: Check voice spelling
-    if "audiobook_voice" in yaml_data and yaml_data["audiobook_voice"]:
-        provider = yaml_data.get("audiobook_tts_provider", "edge")
-        voice_value = yaml_data["audiobook_voice"]
 
-        try:
-            from audiobook.voices import list_voices_for_provider
+def _voice_errors(yaml_data: dict) -> list[str]:
+    """Whether audiobook_voice names a voice of its provider.
 
-            voices = list_voices_for_provider(provider)
-            valid_names = [v["ShortName"] for v in voices]
+    When the voices cannot be listed, that is a warning, not a failure.
+    """
+    voice_value = yaml_data.get("audiobook_voice")
+    if not voice_value:
+        return []
+    provider = yaml_data.get("audiobook_tts_provider", "edge")
+    try:
+        from audiobook.voices import list_voices_for_provider
 
-            if voice_value not in valid_names:
-                errors_by_field["audiobook_voice"] = (
-                    f"Invalid voice '{voice_value}' for provider '{provider}'. "
-                    f"Valid voices: {', '.join(valid_names)}"
-                )
-                success = False
-        except Exception as voice_err:
-            # If voice listing fails, add warning but don't fail validation
-            console.print(f"[yellow]Warning: Could not validate voice: {voice_err}[/yellow]")
+        valid_names = [v["ShortName"] for v in list_voices_for_provider(provider)]
+    except Exception as voice_err:
+        console.print(
+            f"[yellow]Warning: Could not validate voice: {escape(str(voice_err))}[/yellow]"
+        )
+        return []
+    if voice_value in valid_names:
+        return []
+    return [
+        f"Invalid voice '{voice_value}' for provider '{provider}'. "
+        f"Valid voices: {', '.join(valid_names)}"
+    ]
 
-    # Build validation results tree
+
+# The fields validate lists, by category.
+_CATEGORIES = {
+    "Translation Settings": [
+        "source_language", "target_language", "translation_workers",
+        "prompt_preamble", "output_mode", "translation_files"
+    ],
+    "Audiobook Settings": [
+        "audiobook_tts_provider", "audiobook_tts_model", "audiobook_tts_speed",
+        "audiobook_voice", "audiobook_workers", "audiobook_files",
+        "audiobook_opening_statement", "audiobook_closing_statement",
+        "cover_image_path"
+    ],
+    "Provider Settings": ["primary_provider", "providers"],
+    "Skip Rules": ["skip_rules", "skip_after_back_matter"],
+    "Directories": ["work_root", "work_dir"],
+}
+
+
+def _print_field_tree(yaml_data: dict, errors_by_field: dict[str, list[str]]) -> tuple[int, int]:
+    """Print each field the file sets or that has errors; (valid, invalid) counts."""
     tree = Tree("📝 Configuration Fields", guide_style="dim")
-
-    # Group fields by category
+    # Errors for settings no category lists, and errors about the file as a
+    # whole, would otherwise not be shown at all.
+    listed = {name for names in _CATEGORIES.values() for name in names}
     categories = {
-        "Translation Settings": [
-            "source_language", "target_language", "translation_workers",
-            "prompt_preamble", "output_mode", "translation_files"
-        ],
-        "Audiobook Settings": [
-            "audiobook_tts_provider", "audiobook_tts_model", "audiobook_tts_speed",
-            "audiobook_voice", "audiobook_workers", "audiobook_files",
-            "audiobook_opening_statement", "audiobook_closing_statement",
-            "cover_image_path"
-        ],
-        "Provider Settings": [
-            "primary_provider", "providers"
-        ],
-        "Skip Rules": [
-            "skip_rules", "skip_after_back_matter"
-        ],
-        "Directories": [
-            "work_root", "work_dir"
-        ],
+        **_CATEGORIES,
+        "Other": [name for name in errors_by_field if name not in listed],
     }
 
     valid_count = 0
     invalid_count = 0
-
     for category, field_names in categories.items():
-        # Check if any fields in this category are present in yaml_data
-        category_fields = []
-        for field_name in field_names:
-            if field_name in yaml_data:
-                category_fields.append(field_name)
-
+        category_fields = [
+            name for name in field_names if name in yaml_data or name in errors_by_field
+        ]
         if not category_fields:
-            continue  # Skip empty categories
+            continue
 
         category_branch = tree.add(f"[bold cyan]{category}[/bold cyan]")
-
         for field_name in category_fields:
-            field_value = yaml_data[field_name]
-
-            # Check if this field has errors
+            shown_value = (
+                _format_value(yaml_data[field_name]) if field_name in yaml_data else "[dim]—[/dim]"
+            )
+            label = escape(field_name)
             if field_name in errors_by_field:
                 invalid_count += 1
-                error_msg = errors_by_field[field_name]
-                field_branch = category_branch.add(
-                    f"[red]✗ {field_name}[/red]: {_format_value(field_value)}"
-                )
-                field_branch.add(f"[red]└─ Error: {error_msg}[/red]")
+                field_branch = category_branch.add(f"[red]✗ {label}[/red]: {shown_value}")
+                for error_msg in errors_by_field[field_name]:
+                    field_branch.add(f"[red]└─ Error: {escape(error_msg)}[/red]")
             else:
                 valid_count += 1
-                category_branch.add(
-                    f"[green]✓ {field_name}[/green]: {_format_value(field_value)}"
-                )
+                category_branch.add(f"[green]✓ {label}[/green]: {shown_value}")
 
-    # Show the tree
     console.print(tree)
     console.print()
+    return valid_count, invalid_count
 
-    # Show summary
-    total_fields = valid_count + invalid_count
 
-    if success:
-        summary_panel = Panel(
-            f"[bold]Total fields:[/bold] {total_fields}\n"
-            f"[green]Valid:[/green] {valid_count} ✓\n"
-            f"[red]Invalid:[/red] {invalid_count} ✗\n\n"
-            f"[bold green]Status: PASSED ✓[/bold green]",
-            title="Validation Summary",
-            border_style="green",
-        )
-    else:
-        summary_panel = Panel(
-            f"[bold]Total fields:[/bold] {total_fields}\n"
-            f"[green]Valid:[/green] {valid_count} ✓\n"
-            f"[red]Invalid:[/red] {invalid_count} ✗\n\n"
-            f"[bold red]Status: FAILED ✗[/bold red]",
-            title="Validation Summary",
-            border_style="red",
-        )
-
-    console.print(summary_panel)
+def _print_summary(valid_count: int, invalid_count: int, success: bool) -> None:
+    color, verdict = ("green", "PASSED ✓") if success else ("red", "FAILED ✗")
+    console.print(Panel(
+        f"[bold]Total fields:[/bold] {valid_count + invalid_count}\n"
+        f"[green]Valid:[/green] {valid_count} ✓\n"
+        f"[red]Invalid:[/red] {invalid_count} ✗\n\n"
+        f"[bold {color}]Status: {verdict}[/bold {color}]",
+        title="Validation Summary",
+        border_style=color,
+    ))
     console.print()
-
-    if not success:
-        raise click.Abort()
 
 
 @config.command()
@@ -305,118 +331,91 @@ def reset(
       tepub config reset book.epub             # Reset per-book config
       tepub config reset --file config.yaml    # Reset specific file
     """
-    # Determine target config
-    if config_file_path:
-        config_path = config_file_path
-        config_type = "Custom"
-        is_per_book = False
-    elif use_global or input_epub is None:
-        config_path = _get_global_config_path()
-        config_type = "Global"
-        is_per_book = False
-    else:
-        # Per-book config
-        settings: AppSettings = ctx.obj.get("settings")
-        if settings:
-            temp_settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
-            config_path = temp_settings.work_dir / "config.yaml"
-        else:
-            # Fallback
-            config_path = input_epub.parent / input_epub.stem / "config.yaml"
-        config_type = "Per-book"
-        is_per_book = True
+    config_path, config_type = _config_target(ctx, input_epub, use_global, config_file_path)
 
-    # Check if file exists
     if not config_path.exists():
         console.print(Panel(
-            f"[yellow]Config file does not exist:[/yellow]\n{config_path}",
+            f"[yellow]Config file does not exist:[/yellow]\n{escape(str(config_path))}",
             title="⚠ File Not Found",
             border_style="yellow",
         ))
-        raise click.Abort()
+        raise SystemExit(1)
 
-    # Confirmation
-    if not force:
-        console.print()
-        console.print(Panel(
-            f"[yellow]This will reset {config_type.lower()} config to default template:[/yellow]\n"
-            f"[bold]{config_path}[/bold]\n\n"
-            f"[red]All current settings will be lost![/red]",
-            title="⚠ Confirmation Required",
-            border_style="yellow",
-        ))
-        console.print()
-        if not click.confirm("Continue?", default=False):
-            console.print("[cyan]Reset cancelled.[/cyan]")
-            raise click.Abort()
+    if not force and not _confirm_reset(config_path, config_type):
+        console.print("[cyan]Reset cancelled.[/cyan]")
+        raise SystemExit(1)
 
-    # Backup
     if backup:
         backup_path = config_path.parent / f"{config_path.name}.bak"
         shutil.copy2(config_path, backup_path)
-        console.print(f"[green]✓ Backup created: {backup_path}[/green]")
+        console.print(f"[green]✓ Backup created: {escape(str(backup_path))}[/green]")
 
-    # Reset based on type
-    if is_per_book and input_epub and input_epub.exists():
-        # Per-book config - regenerate from extraction
-        from config.templates import create_book_config_template
-        from state.store import load_segments
-
-        # Get settings for this book
-        settings = ctx.obj.get("settings")
-        if settings:
-            temp_settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
-        else:
-            # Minimal settings
-            from config import AppSettings
-            temp_settings = AppSettings(work_dir=config_path.parent)
-
-        # Check if segments exist
-        if not temp_settings.segments_file.exists():
-            console.print(
-                f"[red]Error: segments.json not found. Run [bold]tepub extract {input_epub.name}[/bold] first.[/red]"
-            )
-            raise click.Abort()
-
-        # Load metadata from segments
-        segments_doc = load_segments(temp_settings.segments_file)
-        metadata = {
-            "title": segments_doc.book_title,
-            "author": segments_doc.book_author,
-            "publisher": segments_doc.book_publisher,
-            "year": segments_doc.book_year,
-        }
-
-        # Recreate config. The old file used to be unlinked first, so any failure
-        # during generation left the user with no config at all — including local
-        # edits they had made. Keep a backup until the new file is in place.
-        backup_path = config_path.with_suffix(config_path.suffix + ".bak")
-        config_path.replace(backup_path)
-        try:
-            create_book_config_template(
-                temp_settings.work_dir,
-                input_epub.name,
-                metadata,
-                segments_doc,
-                input_epub
-            )
-        except Exception:
-            # Restore the previous config rather than leaving the book unconfigured.
-            backup_path.replace(config_path)
-            raise
-        else:
-            backup_path.unlink(missing_ok=True)
+    if config_type == "Per-book" and input_epub is not None:
+        # The book's own config is not applied: it is what is being replaced,
+        # and may be the broken thing that prompted the reset.
+        _regenerate_book_config(_book_settings(ctx, input_epub), input_epub, config_path)
     else:
-        # Global config - write default template
         _write_global_config_template(config_path)
 
     console.print()
     console.print(Panel(
         f"[green]Configuration reset successfully![/green]\n"
-        f"[dim]{config_path}[/dim]",
+        f"[dim]{escape(str(config_path))}[/dim]",
         title="✓ Reset Complete",
         border_style="green",
     ))
+
+
+def _confirm_reset(config_path: Path, config_type: str) -> bool:
+    console.print()
+    console.print(Panel(
+        f"[yellow]This will reset {config_type.lower()} config to default template:[/yellow]\n"
+        f"[bold]{escape(str(config_path))}[/bold]\n\n"
+        f"[red]All current settings will be lost![/red]",
+        title="⚠ Confirmation Required",
+        border_style="yellow",
+    ))
+    console.print()
+    return click.confirm("Continue?", default=False)
+
+
+def _regenerate_book_config(settings: AppSettings, input_epub: Path, config_path: Path) -> None:
+    """Write the book's config afresh from its extracted segments.
+
+    The old file used to be unlinked first, so any failure during generation
+    left the user with no config at all — including local edits they had made.
+    It is kept aside until the new file is in place. The rollback copy is not
+    the .bak: that name deleted the backup --backup had just made.
+    """
+    from config.templates import create_book_config_template
+    from state.store import load_segments
+
+    if not settings.segments_file.exists():
+        console.print(
+            "[red]Error: segments.json not found. Run "
+            f"[bold]tepub extract {escape(input_epub.name)}[/bold] first.[/red]"
+        )
+        raise SystemExit(1)
+
+    segments_doc = load_segments(settings.segments_file)
+    metadata = {
+        "title": segments_doc.book_title,
+        "author": segments_doc.book_author,
+        "publisher": segments_doc.book_publisher,
+        "year": segments_doc.book_year,
+    }
+
+    rollback_path = config_path.with_name(config_path.name + ".reset-rollback")
+    config_path.replace(rollback_path)
+    try:
+        create_book_config_template(
+            settings.work_dir, input_epub.name, metadata, segments_doc, input_epub
+        )
+    except Exception:
+        # Restore the previous config rather than leaving the book unconfigured.
+        rollback_path.replace(config_path)
+        raise
+    rollback_path.unlink()
 
 
 def _write_global_config_template(config_path: Path) -> None:
@@ -486,8 +485,8 @@ def _format_value(value) -> str:
         return f"[cyan]{value}[/cyan]"
     elif isinstance(value, str):
         if len(value) > 50:
-            return f"[yellow]\"{value[:47]}...\"[/yellow]"
-        return f"[yellow]\"{value}\"[/yellow]"
+            return f"[yellow]\"{escape(value[:47])}...\"[/yellow]"
+        return f"[yellow]\"{escape(value)}\"[/yellow]"
     elif isinstance(value, dict):
         return f"[magenta]{{...}}[/magenta] [dim]({len(value)} keys)[/dim]"
     elif isinstance(value, list):
@@ -496,84 +495,62 @@ def _format_value(value) -> str:
         return f"[dim]{type(value).__name__}[/dim]"
 
 
-# Keys shown by `config show`, with how to find each in a config file.
-_SHOWN = (
-    ("primary_provider.name", ("primary_provider", "name")),
-    ("primary_provider.model", ("primary_provider", "model")),
-    ("primary_provider.base_url", ("primary_provider", "base_url")),
-    ("primary_provider.think", ("primary_provider", "think")),
-    ("primary_provider.max_tokens", ("primary_provider", "max_tokens")),
-    ("source_language", ("source_language",)),
-    ("target_language", ("target_language",)),
-    ("output_mode", ("output_mode",)),
-    ("translation_workers", ("translation_workers",)),
-    ("skip_after_back_matter", ("skip_after_back_matter",)),
-    ("prompt_preamble", ("prompt_preamble",)),
-)
-# Never printed: only whether they are set.
-_SECRET_ENV = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROK_API_KEY", "DEEPL_API_KEY")
-
-
-def _lookup(payload: dict, path: tuple[str, ...]):
-    value = payload
-    for key in path:
-        if not isinstance(value, dict) or key not in value:
-            return _MISSING
-        value = value[key]
-    return value
-
-
-_MISSING = object()
-
-
 @config.command("show")
-@click.argument("input_epub", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=False)
+@click.argument(
+    "input_epub", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=False
+)
 @click.pass_context
 def show(ctx: click.Context, input_epub: Path | None) -> None:
-    """Show the settings in effect, and the file each one came from.
+    """Show the main settings in effect, and the file each one came from.
 
     Files are read in this order, each overriding the ones before:
-    ~/.tepub/config.yaml, .env, ./config.yaml, --config FILE, and the book's
-    own config.yaml when a book is given. API keys are never printed.
+    ~/.tepub/config.yaml, .env, ./config.yaml, --config FILE; then
+    OLLAMA_BASE_URL, and the book's own config.yaml when a book is given.
+    API keys are never printed.
     """
     import os
 
     settings: AppSettings = ctx.obj["settings"]
-    sources: list[tuple[str, Path]] = [
-        ("global", Path.home() / ".tepub" / "config.yaml"),
-        (".env", Path(".env")),
-        ("./config.yaml", Path("config.yaml")),
-    ]
-    if ctx.obj.get("config_file"):
-        sources.append(("--config", Path(ctx.obj["config_file"]).expanduser()))
     if input_epub is not None:
-        settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
-        sources.append(("book", settings.work_dir / "config.yaml"))
+        settings = _settings_with_book(ctx, input_epub)
 
     console.print("[bold]Files[/bold] (later ones override earlier ones)")
-    payloads: list[tuple[str, dict]] = []
-    for label, path in sources:
-        exists = path.exists()
-        console.print(f"  {label:14} {path}  {'[green]found[/green]' if exists else '[dim]absent[/dim]'}")
-        if exists and path.suffix.lower() in (".yaml", ".yml"):
-            payload = _parse_yaml_file(path)
-            if isinstance(payload, dict):
-                payloads.append((label, payload))
+    for source in settings.config_layers:
+        found = "[green]found[/green]" if source.found else "[dim]absent[/dim]"
+        console.print(f"  {source.label:14} {escape(str(source.path))}  {found}")
 
-    console.print("\n[bold]Settings[/bold]")
-    for name, path in _SHOWN:
-        value = settings
-        for key in path:
-            value = getattr(value, key)
-        origin = "default"
-        for label, payload in payloads:
-            if _lookup(payload, path) is not _MISSING:
-                origin = label
-        if name == "primary_provider.base_url" and os.getenv("OLLAMA_BASE_URL") and settings.primary_provider.name == "ollama":
-            origin = "OLLAMA_BASE_URL"
-        shown = value if name != "prompt_preamble" or value is None else (str(value).splitlines() or [""])[0][:60] + " …"
-        console.print(f"  {name:28} {shown!s:40} [dim]{origin}[/dim]")
+    console.print("\n[bold]Settings[/bold] (the main ones; tepub config validate lists a file's)")
+    for setting in shown_settings(settings, os.getenv("OLLAMA_BASE_URL")):
+        shown = setting.value
+        if setting.name == "prompt_preamble" and shown is not None:
+            shown = (str(shown).splitlines() or [""])[0][:60] + " …"
+        # Values are the user's text: printed as markup, "[/x]" in a prompt
+        # stopped the command with a MarkupError.
+        console.print(
+            f"  {setting.name:28} {escape(f'{shown!s:40}')} [dim]{setting.origin}[/dim]"
+        )
 
     console.print("\n[bold]API keys[/bold]")
     for variable in _SECRET_ENV:
         console.print(f"  {variable:28} {'set' if os.getenv(variable) else '[dim]not set[/dim]'}")
+    configured_key = "set" if settings.primary_provider.api_key else "[dim]not set[/dim]"
+    console.print(f"  {'primary_provider.api_key':28} {configured_key}")
+
+
+# Never printed: only whether they are set.
+_SECRET_ENV = (
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROK_API_KEY", "DEEPL_API_KEY"
+)
+
+
+def _settings_with_book(ctx: click.Context, input_epub: Path) -> AppSettings:
+    """The settings with the book's config applied, which records that config."""
+    book_base = _book_settings(ctx, input_epub)
+    book_config = book_base.work_dir / "config.yaml"
+    try:
+        return _with_book_config(book_base)
+    except ValidationError as exc:
+        console.print(f"[red]The book's config {escape(str(book_config))} is invalid:[/red]")
+        console.print(escape(str(exc)), markup=False)
+        console.print("[dim]tepub config validate BOOK shows each problem.[/dim]")
+        raise SystemExit(1) from exc

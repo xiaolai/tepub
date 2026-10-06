@@ -22,9 +22,12 @@ def test_config_show_names_sources_and_hides_keys(tmp_path: Path, monkeypatch) -
     root = tmp_path / "w"
     CliRunner().invoke(app, ["--work-dir", str(root), "extract", str(book)], prog_name="tepub")
     (book_config,) = list(root.rglob("config.yaml"))
-    book_config.write_text(book_config.read_text(encoding="utf-8") + "\noutput_mode: translated-only\n", encoding="utf-8")
+    edited = book_config.read_text(encoding="utf-8") + "\noutput_mode: translated-only\n"
+    book_config.write_text(edited, encoding="utf-8")
 
-    result = CliRunner().invoke(app, ["--work-dir", str(root), "config", "show", str(book)], prog_name="tepub")
+    result = CliRunner().invoke(
+        app, ["--work-dir", str(root), "config", "show", str(book)], prog_name="tepub"
+    )
     output = " ".join(result.output.split())
     assert result.exit_code == 0, result.output
     assert "primary_provider.model translategemma:12b global" in output

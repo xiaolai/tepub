@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import shlex
 import time
-from dataclasses import dataclass
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.console import Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
@@ -18,8 +20,8 @@ from console_singleton import PlainProgress, get_console
 from console_singleton import live as live_display
 from glossary import glossary_for
 from logging_utils.logger import get_logger
-from state.models import ExtractMode, SegmentStatus
-from state.store import backup_state, ensure_state, load_segments, load_state
+from state.models import ExtractMode, SegmentStatus, TranslationRecord
+from state.store import backup_state, ensure_state, load_segments, load_state, save_state
 from state.writer import StateWriter, exclusive_run
 from translation.languages import describe_language, normalize_language
 from translation.markup import markup_mismatch, protect, restore, stray_tags, strip_code_fence
@@ -44,7 +46,6 @@ def _build_dashboard_panel(
     completed_segments: int,
     pending_segments: int,
     preview_lines: list[str],
-    progress_renderable,
     active_workers: int = 0,
     max_workers: int = 1,
     in_cooldown: bool = False,
@@ -69,7 +70,7 @@ def _build_dashboard_panel(
 
     # Show preview lines (one per worker slot)
     for i, line in enumerate(preview_lines):
-        label = f"w{i+1}" if max_workers > 1 else "current"
+        label = f"w{i + 1}" if max_workers > 1 else "current"
         stats.add_row(label, line or "…")
 
     return Panel(stats, border_style="magenta", title="Dashboard", padding=(1, 1))
@@ -102,8 +103,19 @@ FAILURES_BEFORE_COOLDOWN = 3
 COOLDOWN = timedelta(minutes=30)
 MAX_COOLDOWNS_PER_RUN = 3
 
+# Calls submitted ahead of the results read, per worker: enough to keep every
+# worker busy, few enough that a stop or a cooldown takes effect within a
+# bounded number of calls. Submitting the whole book at once let a single
+# worker call the provider thousands of times before a fatal error was read.
+SUBMITTED_PER_WORKER = 2
+
 # Indirection so tests can run a cooldown without waiting thirty minutes.
 _sleep = time.sleep
+
+
+class UnexpectedError(ProviderError):
+    """A unit failed in tepub's own code rather than at the provider; the
+    traceback is logged where it was raised."""
 
 
 class TranslationResult:
@@ -148,7 +160,12 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
     if looks_like_refusal(text) and not looks_like_refusal(segment.source_content):
         preview = " ".join(text.split())[:80]
         raise ReplyRejectedError(f"Provider refused segment {segment.segment_id}: {preview!r}")
-    return polish_translation(text)
+    polished = polish_translation(text)
+    # The provider's own emptiness check sees the reply with its fence, so a
+    # fenced empty reply passed it and was stored as a finished translation.
+    if not polished.strip():
+        raise ReplyRejectedError(f"Provider returned an empty translation of {segment.segment_id}")
+    return polished
 
 
 def _language_codes(source_language: str, target_language: str) -> tuple[str, str]:
@@ -200,7 +217,8 @@ def _translate_checked(
     terms = glossary.terms_in(segment.source_content) if glossary is not None else []
     if terms:
         hints = {term.source: term.target for term in terms}
-        sent = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"terms": hints})})
+        metadata = sent.metadata.model_copy(update={"terms": hints})
+        sent = sent.model_copy(update={"metadata": metadata})
 
     def problems(raw: str, text: str) -> tuple[str | None, list[str]]:
         if sent.extract_mode == ExtractMode.HTML:
@@ -221,10 +239,14 @@ def _translate_checked(
         return text
     notes = []
     if markup is not None:
-        notes.append(f"Your previous translation changed the markup ({markup}). {keep}; translate only the text.")
+        notes.append(
+            f"Your previous translation changed the markup ({markup}). "
+            f"{keep}; translate only the text."
+        )
     if missed:
         notes.append(f"Your previous translation did not follow the glossary: {'; '.join(missed)}.")
-    retry = sent.model_copy(update={"metadata": sent.metadata.model_copy(update={"notes": " ".join(notes)})})
+    metadata = sent.metadata.model_copy(update={"notes": " ".join(notes)})
+    retry = sent.model_copy(update={"metadata": metadata})
     first, first_markup, first_missed = text, markup, missed
     raw = _reply(retry, provider, source_language, target_language)
     text = rebuild(raw)
@@ -292,24 +314,72 @@ def _translate_segment(
             provider_name=provider.name,
             model_name=provider.model,
         )
-    except ProviderFatalError as exc:
-        # Kept distinct from ProviderError so the run loop can abort. Folding the
-        # two together meant a fatal condition — a rejected API key, say — was
-        # retried once per segment against every remaining segment.
-        return TranslationResult(
-            segment_id=segment.segment_id,
-            error=exc,
-        )
     except ProviderError as exc:
-        return TranslationResult(
-            segment_id=segment.segment_id,
-            error=exc,
-        )
-    except Exception as exc:  # pragma: no cover - unexpected errors
-        return TranslationResult(
-            segment_id=segment.segment_id,
-            error=ProviderError(f"Unexpected error: {exc}"),
-        )
+        # ProviderFatalError included: the run loop tells it apart to abort the
+        # run, rather than retry a rejected API key against every segment.
+        return TranslationResult(segment_id=segment.segment_id, error=exc)
+    except Exception as exc:
+        # A failure in tepub's own code, not at the provider. It was reduced to
+        # its message, so the traceback was lost, and it counted toward a
+        # cooldown as if the provider were unwell.
+        logger.exception("Unexpected error translating %s", segment.segment_id)
+        error = UnexpectedError(f"Unexpected error: {type(exc).__name__}: {exc}")
+        error.__cause__ = exc
+        return TranslationResult(segment_id=segment.segment_id, error=error)
+
+
+def _counts_toward_cooldown(error: Exception) -> bool:
+    # A reply rejected for its content, or a failure in tepub itself, is no sign
+    # of an unwell provider: three rejected replies in a row once stopped a local
+    # model for 30 minutes to no purpose.
+    return not isinstance(error, (ReplyRejectedError, UnexpectedError))
+
+
+def _is_pending(segment, records) -> bool:
+    record = records.get(segment.segment_id)
+    return record is None or record.status != SegmentStatus.COMPLETED
+
+
+def _cancel_queued(futures) -> None:
+    """Cancel the calls not yet started; those already running finish."""
+    for future in futures:
+        if not future.done():
+            future.cancel()
+
+
+def _announce_stop(reason: str) -> None:
+    console.print(f"[red]{escape(reason)}[/red]")
+    console.print(
+        "[yellow]Stopping run; completed translations are saved and the run can be "
+        "resumed.[/yellow]"
+    )
+
+
+def _wait_out_cooldown(writer: StateWriter, show) -> None:
+    """Sleep through one cooldown, passing the time left to ``show``."""
+    writer.set_cooldown(datetime.now(timezone.utc) + COOLDOWN)
+    # Count down by the time actually slept rather than re-reading the clock, so
+    # the wait is bounded.
+    remaining = COOLDOWN.total_seconds()
+    while remaining > 0:
+        show(f"{int(remaining // 60)}m {int(remaining % 60)}s")
+        sleep_for = min(5, remaining)
+        _sleep(sleep_for)
+        remaining -= sleep_for
+    writer.set_cooldown(None)
+    writer.consecutive_failures = 0
+    show("")
+
+
+def _check_local_provider(provider, writer: StateWriter) -> str | None:
+    """A local server: ask it rather than wait. If it answers, carry on at once;
+    if not, return why the run must stop, which says how to start it."""
+    try:
+        provider.preflight()
+    except ProviderFatalError as exc:
+        return str(exc)
+    writer.consecutive_failures = 0
+    return None
 
 
 def _run_translation(
@@ -318,7 +388,9 @@ def _run_translation(
     *,
     source_language: str,
     target_language: str,
-) -> None:
+) -> int:
+    """Translate the selected units still to do; returns how many this run
+    completed. The caller holds the workspace lock."""
     settings.ensure_directories()
 
     segments_doc = load_segments(settings.segments_file)
@@ -326,11 +398,49 @@ def _run_translation(
     # corrupts the output. The check is shared with export (config.workspace).
     assert_same_book(segments_doc, input_epub)
 
+    # Translations into another language do not carry over. Keep a copy and say
+    # how much is being reset; this used to happen silently inside ensure_state,
+    # which left the message that should have announced it unreachable. Settled
+    # before selection, which can leave nothing to translate.
+    if settings.state_file.exists():
+        previous = load_state(settings.state_file)
+        # Compared as language codes: "Simplified Chinese" and "zh-CN" are one
+        # language, and comparing spellings reset a translated book.
+        if _language_codes(previous.source_language, previous.target_language) != (
+            _language_codes(source_language, target_language)
+        ):
+            finished = sum(
+                1 for r in previous.segments.values() if r.status == SegmentStatus.COMPLETED
+            )
+            backup = backup_state(settings.state_file)
+            noun = "translation" if finished == 1 else "translations"
+            console.print(
+                escape(
+                    f"The languages changed: this workspace translated "
+                    f"{previous.source_language} into {previous.target_language}, and this "
+                    f"run translates {source_language} into {target_language}. Resetting "
+                    f"{finished} finished {noun}; the previous state is saved as "
+                    f"{backup.name}."
+                ),
+                style="yellow",
+            )
+            # Reset in place, recording the run's languages even when it has
+            # nothing to translate (export names its files after them), and
+            # keeping each record's source digest from extraction.
+            previous.segments = {
+                sid: TranslationRecord(segment_id=sid, source_sha256=record.source_sha256)
+                for sid, record in previous.segments.items()
+            }
+            previous.source_language = source_language
+            previous.target_language = target_language
+            save_state(previous, settings.state_file)
+
     # Filter segments based on translation_files inclusion list or skip metadata
     original_count = len(segments_doc.segments)
     segments_doc.segments = select_for_translation(segments_doc.segments, settings)
+    selected = segments_doc.segments
 
-    filtered_count = original_count - len(segments_doc.segments)
+    filtered_count = original_count - len(selected)
     if filtered_count > 0:
         filter_type = "inclusion list" if settings.translation_files is not None else "skip rules"
         console.print(
@@ -339,7 +449,7 @@ def _run_translation(
         )
 
     # Early exit if all segments were filtered out
-    if len(segments_doc.segments) == 0:
+    if not selected:
         if settings.translation_files is not None:
             console.print(
                 "[yellow]No segments to translate. All segments were filtered out by the "
@@ -351,374 +461,392 @@ def _run_translation(
             )
         else:
             console.print("[yellow]No segments to translate. All segments were skipped.[/yellow]")
-        return
+        return 0
 
-    # One run per workspace: a second process used to translate every segment
-    # again, and the last to save won.
-    with exclusive_run(settings.state_file):
+    glossary = glossary_for(settings.work_root, settings.work_dir, target_language)
+    if glossary is not None:
+        console.print(f"[cyan]Glossary: {len(glossary.decided())} terms[/cyan]")
+
+    records = load_state(settings.state_file).segments if settings.state_file.exists() else {}
+    to_do = [seg for seg in selected if _is_pending(seg, records)]
+    if not to_do:
+        console.print("[green]All segments already translated.[/green]")
+        return 0
+
+    # The provider is created and checked only when a unit needs it: a finished
+    # book, or one with only units copied as they are left, used to fail when
+    # the provider was unreachable or its key missing.
+    provider = None
+    if any(not should_auto_copy(seg) for seg in to_do):
         provider = create_provider(settings.primary_provider)
         provider.preflight()
-        glossary = glossary_for(settings.work_root, settings.work_dir, target_language)
-        if glossary is not None:
-            console.print(f"[cyan]Glossary: {len(glossary.decided())} terms[/cyan]")
+    provider_name = provider.name if provider is not None else settings.primary_provider.name
+    model_name = provider.model if provider is not None else settings.primary_provider.model
 
-        # Translations into another language do not carry over. Keep a copy and say
-        # how much is being reset; this used to happen silently inside ensure_state,
-        # which left the message that should have announced it unreachable.
-        if settings.state_file.exists():
-            previous = load_state(settings.state_file)
-            # Compared as language codes: "Simplified Chinese" and "zh-CN" are one
-            # language, and comparing spellings reset a translated book.
-            if _language_codes(previous.source_language, previous.target_language) != (
-                _language_codes(source_language, target_language)
-            ):
-                finished = sum(
-                    1 for r in previous.segments.values() if r.status == SegmentStatus.COMPLETED
-                )
-                backup = backup_state(settings.state_file)
-                noun = "translation" if finished == 1 else "translations"
-                console.print(
-                    f"[yellow]The languages changed: this workspace translated "
-                    f"{previous.source_language} into {previous.target_language}, and this run "
-                    f"translates {source_language} into {target_language}. Resetting "
-                    f"{finished} finished {noun}; the previous state is saved as "
-                    f"{backup.name}.[/yellow]"
-                )
-                settings.state_file.unlink()
+    state_doc = ensure_state(
+        settings.state_file,
+        selected,
+        provider_name,
+        model_name,
+        source_language,
+        target_language,
+    )
 
-        state_doc = ensure_state(
-            settings.state_file,
-            segments_doc.segments,
-            provider.name,
-            provider.model,
-            source_language,
-            target_language,
-        )
-
-        console.print(
+    console.print(
+        escape(
             f"Translating from {describe_language(source_language)} into "
-            f"{describe_language(target_language)} using {provider.model}"
+            f"{describe_language(target_language)} using {model_name}"
         )
+    )
 
-        total = sum(
-            1
-            for seg in segments_doc.segments
-            if not state_doc.segments.get(seg.segment_id)
-            or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
-        )
-        if total == 0:
-            console.print("[green]All segments already translated.[/green]")
-            return
+    view = _Dashboard(
+        selected,
+        state_doc.segments,
+        skipped_files=len({doc.file_path for doc in segments_doc.skipped_documents}),
+        max_workers=settings.translation_workers,
+    )
+    translated = 0
+    cooldowns_taken = 0
+    with StateWriter(settings.state_file) as writer, view:
+        # Failures in a row are counted within a run. The count is saved with
+        # the state, and one left at 3 by an earlier run started a 30-minute
+        # cooldown on this run's first failure.
+        writer.consecutive_failures = 0
+        # Units that failed in tepub's own code; not retried in this run.
+        broken: set[str] = set()
+        while True:
+            pending_list = [
+                seg
+                for seg in selected
+                if seg.segment_id not in broken and _is_pending(seg, writer.doc.segments)
+            ]
+            if not pending_list:
+                break
 
-        file_totals: Counter[Path] = Counter(seg.file_path for seg in segments_doc.segments)
-        file_completed = Counter()
-        for seg in segments_doc.segments:
-            record = state_doc.segments.get(seg.segment_id)
-            if record and record.status == SegmentStatus.COMPLETED:
-                file_completed[seg.file_path] += 1
-
-        completed_segments = sum(
-            1 for record in state_doc.segments.values() if record.status == SegmentStatus.COMPLETED
-        )
-        pending_segments = total
-        skipped_files = len({doc.file_path for doc in segments_doc.skipped_documents})
-        total_files = len(file_totals)
-
-        def completed_files_count() -> int:
-            return sum(
-                1
-                for path, total_required in file_totals.items()
-                if file_completed[path] >= total_required
+            outcome = _run_pass(
+                pending_list,
+                provider=provider,
+                source_language=source_language,
+                target_language=target_language,
+                glossary=glossary,
+                writer=writer,
+                view=view,
+                cooldowns_taken=cooldowns_taken,
             )
+            translated += outcome.successes
+            cooldowns_taken += outcome.cooled_down
+            broken.update(outcome.broken)
+
+            if outcome.stop_reason is not None:
+                # Retrying cannot help: the provider itself is unusable.
+                break
+
+            # A cooldown cancelled the rest of this pass; the provider has had its
+            # rest, so start the next pass instead of judging this one. It used
+            # to count as "no progress" and end the run after the wait.
+            if outcome.cooled_down or outcome.failures:
+                if not outcome.cooled_down and outcome.successes == 0:
+                    # No progress made, stop trying
+                    break
+                view.new_pass()
+                writer.reset_errors(list(outcome.failures))
+                continue
+
+    return translated
 
 
-        progress = Progress(
+class _Dashboard:
+    """What a run shows as it goes: the panel and progress bar on a terminal,
+    occasional plain lines elsewhere. Used as a context manager around the run."""
+
+    def __init__(self, selected: list, records, *, skipped_files: int, max_workers: int):
+        self.total = len(selected)
+        # Counted over the selected units only: the state also holds excluded
+        # files and units a re-extraction dropped, which made the counts exceed
+        # the total.
+        self.file_totals: Counter[Path] = Counter(seg.file_path for seg in selected)
+        self.file_completed: Counter[Path] = Counter(
+            seg.file_path for seg in selected if not _is_pending(seg, records)
+        )
+        self.completed = sum(self.file_completed.values())
+        self.skipped_files = skipped_files
+        self.max_workers = max_workers
+        # The pass's submitted calls, queued and running; set by _run_pass.
+        self.in_flight: dict[Future, object] = {}
+        # Track recent completions (one per worker slot) for display
+        self.preview_lines = ["waiting…"] * max_workers
+        self.preview_index = 0  # Round-robin index for updating preview lines
+        self.cooldown_remaining = ""
+        self.progress = Progress(
             TextColumn("[bold blue]{task.description}"),
             BarColumn(bar_width=None),
             TaskProgressColumn(),
             TimeElapsedColumn(),
             auto_refresh=False,
         )
-        task_id = progress.add_task(
-            "Translating", total=len(segments_doc.segments), completed=completed_segments
+        self.task_id = self.progress.add_task(
+            "Translating", total=self.total, completed=self.completed
+        )
+        self._live = live_display(self._renderable(), console=console, refresh_per_second=5)
+        self._shown = self._live
+        self.plain = PlainProgress("Translated", self.total, console=console)
+
+    def __enter__(self) -> _Dashboard:
+        self._shown = self._live.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return self._live.__exit__(*exc)
+
+    def _render_panel(self) -> Panel:
+        return _build_dashboard_panel(
+            total_files=len(self.file_totals),
+            skipped_files=self.skipped_files,
+            completed_files=sum(
+                1
+                for path, total_required in self.file_totals.items()
+                if self.file_completed[path] >= total_required
+            ),
+            total_segments=self.total,
+            completed_segments=self.completed,
+            pending_segments=self.total - self.completed,
+            preview_lines=self.preview_lines,
+            # Running calls only: a submitted call may still be queued, or
+            # finished or cancelled and not yet collected.
+            active_workers=sum(1 for future in tuple(self.in_flight) if future.running()),
+            max_workers=self.max_workers,
+            in_cooldown=bool(self.cooldown_remaining),
+            cooldown_remaining=self.cooldown_remaining,
         )
 
-        # Collect pending segments
-        pending_segments_list = [
-            seg
-            for seg in segments_doc.segments
-            if not state_doc.segments.get(seg.segment_id)
-            or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
-        ]
+    def _renderable(self) -> Group:
+        return Group(self._render_panel(), self.progress)
 
-        max_workers = settings.translation_workers
-        active_workers = 0
+    def refresh(self) -> None:
+        self._shown.update(self._renderable())
 
-        # Track recent completions (one per worker slot) for display
-        preview_lines = ["waiting…"] * max_workers
-        preview_index = 0  # Round-robin index for updating preview lines
+    def show_cooldown(self, remaining: str) -> None:
+        self.cooldown_remaining = remaining
+        self.refresh()
 
-        # Track cooldown state
-        in_cooldown = False
-        cooldown_remaining = ""
+    def succeeded(self, segment, result: TranslationResult) -> None:
+        self.file_completed[segment.file_path] += 1
+        self.completed += 1
+        # Progress counts successes only: counting attempts reported a book
+        # finished while units were still failing.
+        self.progress.advance(self.task_id)
+        self.plain.report(self.completed)
+        style = "dim" if result.is_auto_copy else "green"
+        text = escape(_truncate_text(_strip_tags(result.translation)))
+        self.preview_lines[self.preview_index] = f"[{style}]{text}[/{style}]"
 
-        def render_panel() -> Panel:
-            return _build_dashboard_panel(
-                total_files=total_files,
-                skipped_files=skipped_files,
-                completed_files=completed_files_count(),
-                total_segments=len(segments_doc.segments),
-                completed_segments=completed_segments,
-                pending_segments=pending_segments,
-                preview_lines=preview_lines,
-                progress_renderable=None,
-                active_workers=active_workers,
-                max_workers=max_workers,
-                in_cooldown=in_cooldown,
-                cooldown_remaining=cooldown_remaining,
-            )
+    def failed(self, error: Exception) -> None:
+        error_msg = escape(_truncate_text(str(error)))
+        self.preview_lines[self.preview_index] = f"[red]{error_msg}[/red]"
 
-        cooldowns_taken = 0
-        dashboard = live_display(Group(render_panel(), progress), console=console, refresh_per_second=5)
-        plain = PlainProgress("Translated", len(segments_doc.segments), console=console)
-        with StateWriter(settings.state_file) as writer, dashboard as live:
-            # Failures in a row are counted within a run. The count is saved with
-            # the state, and one left at 3 by an earlier run started a 30-minute
-            # cooldown on this run's first failure.
+    def next_slot(self) -> None:
+        # Round-robin through preview slots
+        self.preview_index = (self.preview_index + 1) % self.max_workers
+        self.refresh()
+
+    def new_pass(self) -> None:
+        self.preview_lines = ["waiting…"] * self.max_workers
+        self.preview_index = 0
+
+
+@dataclass(frozen=True)
+class _PassOutcome:
+    """What one pass over the pending units did."""
+
+    successes: int
+    # Failures worth another attempt in this run.
+    failures: tuple[str, ...]
+    # Units that failed in tepub's own code: another attempt would hit the same
+    # bug, so they stay failed until the next run.
+    broken: tuple[str, ...]
+    # A cooldown was taken; it cancels the rest of the pass, so at most one.
+    cooled_down: bool
+    stop_reason: str | None
+
+
+def _run_pass(
+    pending: list,
+    *,
+    provider,
+    source_language: str,
+    target_language: str,
+    glossary,
+    writer: StateWriter,
+    view: _Dashboard,
+    cooldowns_taken: int,
+) -> _PassOutcome:
+    """Submit the pending units a few at a time, record each result as it
+    arrives, and stop or cool down when the failures call for it."""
+    successes = 0
+    failures: list[str] = []
+    broken: list[str] = []
+    cooled_down = False
+    stop_reason: str | None = None
+
+    # Not a `with` block: its __exit__ calls shutdown(wait=True), which
+    # negated the wait=False fast path on KeyboardInterrupt below.
+    executor = ThreadPoolExecutor(max_workers=view.max_workers)
+    interrupted = False
+    to_submit = iter(pending)
+    in_flight: dict[Future, object] = {}
+    view.in_flight = in_flight
+    try:
+        while True:
+            # Nothing more is submitted once the pass stops or cools down; the
+            # units not submitted stay pending.
+            while (
+                stop_reason is None
+                and not cooled_down
+                and len(in_flight) < SUBMITTED_PER_WORKER * view.max_workers
+            ):
+                segment = next(to_submit, None)
+                if segment is None:
+                    break
+                future = executor.submit(
+                    _translate_segment,
+                    segment,
+                    provider,
+                    source_language,
+                    target_language,
+                    glossary,
+                )
+                in_flight[future] = segment
+            if not in_flight:
+                break
+
+            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for future in done:
+                segment = in_flight.pop(future)
+                if future.cancelled():
+                    # Cancelled by a cooldown or a stop; stays pending.
+                    continue
+                result = future.result()
+                # Calls already running when the run stopped or cooled down
+                # still finish. A success is kept: it used to be discarded, paid
+                # for and lost. A provider failure says nothing new about the
+                # provider, so the unit is left pending for the next run.
+                settled = stop_reason is not None or cooled_down
+                if result.error is None:
+                    successes += 1
+                elif isinstance(result.error, UnexpectedError):
+                    # A bug in tepub: retrying it, in this pass or the next,
+                    # would only repeat it. Recorded even when settled, since
+                    # it says nothing about the provider either way.
+                    broken.append(result.segment_id)
+                elif not settled:
+                    failures.append(result.segment_id)
+                stop_reason, cooled_down = _record_result(
+                    segment,
+                    result,
+                    settled=settled,
+                    provider=provider,
+                    writer=writer,
+                    view=view,
+                    in_flight=in_flight,
+                    cooldowns_taken=cooldowns_taken,
+                    stop_reason=stop_reason,
+                    cooled_down=cooled_down,
+                )
+                view.next_slot()
+
+    except KeyboardInterrupt:
+        # Anywhere in the pass, submitting included: an interrupt outside this
+        # handler left the finally below waiting for every worker, a call that
+        # may run for minutes.
+        interrupted = True
+        console.print("\n[yellow]Interrupted by user. Canceling pending translations...[/yellow]")
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    finally:
+        if not interrupted:
+            executor.shutdown(wait=True)
+
+    return _PassOutcome(
+        successes=successes,
+        failures=tuple(failures),
+        broken=tuple(broken),
+        cooled_down=cooled_down,
+        stop_reason=stop_reason,
+    )
+
+
+def _record_result(
+    segment,
+    result: TranslationResult,
+    *,
+    settled: bool,
+    provider,
+    writer: StateWriter,
+    view: _Dashboard,
+    in_flight: dict[Future, object],
+    cooldowns_taken: int,
+    stop_reason: str | None,
+    cooled_down: bool,
+) -> tuple[str | None, bool]:
+    """Save one result and judge what it says about the provider; returns the
+    pass's stop reason and whether it has cooled down."""
+    if result.error is None:
+        writer.mark(
+            result.segment_id,
+            SegmentStatus.COMPLETED,
+            translation=result.translation,
+            provider_name=result.provider_name,
+            model_name=result.model_name,
+            error_message=None,
+        )
+        view.succeeded(segment, result)
+        # A unit copied as it is never reached the provider, so it says
+        # nothing about the provider's health.
+        if not result.is_auto_copy:
             writer.consecutive_failures = 0
-            try:
-                while True:
-                    # Reload state to get pending segments for this pass
-                    state_doc = writer.doc
-                    pending_segments_list = [
-                        seg
-                        for seg in segments_doc.segments
-                        if not state_doc.segments.get(seg.segment_id)
-                        or state_doc.segments.get(seg.segment_id).status != SegmentStatus.COMPLETED
-                    ]
+        return stop_reason, cooled_down
 
-                    if not pending_segments_list:
-                        break
+    if settled and not isinstance(result.error, UnexpectedError):
+        logger.error(
+            "Translation failed for %s after the run stopped or cooled down; left pending: %s",
+            result.segment_id,
+            result.error,
+        )
+        return stop_reason, cooled_down
 
-                    pass_successes = 0
-                    pass_failures: list[str] = []
-                    fatal_error: Exception | None = None
-                    cooled_down_this_pass = False
+    logger.error("Translation failed for %s: %s", result.segment_id, result.error)
+    writer.mark(result.segment_id, SegmentStatus.ERROR, error_message=str(result.error))
+    view.failed(result.error)
+    if settled:
+        return stop_reason, cooled_down
 
-                    # Use parallel translation with ThreadPoolExecutor
-                    # Not a `with` block: its __exit__ calls shutdown(wait=True), which
-                    # negated the wait=False fast path on KeyboardInterrupt below.
-                    executor = ThreadPoolExecutor(max_workers=max_workers)
-                    interrupted = False
-                    try:
-                        # Submit all pending segments
-                        future_to_segment = {}
-                        for segment in pending_segments_list:
-                            future = executor.submit(
-                                _translate_segment,
-                                segment,
-                                provider,
-                                source_language,
-                                target_language,
-                                glossary,
-                            )
-                            future_to_segment[future] = segment
-                            active_workers += 1
+    if isinstance(result.error, ProviderFatalError):
+        # Fatal means the whole run cannot succeed — a rejected key or unusable
+        # model. Stop scheduling instead of repeating it against every remaining
+        # segment. The run still returns normally so completed work stays saved
+        # and resumable.
+        stop_reason = f"Fatal provider error: {result.error}"
+    elif _counts_toward_cooldown(result.error):
+        writer.consecutive_failures += 1
+        if writer.consecutive_failures >= FAILURES_BEFORE_COOLDOWN:
+            if getattr(provider, "local", False):
+                stop_reason = _check_local_provider(provider, writer)
+            elif cooldowns_taken >= MAX_COOLDOWNS_PER_RUN:
+                # Checked before waiting: the last allowed cooldown used to be
+                # followed by a stop, so its thirty minutes bought nothing.
+                stop_reason = f"The provider kept failing after {cooldowns_taken} cooldowns."
+            else:
+                # Without cancelling, the queued calls would reach the provider
+                # during the cooldown — what the cooldown exists to prevent.
+                # Cancelled segments stay pending for the next pass.
+                _cancel_queued(in_flight)
+                cooled_down = True
+                _wait_out_cooldown(writer, view.show_cooldown)
 
-                        # Process results as they complete
-                        for future in as_completed(future_to_segment):
-                            active_workers -= 1
-                            segment = future_to_segment[future]
-                            if future.cancelled():
-                                # Cancelled when cooldown began; stays pending.
-                                continue
-                            result = future.result()
-
-                            # Update state based on result
-                            if result.is_auto_copy:
-                                writer.mark(
-                                    result.segment_id,
-                                    SegmentStatus.COMPLETED,
-                                    translation=result.translation,
-                                    provider_name=None,
-                                    model_name=None,
-                                    error_message=None,
-                                )
-                                file_completed[segment.file_path] += 1
-                                completed_segments += 1
-                                pending_segments -= 1
-                                text = _truncate_text(_strip_tags(result.translation))
-                                preview_lines[preview_index] = f"[dim]{text}[/dim]"
-                                pass_successes += 1
-                            elif result.error:
-                                logger.error(
-                                    "Translation failed for %s: %s",
-                                    result.segment_id,
-                                    result.error,
-                                )
-                                writer.mark(
-                                    result.segment_id,
-                                    SegmentStatus.ERROR,
-                                    error_message=str(result.error),
-                                )
-                                if isinstance(result.error, ProviderFatalError):
-                                    # Fatal means the whole run cannot succeed — a
-                                    # rejected key or unusable model. Stop scheduling
-                                    # instead of repeating it against every remaining
-                                    # segment. The run still returns normally so
-                                    # completed work stays saved and resumable.
-                                    fatal_error = result.error
-                                    for queued in future_to_segment:
-                                        if not queued.done():
-                                            queued.cancel()
-                                    console.print(
-                                        f"[red]Fatal provider error: {result.error}[/red]"
-                                    )
-                                    console.print(
-                                        "[yellow]Stopping run; completed translations are "
-                                        "saved and the run can be resumed.[/yellow]"
-                                    )
-                                    break
-                                error_msg = _truncate_text(str(result.error))
-                                preview_lines[preview_index] = f"[red]{error_msg}[/red]"
-                                pass_failures.append(result.segment_id)
-
-                                # Track consecutive failures and trigger cooldown if
-                                # needed. A reply rejected for its content is not a
-                                # sign of an unwell provider: three in a row once
-                                # stopped a local model for 30 minutes to no purpose.
-                                counted = not isinstance(result.error, ReplyRejectedError)
-                                consecutive = writer.consecutive_failures + int(counted)
-                                writer.consecutive_failures = consecutive
-
-                                if (
-                                    counted
-                                    and consecutive >= FAILURES_BEFORE_COOLDOWN
-                                    and getattr(provider, "local", False)
-                                ):
-                                    # A local server: ask it rather than wait. If it
-                                    # answers, carry on at once; if not, stop and say
-                                    # how to start it.
-                                    try:
-                                        provider.preflight()
-                                    except ProviderFatalError as exc:
-                                        fatal_error = exc
-                                        for queued in future_to_segment:
-                                            if not queued.done():
-                                                queued.cancel()
-                                        console.print(f"[red]{exc}[/red]")
-                                        console.print(
-                                            "[yellow]Stopping run; completed translations "
-                                            "are saved and the run can be resumed.[/yellow]"
-                                        )
-                                        break
-                                    writer.consecutive_failures = 0
-                                elif counted and consecutive >= FAILURES_BEFORE_COOLDOWN:
-                                    in_cooldown = True
-                                    cooled_down_this_pass = True
-                                    cooldowns_taken += 1
-                                    # Every pending segment was already submitted, so
-                                    # without cancelling, workers kept calling the
-                                    # provider throughout the cooldown — exactly what
-                                    # the cooldown exists to prevent. Cancelled
-                                    # segments stay pending for the next pass.
-                                    for queued in future_to_segment:
-                                        if not queued.done():
-                                            queued.cancel()
-                                    cooldown_until = datetime.now(timezone.utc) + COOLDOWN
-                                    writer.set_cooldown(cooldown_until)
-                                    # Count down by the time actually slept rather than
-                                    # re-reading the clock, so the wait is bounded.
-                                    remaining = COOLDOWN.total_seconds()
-                                    while remaining > 0:
-                                        mins = int(remaining // 60)
-                                        secs = int(remaining % 60)
-                                        cooldown_remaining = f"{mins}m {secs}s"
-                                        live.update(Group(render_panel(), progress))
-                                        sleep_for = min(5, remaining)
-                                        _sleep(sleep_for)
-                                        remaining -= sleep_for
-
-                                    writer.set_cooldown(None)
-                                    writer.consecutive_failures = 0
-                                    in_cooldown = False
-                                    cooldown_remaining = ""
-                            else:
-                                writer.mark(
-                                    result.segment_id,
-                                    SegmentStatus.COMPLETED,
-                                    translation=result.translation,
-                                    provider_name=result.provider_name,
-                                    model_name=result.model_name,
-                                    error_message=None,
-                                )
-                                file_completed[segment.file_path] += 1
-                                completed_segments += 1
-                                pending_segments -= 1
-                                text = _truncate_text(_strip_tags(result.translation))
-                                preview_lines[preview_index] = f"[green]{text}[/green]"
-                                pass_successes += 1
-                                # Reset consecutive failures on any success
-                                writer.consecutive_failures = 0
-
-                            # Round-robin through preview slots
-                            preview_index = (preview_index + 1) % max_workers
-
-                            progress.advance(task_id)
-                            live.update(Group(render_panel(), progress))
-                            plain.report(int(progress.tasks[0].completed))
-
-                    except KeyboardInterrupt:
-                        # Anywhere in the pass, submitting included: an interrupt
-                        # outside this handler left the finally below waiting for
-                        # every worker, a call that may run for minutes.
-                        interrupted = True
-                        console.print(
-                            "\n[yellow]Interrupted by user. "
-                            "Canceling pending translations...[/yellow]"
-                        )
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise
-                    finally:
-                        if not interrupted:
-                            executor.shutdown(wait=True)
-
-                    if fatal_error is not None:
-                        # Retrying cannot help: the provider itself is unusable.
-                        break
-
-                    # A cooldown cancelled the rest of this pass; the provider has had
-                    # its rest, so start the next pass instead of judging this one. It
-                    # used to count as "no progress" and end the run after the wait.
-                    if cooled_down_this_pass:
-                        if cooldowns_taken >= MAX_COOLDOWNS_PER_RUN:
-                            console.print(
-                                f"[red]The provider kept failing after {cooldowns_taken} "
-                                "cooldowns; stopping. Completed translations are saved; "
-                                "run the command again to continue.[/red]"
-                            )
-                            break
-                        preview_lines = ["waiting…"] * max_workers
-                        preview_index = 0
-                        writer.reset_errors(pass_failures)
-                        continue
-
-                    # After each pass, check if we should retry failed segments
-                    if pass_failures:
-                        if pass_successes == 0:
-                            # No progress made, stop trying
-                            break
-                        # Reset preview lines to "waiting…" for next pass
-                        preview_lines = ["waiting…"] * max_workers
-                        preview_index = 0
-                        writer.reset_errors(pass_failures)
-                        continue
-
-            except KeyboardInterrupt:
-                raise
-
-    # Note: Polish is now applied incrementally after each translation (see line 203)
-    # No separate polish pass needed at the end
+    if stop_reason is not None:
+        _cancel_queued(in_flight)
+        _announce_stop(stop_reason)
+    return stop_reason, cooled_down
 
 
 @dataclass(frozen=True)
@@ -735,17 +863,14 @@ class RunSummary:
 
     @property
     def ok(self) -> bool:
-        return not self.failed
+        # Finished, not merely free of failures: a run stopped early leaves
+        # units pending and no failure behind.
+        return not self.failed and not self.pending
 
 
-def _completed_ids(settings: AppSettings) -> set[str]:
-    if not settings.state_file.exists():
-        return set()
-    state = load_state(settings.state_file)
-    return {k for k, r in state.segments.items() if r.status == SegmentStatus.COMPLETED}
-
-
-def _summarise(settings: AppSettings, before: set[str], started: float) -> RunSummary:
+def _summarise(
+    settings: AppSettings, translated_now: int, started: float, target_language: str
+) -> RunSummary:
     segments = select_for_translation(load_segments(settings.segments_file).segments, settings)
     state = load_state(settings.state_file) if settings.state_file.exists() else None
     records = state.segments if state is not None else {}
@@ -753,7 +878,10 @@ def _summarise(settings: AppSettings, before: set[str], started: float) -> RunSu
     completed = {k for k, v in status.items() if v == SegmentStatus.COMPLETED}
     failed = tuple(sorted(k for k, v in status.items() if v == SegmentStatus.ERROR))
     misses = 0
-    glossary = glossary_for(settings.work_root, settings.work_dir, settings.target_language) if state else None
+    # The run's language, which the settings need not carry.
+    glossary = (
+        glossary_for(settings.work_root, settings.work_dir, target_language) if state else None
+    )
     if glossary is not None and state is not None:
         from glossary.report import find_misses
 
@@ -763,7 +891,7 @@ def _summarise(settings: AppSettings, before: set[str], started: float) -> RunSu
         completed=len(completed),
         failed=failed,
         pending=len(segments) - len(completed) - len(failed),
-        translated_now=len(completed - before),
+        translated_now=translated_now,
         seconds=time.monotonic() - started,
         glossary_misses=misses,
     )
@@ -772,21 +900,24 @@ def _summarise(settings: AppSettings, before: set[str], started: float) -> RunSu
 def _print_summary(summary: RunSummary, input_epub: Path) -> None:
     minutes, seconds = divmod(int(summary.seconds), 60)
     took = f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
+    # The path as given, quoted for a shell: the bare file name did not work
+    # from another directory, nor with a space in it.
+    book = escape(shlex.quote(str(input_epub)))
     console.print(
         f"[bold]{summary.completed} of {summary.total} units translated[/bold] "
         f"({summary.translated_now} in this run, {took})."
     )
     if summary.failed:
         console.print(
-            f"[red]{len(summary.failed)} failed.[/red] Run `tepub translate {input_epub.name}` "
-            f"again to retry them; `tepub status {input_epub.name}` lists them."
+            f"[red]{len(summary.failed)} failed.[/red] Run `tepub translate {book}` "
+            f"again to retry them; `tepub status {book}` lists them."
         )
     if summary.pending:
         console.print(f"[yellow]{summary.pending} still to translate.[/yellow]")
     if summary.glossary_misses:
         console.print(
             f"[yellow]{summary.glossary_misses} unit(s) miss a glossary rendering;[/yellow] "
-            f"`tepub glossary check {input_epub.name}` lists them."
+            f"`tepub glossary check {book}` lists them."
         )
 
 
@@ -803,11 +934,16 @@ def run_translation(
     the same as a clean one, to people and to scripts.
     """
     started = time.monotonic()
-    before = _completed_ids(settings)
-    _run_translation(
-        settings, input_epub, source_language=source_language, target_language=target_language
-    )
-    summary = _summarise(settings, before, started)
+    # One run per workspace: a second process used to translate every segment
+    # again, and the last to save won. The summary is read under the same lock,
+    # so no other command can change the state between the run and its report.
+    with exclusive_run(settings.state_file):
+        # Counted as the run goes: comparing completed units before and after
+        # reported none after a language change reset and retranslated them.
+        translated_now = _run_translation(
+            settings, input_epub, source_language=source_language, target_language=target_language
+        )
+        summary = _summarise(settings, translated_now, started, target_language)
     _print_summary(summary, input_epub)
     return summary
 
@@ -829,7 +965,15 @@ def plan_translation(settings: AppSettings, input_epub: Path) -> Plan:
     segments_doc = load_segments(settings.segments_file)
     assert_same_book(segments_doc, input_epub)
     segments = select_for_translation(segments_doc.segments, settings)
-    done = _completed_ids(settings)
+    done: set[str] = set()
+    if settings.state_file.exists():
+        state = load_state(settings.state_file)
+        # A run in other languages resets the finished units and translates them
+        # again, so the plan counts them too.
+        if _language_codes(state.source_language, state.target_language) == _language_codes(
+            settings.source_language, settings.target_language
+        ):
+            done = {k for k, r in state.segments.items() if r.status == SegmentStatus.COMPLETED}
     remaining = [s for s in segments if s.segment_id not in done]
     todo = [s for s in remaining if not should_auto_copy(s)]
     glossary = glossary_for(settings.work_root, settings.work_dir, settings.target_language)

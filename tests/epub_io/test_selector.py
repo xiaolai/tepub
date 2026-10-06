@@ -83,11 +83,17 @@ def _skipped(book: Path, settings) -> dict[str, str]:
 
 
 def _chapters(n: int) -> list[tuple[str, str, str]]:
-    return [(f"Text/ch{i}.xhtml", f"{i}. A Chapter", f"<p>Chapter {i} text.</p>") for i in range(1, n + 1)]
+    return [
+        (f"Text/ch{i}.xhtml", f"{i}. A Chapter", f"<p>Chapter {i} text.</p>")
+        for i in range(1, n + 1)
+    ]
 
 
 def test_plural_acknowledgements_are_skipped(tmp_path, settings) -> None:
-    book = build_epub(tmp_path / "b.epub", [*_chapters(3), ("Text/ack.xhtml", "Acknowledgements", "<p>Thanks.</p>")])
+    book = build_epub(
+        tmp_path / "b.epub",
+        [*_chapters(3), ("Text/ack.xhtml", "Acknowledgements", "<p>Thanks.</p>")],
+    )
     assert _skipped(book, settings) == {"Text/ack.xhtml": "acknowledgements"}
 
 
@@ -98,7 +104,11 @@ def test_notes_missing_from_the_toc_are_found_by_their_first_line(tmp_path, sett
         tmp_path / "b.epub",
         [
             *_chapters(8),
-            ("Text/notes1.xhtml", "", "<p><span>Notes</span></p><p>Introduction</p><p>1 A source.</p>"),
+            (
+                "Text/notes1.xhtml",
+                "",
+                "<p><span>Notes</span></p><p>Introduction</p><p>1 A source.</p>",
+            ),
             ("Text/notes2.xhtml", "", "<p>Chapter 1</p><p>1 Another source.</p>"),
             ("Text/index.xhtml", "Index", "<p>Index</p>"),
         ],
@@ -130,7 +140,13 @@ def _spine(*names: str) -> dict:
     from epub_io.container import SpineDocument
 
     return {
-        Path(name): SpineDocument(index=i, idref=f"i{i}", href=Path(name), media_type="application/xhtml+xml", linear=True)
+        Path(name): SpineDocument(
+            index=i,
+            idref=f"i{i}",
+            href=Path(name),
+            media_type="application/xhtml+xml",
+            linear=True,
+        )
         for i, name in enumerate(names)
     }
 
@@ -146,15 +162,70 @@ def test_a_section_title_does_not_skip_its_whole_chapter() -> None:
         ("10. Forms and Controls", "ch10.xhtml"),
         ("Further Reading", "ch10.xhtml#further"),
     ]
-    candidates, _ = selector._collect_toc_candidates(spine, toc, ["acknowledgments", "further reading"])
+    candidates, _ = selector._collect_toc_candidates(
+        spine, toc, ["acknowledgments", "further reading"]
+    )
     assert candidates == {}
 
 
 def test_a_late_back_matter_section_marks_its_file() -> None:
     """"Technical Terms" then "Index" in one file at the end of the book."""
     spine = _spine("ch1.xhtml", "ch2.xhtml", "back.xhtml")
-    toc = [("1. One", "ch1.xhtml"), ("2. Two", "ch2.xhtml"), ("Technical Terms", "back.xhtml"), ("Index", "back.xhtml#idx")]
+    toc = [
+        ("1. One", "ch1.xhtml"),
+        ("2. Two", "ch2.xhtml"),
+        ("Technical Terms", "back.xhtml"),
+        ("Index", "back.xhtml#idx"),
+    ]
     candidates, _ = selector._collect_toc_candidates(
         spine, toc, ["index"], back_matter=["index"], back_matter_from=2
     )
     assert {path.as_posix(): c.reason for path, c in candidates.items()} == {"back.xhtml": "index"}
+
+
+def test_build_skip_map_reuses_a_reader_it_is_given(book, settings, monkeypatch):
+    """Extraction already opened the book; the skip map must not parse it again."""
+    from epub_io.reader import EpubReader
+
+    reader = EpubReader(book, settings)
+
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError("the book was opened a second time")
+
+    monkeypatch.setattr(selector, "EpubReader", _refuse)
+    skip_map = selector.build_skip_map(book, settings, reader=reader)
+    assert any(path.name == "cover.xhtml" for path in skip_map)
+
+
+def test_extraction_parses_the_package_once(book, settings, monkeypatch):
+    from epub_io import reader as reader_module
+    from extraction import pipeline
+
+    calls = []
+    real = reader_module.read_package
+    monkeypatch.setattr(
+        reader_module, "read_package", lambda path: calls.append(path) or real(path)
+    )
+    pipeline.run_extraction(settings, book)
+    assert len(calls) == 1
+
+
+def test_extraction_parses_each_document_once(tmp_path, settings, monkeypatch):
+    """The skip analysis looks for untitled notes by parsing the spine; the
+    extraction walk then parsed every document again."""
+    from epub_io import reader as reader_module
+    from extraction import pipeline
+
+    book = build_epub(
+        tmp_path / "b.epub",
+        [
+            *_chapters(8),
+            ("Text/notes1.xhtml", "", "<p>Notes</p><p>1 A source.</p>"),
+            ("Text/notes2.xhtml", "", "<p>Chapter 1</p><p>1 Another source.</p>"),
+        ],
+    )
+    parsed = []
+    real = reader_module.parse_xhtml
+    monkeypatch.setattr(reader_module, "parse_xhtml", lambda raw: parsed.append(raw) or real(raw))
+    pipeline.run_extraction(settings, book)
+    assert parsed and len(parsed) == len(set(parsed))

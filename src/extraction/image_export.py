@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from rich.markup import escape
+
 from config import AppSettings
 from console_singleton import get_console
 from epub_io.reader import EpubReader
@@ -96,7 +98,10 @@ def extract_images(
         try:
             content = reader.read_bytes(item)
         except Exception as e:
-            console.print(f"[yellow]Warning: Failed to read image {epub_path}: {e}[/yellow]")
+            console.print(
+                f"[yellow]Warning: Failed to read image {escape(str(epub_path))}: "
+                f"{escape(str(e))}[/yellow]"
+            )
             used_names.discard(output_filename)
             continue
 

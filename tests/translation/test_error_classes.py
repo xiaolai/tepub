@@ -90,7 +90,11 @@ def test_a_401_is_fatal(monkeypatch) -> None:
     ],
 )
 def test_sdk_exceptions_are_classified_by_status(exc, kind) -> None:
-    error = classify_exception("SDK", Exception("boom"), status=getattr(exc, "status_code", None) or getattr(exc, "code", None))
+    error = classify_exception(
+        "SDK",
+        Exception("boom"),
+        status=getattr(exc, "status_code", None) or getattr(exc, "code", None),
+    )
     assert type(error) is kind
 
 

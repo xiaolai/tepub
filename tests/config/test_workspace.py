@@ -78,3 +78,32 @@ def test_with_override_root_accepts_matching_name_without_files(tmp_path: Path) 
     expected_dir = workspace / build_workspace_name(epub_path)
     assert derived.work_dir == expected_dir
     assert derived.work_root == workspace
+
+
+def test_a_book_config_that_is_an_explicit_null_is_refused(tmp_path: Path) -> None:
+    """`~` in a book's config.yaml became {}, and the book ran on inherited settings."""
+    import pytest
+
+    from config.loader import ConfigFileError
+    from config.workspace import _with_book_config
+
+    (tmp_path / "config.yaml").write_text("~\n", encoding="utf-8")
+    settings = AppSettings(work_root=tmp_path, work_dir=tmp_path)
+    with pytest.raises(ConfigFileError, match="must hold settings"):
+        _with_book_config(settings)
+
+
+def test_a_book_config_is_recorded_beside_the_files_the_loader_read(tmp_path: Path) -> None:
+    from config.loader import load_settings
+    from config.workspace import _with_book_config
+
+    Path("config.yaml").write_text("translation_workers: 3\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("target_language: French\n", encoding="utf-8")
+    loaded = load_settings().model_copy(update={"work_dir": tmp_path})
+    once = _with_book_config(loaded)
+    twice = _with_book_config(once)
+    assert [layer.label for layer in twice.config_layers] == [
+        "global", ".env", "./config.yaml", "book"
+    ]
+    assert twice.config_layers[2].payload == {"translation_workers": 3}
+    assert twice.config_layers[3].payload == {"target_language": "French"}

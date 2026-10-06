@@ -43,5 +43,5 @@ def test_all_exports_run(name: str, tmp_path: Path) -> None:
             translation=segment.source_content, provider_name="fake", status="completed"
         )
     settings.state_file.write_text(json.dumps(state), encoding="utf-8")
-    web = export_web(settings, book, output_dir=tmp_path / "web")
+    web = export_web(settings, book, output_dir=tmp_path / "web").site
     assert (web / "index.html").exists()

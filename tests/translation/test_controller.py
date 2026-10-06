@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from rich.console import Console
 from config import AppSettings
 from state.models import ExtractMode, Segment, SegmentMetadata, SegmentsDocument, SegmentStatus
 from state.store import load_state, save_segments
+from translation import controller
 from translation.controller import run_translation
 from translation.providers.base import ProviderFatalError
 
@@ -251,7 +253,9 @@ def test_a_cooldown_resumes_the_run(monkeypatch, settings, tmp_path):
         for i in range(1, 6)
     ]
     save_segments(
-        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        SegmentsDocument(
+            epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments
+        ),
         settings.segments_file,
     )
     settings = settings.model_copy(update={"translation_workers": 1})
@@ -290,7 +294,9 @@ def test_cooldowns_are_capped(monkeypatch, settings, tmp_path):
     _write_segments(settings, input_epub)
     settings = settings.model_copy(update={"translation_workers": 1})
     slept: list[float] = []
-    monkeypatch.setattr("translation.controller.create_provider", lambda _config: AlwaysRateLimited())
+    monkeypatch.setattr(
+        "translation.controller.create_provider", lambda _config: AlwaysRateLimited()
+    )
     monkeypatch.setattr("translation.controller.console", Console(record=True))
     monkeypatch.setattr("translation.controller._sleep", slept.append)
     monkeypatch.setattr("translation.controller.FAILURES_BEFORE_COOLDOWN", 1)
@@ -345,23 +351,57 @@ def test_a_stopped_run_resumes_where_it_left_off(monkeypatch, settings, tmp_path
         for i in range(1, 6)
     ]
     save_segments(
-        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        SegmentsDocument(
+            epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments
+        ),
         settings.segments_file,
     )
     settings = settings.model_copy(update={"translation_workers": 1})
     monkeypatch.setattr("translation.controller.console", Console(record=True))
 
+    # With one worker, the worker may pick up c-4 before or after the run
+    # reads c-3's fatal error and cancels what is queued. The events fix the
+    # order: the run cancels only once c-4 is running, and c-4 finishes only
+    # after the cancel, so c-4 is in flight (finished and kept) and c-5 is
+    # queued (cancelled, left pending). c-4 is submitted when c-2's result is
+    # recorded, so c-3 fails only after that: if c-2 and c-3 finished within
+    # one wait, the stop was read first and c-4 was rightly never submitted.
+    fourth_started = threading.Event()
+    queued_cancelled = threading.Event()
+    second_recorded = threading.Event()
+    real_cancel = controller._cancel_queued
+    real_record = controller._record_result
+
+    def record_and_signal(segment, *args, **kwargs):
+        outcome = real_record(segment, *args, **kwargs)
+        if segment.segment_id == "c-2":
+            second_recorded.set()
+        return outcome
+
+    monkeypatch.setattr("translation.controller._record_result", record_and_signal)
+
+    def cancel_once_fourth_runs(futures):
+        assert fourth_started.wait(5), "c-4 never started"
+        real_cancel(futures)
+        queued_cancelled.set()
+
+    monkeypatch.setattr("translation.controller._cancel_queued", cancel_once_fourth_runs)
+
     class StopsOnThird:
         name, model = "dummy", "dummy-model"
-        calls = 0
+        seen: list[str] = []
 
         def preflight(self):
             pass
 
         def translate(self, segment, source_language, target_language):
-            StopsOnThird.calls += 1
-            if StopsOnThird.calls == 3:
+            StopsOnThird.seen.append(segment.segment_id)
+            if segment.segment_id == "c-3":
+                assert second_recorded.wait(5), "c-2 was never recorded"
                 raise ProviderFatalError("key revoked")
+            if segment.segment_id == "c-4":
+                fourth_started.set()
+                assert queued_cancelled.wait(5), "the queued call was never cancelled"
             return "Hola"
 
     class Counting:
@@ -379,12 +419,15 @@ def test_a_stopped_run_resumes_where_it_left_off(monkeypatch, settings, tmp_path
     run_translation(settings, input_epub, source_language="en", target_language="es")
     first = load_state(settings.state_file)
     done_first = {k for k, r in first.segments.items() if r.status == SegmentStatus.COMPLETED}
-    assert len(done_first) == 2
+    # The call in flight when the fatal error was read finishes and is kept;
+    # the queued one is never made.
+    assert StopsOnThird.seen == ["c-1", "c-2", "c-3", "c-4"]
+    assert done_first == {"c-1", "c-2", "c-4"}
 
     monkeypatch.setattr("translation.controller.create_provider", lambda _c: Counting())
     run_translation(settings, input_epub, source_language="en", target_language="es")
 
-    assert sorted(Counting.seen) == sorted(set(f"c-{i}" for i in range(1, 6)) - done_first)
+    assert sorted(Counting.seen) == ["c-3", "c-5"]
     final = load_state(settings.state_file)
     assert {r.status for r in final.segments.values()} == {SegmentStatus.COMPLETED}
 
@@ -401,7 +444,9 @@ class RejectsEveryReply:
     def translate(self, segment, source_language, target_language):
         from translation.providers import ReplyRejectedError
 
-        raise ReplyRejectedError(f"Translation of segment {segment.segment_id} changed the markup twice")
+        raise ReplyRejectedError(
+            f"Translation of segment {segment.segment_id} changed the markup twice"
+        )
 
 
 def test_rejected_replies_do_not_start_a_cooldown(monkeypatch, settings, tmp_path):
@@ -423,12 +468,16 @@ def test_rejected_replies_do_not_start_a_cooldown(monkeypatch, settings, tmp_pat
         for i in range(1, 6)
     ]
     save_segments(
-        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        SegmentsDocument(
+            epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments
+        ),
         settings.segments_file,
     )
     settings = settings.model_copy(update={"translation_workers": 1})
     slept: list[float] = []
-    monkeypatch.setattr("translation.controller.create_provider", lambda _config: RejectsEveryReply())
+    monkeypatch.setattr(
+        "translation.controller.create_provider", lambda _config: RejectsEveryReply()
+    )
     monkeypatch.setattr("translation.controller.console", Console(record=True))
     monkeypatch.setattr("translation.controller._sleep", slept.append)
 
@@ -451,7 +500,9 @@ def test_a_failure_count_left_by_an_earlier_run_starts_no_cooldown(monkeypatch, 
     state.consecutive_failures = 3
     save_state(state, settings.state_file)
     slept: list[float] = []
-    monkeypatch.setattr("translation.controller.create_provider", lambda _config: RejectsEveryReply())
+    monkeypatch.setattr(
+        "translation.controller.create_provider", lambda _config: RejectsEveryReply()
+    )
     monkeypatch.setattr("translation.controller.console", Console(record=True))
     monkeypatch.setattr("translation.controller._sleep", slept.append)
 
@@ -461,7 +512,7 @@ def test_a_failure_count_left_by_an_earlier_run_starts_no_cooldown(monkeypatch, 
 
 
 def test_one_language_spelled_two_ways_is_not_a_change(monkeypatch, settings, tmp_path):
-    """"Simplified Chinese" and "zh-CN" are one language; comparing spellings
+    """ "Simplified Chinese" and "zh-CN" are one language; comparing spellings
     reset finished translations."""
     from state.store import ensure_state
     from state.writer import StateWriter
@@ -469,9 +520,13 @@ def test_one_language_spelled_two_ways_is_not_a_change(monkeypatch, settings, tm
     input_epub = tmp_path / "book.epub"
     input_epub.write_text("stub", encoding="utf-8")
     segment = _write_segments(settings, input_epub)
-    ensure_state(settings.state_file, [segment], "dummy", "dummy-model", "English", "Simplified Chinese")
+    ensure_state(
+        settings.state_file, [segment], "dummy", "dummy-model", "English", "Simplified Chinese"
+    )
     with StateWriter(settings.state_file) as writer:
-        writer.mark(segment.segment_id, SegmentStatus.COMPLETED, translation="你好", provider_name="x")
+        writer.mark(
+            segment.segment_id, SegmentStatus.COMPLETED, translation="你好", provider_name="x"
+        )
 
     monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
     monkeypatch.setattr("translation.controller.console", Console(record=True))
@@ -522,7 +577,9 @@ def _five_segments(settings, input_epub):
         for i in range(1, 6)
     ]
     save_segments(
-        SegmentsDocument(epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments),
+        SegmentsDocument(
+            epub_path=input_epub, generated_at="2024-01-01T00:00:00Z", segments=segments
+        ),
         settings.segments_file,
     )
 
@@ -542,7 +599,9 @@ def test_a_local_server_that_answers_is_not_waited_for(monkeypatch, settings, tm
 
     assert slept == []
     assert server.checks >= 2  # checked once at start, again when failures piled up
-    assert {r.status for r in load_state(settings.state_file).segments.values()} == {SegmentStatus.ERROR}
+    assert {r.status for r in load_state(settings.state_file).segments.values()} == {
+        SegmentStatus.ERROR
+    }
 
 
 def test_a_local_server_that_is_down_stops_the_run_with_the_fix(monkeypatch, settings, tmp_path):
@@ -552,7 +611,9 @@ def test_a_local_server_that_is_down_stops_the_run_with_the_fix(monkeypatch, set
     settings = settings.model_copy(update={"translation_workers": 1})
     console = Console(record=True)
     slept: list[float] = []
-    monkeypatch.setattr("translation.controller.create_provider", lambda _config: LocalServer(up_after_start=False))
+    monkeypatch.setattr(
+        "translation.controller.create_provider", lambda _config: LocalServer(up_after_start=False)
+    )
     monkeypatch.setattr("translation.controller.console", console)
     monkeypatch.setattr("translation.controller._sleep", slept.append)
 

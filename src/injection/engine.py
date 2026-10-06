@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+
+from rich.markup import escape
 
 from config import AppSettings
 from console_singleton import get_console
@@ -11,8 +14,7 @@ from epub_io.xhtml import local_name, serialize_xhtml, text_of
 from extraction.segments import locate_units
 from logging_utils.logger import get_logger
 from state.models import ExtractMode, Segment, SegmentStatus
-from state.store import load_segments, load_state, save_state
-from translation.polish import polish_if_chinese
+from state.store import load_segments, load_state
 
 from .html_ops import (
     ITEM_TAGS,
@@ -121,29 +123,37 @@ def _record_heading_title(
     updates.setdefault(None, text)
 
 
+@dataclass(frozen=True)
+class Injection:
+    """The translated documents, and the units that could not be inserted.
+
+    Failures were only printed, so an export missing translations, or a book
+    written with none, ended as a success.
+    """
+
+    updated_html: dict[Path, bytes] = field(default_factory=dict)
+    title_updates: dict[PurePosixPath, dict[str | None, str]] = field(default_factory=dict)
+    # Units translated but not in the output: no longer matching the book, or
+    # in a document missing from it or not well-formed.
+    failed: tuple[str, ...] = ()
+
+
 def apply_translations(
     settings: AppSettings,
     input_epub: Path,
     *,
     mode: str | None = None,
-) -> tuple[dict[Path, bytes], dict[PurePosixPath, dict[str | None, str]]]:
+) -> Injection:
+    # Chinese typography is applied to the stored translations by the caller,
+    # export, once for all editions and under the workspace lock it holds.
     settings.ensure_directories()
 
-    polish_if_chinese(
-        settings.state_file,
-        settings.target_language,
-        load_fn=load_state,
-        save_fn=save_state,
-        console_print=console.print,
-        message_prefix="Before injection:",
-    )
-
-    console.print(f"[cyan]Preparing to inject translations into {input_epub}[/cyan]")
+    console.print(f"[cyan]Preparing to inject translations into {escape(str(input_epub))}[/cyan]")
 
     grouped = _group_translated_segments(settings)
     if not grouped:
         console.print("[yellow]No translated segments found. Run translation first.[/yellow]")
-        return {}, {}
+        return Injection()
 
     total_segments = sum(len(segments) for segments in grouped.values())
     console.print(
@@ -163,10 +173,12 @@ def apply_translations(
         if not document:
             logger.warning("Document %s missing from EPUB", file_path)
             missing_documents.append(file_path)
+            failed_segments.extend(segment.segment_id for segment, _ in segments)
             continue
         if document.xhtml is None:
             # Not well-formed XML: copied into the output untranslated (D3).
             missing_documents.append(file_path)
+            failed_segments.extend(segment.segment_id for segment, _ in segments)
             continue
         updated, failures = _apply_translations_to_document(
             document,
@@ -184,18 +196,24 @@ def apply_translations(
 
     if missing_documents:
         console.print(
-            f"[yellow]Skipped {len(missing_documents)} missing documents: {', '.join(str(p) for p in missing_documents)}[/yellow]"
+            f"[yellow]Skipped {len(missing_documents)} missing documents: "
+            f"{escape(', '.join(str(p) for p in missing_documents))}[/yellow]"
         )
 
     if failed_segments:
         console.print(
-            f"[yellow]Encountered {len(failed_segments)} segment insertion failures; see logs for details.[/yellow]"
+            f"[yellow]Encountered {len(failed_segments)} segment insertion failures; "
+            "see logs for details.[/yellow]"
         )
 
     if effective_mode != "translated_only":
         title_updates.clear()
 
-    return updated_html, {path: mapping for path, mapping in title_updates.items()}
+    return Injection(
+        updated_html,
+        {path: mapping for path, mapping in title_updates.items()},
+        tuple(failed_segments),
+    )
 
 
 def run_injection(
@@ -204,12 +222,23 @@ def run_injection(
     output_epub: Path,
     *,
     mode: str = "bilingual",
-) -> tuple[dict[Path, bytes], dict[PurePosixPath, dict[str | None, str]]]:
-    updated_html, title_updates = apply_translations(settings, input_epub, mode=mode)
-    if not updated_html:
-        return updated_html, title_updates
+    injection: Injection | None = None,
+) -> Injection:
+    """Write the translated EPUB; nothing is written when no unit could be inserted.
 
-    console.print(f"[cyan]Writing translated EPUB to {output_epub} (mode={mode})...[/cyan]")
+    ``injection`` is apply_translations' result for ``mode`` when the caller
+    already has it, as export has when it also writes the web edition.
+    """
+    if injection is None:
+        injection = apply_translations(settings, input_epub, mode=mode)
+    updated_html, title_updates = injection.updated_html, injection.title_updates
+    if not updated_html:
+        return injection
+
+    console.print(
+        f"[cyan]Writing translated EPUB to {escape(str(output_epub))} "
+        f"(mode={escape(str(mode))})...[/cyan]"
+    )
     try:
         write_updated_epub(
             input_epub,
@@ -219,10 +248,11 @@ def run_injection(
             css_mode=mode,
         )
     except Exception as exc:  # pragma: no cover - filesystem errors
-        console.print(f"[red]Failed to write EPUB: {exc}[/red]")
+        console.print(f"[red]Failed to write EPUB: {escape(str(exc))}[/red]")
         raise
     else:
         console.print(
-            f"[green]Wrote translated EPUB to {output_epub} with {len(updated_html)} updated files.[/green]"
+            f"[green]Wrote translated EPUB to {escape(str(output_epub))} with {len(updated_html)} "
+            "updated files.[/green]"
         )
-    return updated_html, title_updates
+    return injection

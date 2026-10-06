@@ -12,7 +12,7 @@ from logging_utils.logger import get_logger
 
 from .container import ManifestItem, read_package
 from .container import SpineDocument as SpineItem
-from .xhtml import NotWellFormed, XhtmlDocument, parse_xhtml
+from .xhtml import NotWellFormedError, XhtmlDocument, parse_xhtml
 
 logger = get_logger(__name__)
 
@@ -93,7 +93,7 @@ class EpubReader:
                 raw_html = archive.read(self.package.zip_path(spine_item.href.as_posix()))
                 try:
                     xhtml = parse_xhtml(raw_html)
-                except NotWellFormed as exc:
+                except NotWellFormedError as exc:
                     logger.warning(
                         "%s is %s; it will be left untranslated", spine_item.href.as_posix(), exc
                     )
@@ -102,6 +102,14 @@ class EpubReader:
                 yield HtmlDocument(
                     spine_item=spine_item, tree=xhtml.root, raw_html=raw_html, xhtml=xhtml
                 )
+
+    def documents(self) -> Iterable[HtmlDocument]:
+        """The spine documents, as iter_documents yields them, without parsing
+        again those read_document_by_path has already parsed and kept. Callers
+        must not modify the trees."""
+        if self._documents is not None:
+            return list(self._documents.values())
+        return self.iter_documents()
 
     def items(self) -> list[BookItem]:
         """Every manifest item, in manifest order."""

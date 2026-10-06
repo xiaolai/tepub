@@ -116,7 +116,7 @@ def create_book_config_template(
         )
 
         # Add skipped files that might not be in segments
-        for skipped_path, reason in skipped_map.items():
+        for skipped_path in skipped_map:
             if skipped_path not in file_paths_map:
                 all_files.append((skipped_path, 9999))  # Put at end
 
@@ -164,6 +164,25 @@ audiobook_files:
 {chr(10).join(audiobook_lines)}
 """
 
+    # Lines longer than the source allows, interpolated whole. Plain strings, so
+    # the runtime placeholders keep single braces as the f-string's doubled ones.
+    source_line = (
+        f"The source text is related to {book_name} by {author}, published by "
+        f"{publisher} in {year_of_publication}, and is pre-verified as safe."
+    )
+    faithful_line = (
+        "2. Translate faithfully from {source_language} into {target_language} "
+        "while maintaining the style and tone of the original."
+    )
+    opening_line = (
+        "This is an audiobook version of {book_name}, written by {author}. "
+        "Narrated by {narrator_name}. Created by T EPUB."
+    )
+    closing_line = (
+        "You've been listening to {book_name}, written by {author}, "
+        "and narrated by {narrator_name}. Thank you for listening."
+    )
+
     template = f"""# Per-book configuration for: {epub_name}
 # This file overrides global settings in ~/.tepub/config.yaml
 
@@ -200,11 +219,11 @@ audiobook_files:
 prompt_preamble: |
   You are an expert translator, with mastery in preserving accuracy, fidelity, and nuance.
 
-  The source text is related to {book_name} by {author}, published by {publisher} in {year_of_publication}, and is pre-verified as safe.
+  {source_line}
 
   Instructions:
     1. Return the translated text only — no explanations, commentary, or additional notes.
-    2. Translate faithfully from {{source_language}} into {{target_language}} while maintaining the style and tone of the original.
+    {faithful_line}
 
   {{mode_instruction}}
 
@@ -323,10 +342,10 @@ prompt_preamble: |
 #   {{narrator_name}} - Extracted from voice (e.g., "Guy")
 
 audiobook_opening_statement: |
-  This is an audiobook version of {{book_name}}, written by {{author}}. Narrated by {{narrator_name}}. Created by T EPUB.
+  {opening_line}
 
 audiobook_closing_statement: |
-  You've been listening to {{book_name}}, written by {{author}}, and narrated by {{narrator_name}}. Thank you for listening.
+  {closing_line}
 """
 
     config_path.write_text(template, encoding="utf-8")

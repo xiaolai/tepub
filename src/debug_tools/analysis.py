@@ -5,6 +5,7 @@ from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress
 from rich.table import Table
@@ -34,12 +35,12 @@ def analyze_library(
 ) -> None:
     library = library.expanduser()
     if not library.exists():
-        console.print(f"[bold red]Library path not found:[/bold red] {library}")
+        console.print(f"[bold red]Library path not found:[/bold red] {escape(str(library))}")
         raise SystemExit(1)
 
     epubs = list(_iter_epubs(library))
     if not epubs:
-        console.print(f"[yellow]No EPUB files found under {library}.[/yellow]")
+        console.print(f"[yellow]No EPUB files found under {escape(str(library))}.[/yellow]")
         return
 
     if limit is not None:
@@ -86,7 +87,7 @@ def analyze_library(
         table.add_column("Reason")
         table.add_column("Count", justify="right")
         for reason, count in reason_counter.most_common():
-            table.add_row(reason, str(count))
+            table.add_row(escape(str(reason)), str(count))
         console.print(table)
 
     if source_counter:
@@ -94,7 +95,7 @@ def analyze_library(
         source_table.add_column("Source")
         source_table.add_column("Count", justify="right")
         for source, count in source_counter.most_common():
-            source_table.add_row(source, str(count))
+            source_table.add_row(escape(str(source)), str(count))
         console.print(source_table)
 
     if unmatched_counter:
@@ -102,7 +103,7 @@ def analyze_library(
         unmatched_table.add_column("Title")
         unmatched_table.add_column("Count", justify="right")
         for title, count in unmatched_counter.most_common(top_n):
-            unmatched_table.add_row(title, str(count))
+            unmatched_table.add_row(escape(str(title)), str(count))
         console.print(unmatched_table)
 
     if errors:
@@ -110,7 +111,7 @@ def analyze_library(
         error_table.add_column("EPUB")
         error_table.add_column("Error")
         for path, message in errors[:10]:
-            error_table.add_row(path.as_posix(), message)
+            error_table.add_row(escape(path.as_posix()), escape(str(message)))
         console.print(error_table)
 
     if report_path:
@@ -125,4 +126,4 @@ def analyze_library(
         report_path = report_path.expanduser()
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        console.print(f"[green]Report written to {report_path}[/green]")
+        console.print(f"[green]Report written to {escape(str(report_path))}[/green]")

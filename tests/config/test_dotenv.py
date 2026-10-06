@@ -30,7 +30,8 @@ def _segment() -> Segment:
 
 
 @pytest.mark.parametrize(
-    "name", ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPL_API_KEY", "GROK_API_KEY"]
+    "name",
+    ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPL_API_KEY", "GROK_API_KEY"],
 )
 def test_dotenv_keys_reach_the_environment(name: str) -> None:
     Path(".env").write_text(f"{name}=from-dotenv\n", encoding="utf-8")
@@ -69,7 +70,9 @@ def test_dotenv_still_carries_ordinary_settings() -> None:
     assert "target_language" not in os.environ
 
 
-@pytest.mark.parametrize("name", ["HTTPS_PROXY", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "PYTHONPATH"])
+@pytest.mark.parametrize(
+    "name", ["HTTPS_PROXY", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "PYTHONPATH"]
+)
 def test_dotenv_cannot_set_other_variables(name: str, monkeypatch, caplog) -> None:
     """A .env in the working directory may name only the variables tepub reads.
 

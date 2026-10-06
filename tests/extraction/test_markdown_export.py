@@ -115,7 +115,10 @@ def test_export_to_markdown(tmp_path, monkeypatch):
 
     build_epub(
         tmp_path / "test.epub",
-        [("Text/ch1.xhtml", "Introduction", "<p>1</p>"), ("Text/ch2.xhtml", "Chapter Two", "<p>2</p>")],
+        [
+            ("Text/ch1.xhtml", "Introduction", "<p>1</p>"),
+            ("Text/ch2.xhtml", "Chapter Two", "<p>2</p>"),
+        ],
     )
 
     # Export markdown
@@ -178,7 +181,10 @@ def test_export_combined_markdown(tmp_path, monkeypatch):
 
     build_epub(
         tmp_path / "test-book.epub",
-        [("Text/ch1.xhtml", "Introduction", "<p>1</p>"), ("Text/ch2.xhtml", "Chapter Two", "<p>2</p>")],
+        [
+            ("Text/ch1.xhtml", "Introduction", "<p>1</p>"),
+            ("Text/ch2.xhtml", "Chapter Two", "<p>2</p>"),
+        ],
     )
 
     # Export combined markdown

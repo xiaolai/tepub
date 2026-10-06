@@ -27,7 +27,11 @@ def _extract(book: Path, tmp_path: Path) -> AppSettings:
 
 def test_a_long_list_becomes_one_unit_per_item(tmp_path: Path) -> None:
     settings = _extract(long_endnotes(tmp_path / "book.epub"), tmp_path)
-    notes = [s for s in load_segments(settings.segments_file).segments if s.file_path.name == "notes.xhtml"]
+    notes = [
+        s
+        for s in load_segments(settings.segments_file).segments
+        if s.file_path.name == "notes.xhtml"
+    ]
     assert [s.metadata.element_type for s in notes].count("li") == 40
     assert max(len(s.source_content) for s in notes) < SPLIT_ABOVE_CHARS
 
@@ -35,9 +39,13 @@ def test_a_long_list_becomes_one_unit_per_item(tmp_path: Path) -> None:
 def test_a_short_list_stays_whole(tmp_path: Path) -> None:
     from tests.epub_builder import build_epub
 
-    book = build_epub(tmp_path / "b.epub", [("c.xhtml", "C", "<ol><li>One.</li><li>Two.</li></ol>")])
+    book = build_epub(
+        tmp_path / "b.epub", [("c.xhtml", "C", "<ol><li>One.</li><li>Two.</li></ol>")]
+    )
     settings = _extract(book, tmp_path)
-    assert [s.metadata.element_type for s in load_segments(settings.segments_file).segments] == ["ol"]
+    assert [s.metadata.element_type for s in load_segments(settings.segments_file).segments] == [
+        "ol"
+    ]
 
 
 def _tree(book: Path, name: str) -> etree._Element:
@@ -58,7 +66,9 @@ def test_bilingual_items_keep_the_list_and_hold_both_texts(tmp_path: Path) -> No
     first = items[0]
     assert first.get("id") == "n1" and "tepub-original" not in (first.get("class") or "")
     original, translated = list(first)
-    assert "tepub-original" in original.get("class") and "tepub-translation" in translated.get("class")
+    assert "tepub-original" in original.get("class") and "tepub-translation" in translated.get(
+        "class"
+    )
     assert original.find(f"{XHTML}a").get("href") == "ch1.xhtml#r1"  # backlink kept
     assert "【译】" in "".join(translated.itertext()) or translated.find(f"{XHTML}a") is not None
 

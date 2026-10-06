@@ -102,7 +102,12 @@ def _strip_ids(element: etree._Element) -> None:
     for node in list(element.iter()):
         if not isinstance(node.tag, str):
             continue
-        if node is not element and _is_page_break(node) and not len(node) and not (node.text or "").strip():
+        if (
+            node is not element
+            and _is_page_break(node)
+            and not len(node)
+            and not (node.text or "").strip()
+        ):
             _remove_keeping_tail(node)
             continue
         node.attrib.pop("id", None)

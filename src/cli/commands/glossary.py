@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from cli.core import prepare_settings_for_epub
@@ -74,7 +75,9 @@ def build(
     )
 
     book_glossary = settings.work_dir / GLOSSARY_FILE
-    known = {t.source for t in load_glossary(book_glossary).terms} if book_glossary.exists() else set()
+    known = (
+        {t.source for t in load_glossary(book_glossary).terms} if book_glossary.exists() else set()
+    )
     reader = EpubReader(input_epub, settings)
     indexes = [
         document.tree
@@ -122,7 +125,7 @@ def build(
             progress=lambda done: status.update(f"Proposing renderings... {done}/{len(found)}"),
         )
     output.write_text(render_proposals(proposals, target), encoding="utf-8")
-    console.print(f"[green]Wrote {output}[/green]")
+    console.print(f"[green]Wrote {escape(str(output))}[/green]")
     console.print(
         f"Review it, then save it as {settings.work_dir / GLOSSARY_FILE}; "
         "`tepub translate` uses it from then on."
@@ -173,7 +176,7 @@ def check(ctx: click.Context, input_epub: Path, retranslate: bool) -> None:
     table.add_column("Units", justify="right")
     table.add_column("Example")
     for term, term_misses in sorted(by_term.items(), key=lambda item: -len(item[1])):
-        table.add_row(term, str(len(term_misses)), term_misses[0].problem)
+        table.add_row(escape(term), str(len(term_misses)), escape(term_misses[0].problem))
     console.print(table)
     units = {miss.segment_id for miss in misses}
     console.print(f"{len(units)} unit(s) affected.")

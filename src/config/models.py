@@ -5,10 +5,16 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+
+from config.provenance import ConfigLayer
 
 
 class ProviderConfig(BaseModel):
+    # An instance passed into a settings update is checked again: a copy made
+    # with model_copy(update=...) skips validation, so max_tokens=0 got through.
+    model_config = ConfigDict(revalidate_instances="always")
+
     name: str = Field(..., description="Provider identifier, e.g. openai or ollama")
     model: str = Field(..., description="Model name used for translation")
     base_url: str | None = None
@@ -34,7 +40,9 @@ class ProviderConfig(BaseModel):
     @model_validator(mode="after")
     def _think_is_ollama_only(self) -> ProviderConfig:
         if self.think is not None and self.name != "ollama":
-            raise ValueError(f"think is an Ollama option; provider {self.name!r} has no such setting")
+            raise ValueError(
+                f"think is an Ollama option; provider {self.name!r} has no such setting"
+            )
         return self
 
 
@@ -45,7 +53,12 @@ class SkipRule(BaseModel):
     @field_validator("keyword")
     @classmethod
     def _normalize_keyword(cls, value: str) -> str:
-        return value.strip().lower()
+        keyword = value.strip().lower()
+        # An empty keyword is in every title, so it matched first and hid the
+        # rules after it.
+        if not keyword:
+            raise ValueError("a skip rule keyword cannot be empty")
+        return keyword
 
 
 def _default_root_dir() -> Path:
@@ -57,7 +70,6 @@ def _default_root_dir() -> Path:
     return Path.cwd() / ".tepub"
 
 
-DEFAULT_ROOT_DIR = _default_root_dir()
 _WORD_SPLIT_PATTERN = re.compile(r"[\s_-]+")
 _NON_SLUG_CHARS = re.compile(r"[^a-z0-9]+")
 _WORKSPACE_HASH_LENGTH = 8
@@ -134,8 +146,12 @@ class AppSettings(BaseModel):
     output_mode: str = Field(default="bilingual")
 
     # Parallel processing settings
-    translation_workers: int = Field(default=3, ge=1, description="Number of parallel workers for translation")
-    audiobook_workers: int = Field(default=3, ge=1, description="Number of parallel workers for audiobook generation")
+    translation_workers: int = Field(
+        default=3, ge=1, description="Number of parallel workers for translation"
+    )
+    audiobook_workers: int = Field(
+        default=3, ge=1, description="Number of parallel workers for audiobook generation"
+    )
 
     # Per-book settings
     cover_image_path: Path | None = None
@@ -145,8 +161,14 @@ class AppSettings(BaseModel):
 
     # TTS Provider settings
     audiobook_tts_provider: str = Field(default="edge", description="TTS provider: edge or openai")
-    audiobook_tts_model: str | None = Field(default=None, description="TTS model (OpenAI: tts-1 or tts-1-hd)")
-    audiobook_tts_speed: float = Field(default=1.0, ge=0.25, le=4.0, description="TTS speed for OpenAI (0.25-4.0)")
+    audiobook_tts_model: str | None = Field(
+        default=None, description="TTS model (OpenAI: tts-1 or tts-1-hd)"
+    )
+    # None means "not configured": a default of 1.0 was indistinguishable from an
+    # explicit setting, so it overrode the speed a resumed session was started with.
+    audiobook_tts_speed: float | None = Field(
+        default=None, ge=0.25, le=4.0, description="TTS speed for OpenAI (0.25-4.0)"
+    )
 
     # File inclusion lists (per-book config only)
     translation_files: list[str] | None = None
@@ -156,6 +178,52 @@ class AppSettings(BaseModel):
     state_file: Path = Field(default_factory=lambda: Path("state.json"))
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # The config files these settings were loaded from, recorded by the loader.
+    _config_layers: tuple[ConfigLayer, ...] = PrivateAttr(default=())
+
+    @property
+    def config_layers(self) -> tuple[ConfigLayer, ...]:
+        """Each config file read for these settings, in the order applied."""
+        return self._config_layers
+
+    @config_layers.setter
+    def config_layers(self, layers: tuple[ConfigLayer, ...]) -> None:
+        self._config_layers = layers
+
+    @field_validator("work_root", "work_dir", "segments_file", "state_file")
+    @classmethod
+    def _expand_user(cls, value: Path) -> Path:
+        # A `~name` naming no user raised RuntimeError, a traceback rather
+        # than a validation error naming the setting.
+        try:
+            return value.expanduser()
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("skip_rules", mode="before")
+    @classmethod
+    def _accept_bare_keywords(cls, value: Any) -> Any:
+        # "- index" as well as "- keyword: index", in every config that is read:
+        # only the main loader accepted the short form, so a book's config.yaml
+        # using it failed.
+        if isinstance(value, list):
+            return [{"keyword": item} if isinstance(item, str) else item for item in value]
+        return value
+
+    @field_validator("back_matter_triggers")
+    @classmethod
+    def _normalize_triggers(cls, value: list[str]) -> list[str]:
+        # Titles are lowercased before matching, so "Index" never matched.
+        triggers = [trigger.strip().lower() for trigger in value]
+        if not all(triggers):
+            raise ValueError("a back_matter_triggers entry cannot be empty")
+        return triggers
+
+    @field_validator("source_language", "target_language", "prompt_preamble", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("back_matter_threshold")
     @classmethod
@@ -175,7 +243,9 @@ class AppSettings(BaseModel):
         if normalised == "translated":
             normalised = "translated_only"
         if normalised not in {"bilingual", "translated_only"}:
-            raise ValueError("output_mode must be 'bilingual' or 'translated' (also 'translated-only')")
+            raise ValueError(
+                "output_mode must be 'bilingual' or 'translated' (also 'translated-only')"
+            )
         return normalised
 
     @field_validator("audiobook_tts_provider")
@@ -189,22 +259,24 @@ class AppSettings(BaseModel):
         return normalised
 
     def model_post_init(self, __context: Any) -> None:  # type: ignore[override]
-        work_root = self.work_root.expanduser()
+        # Paths given are expanded by _expand_user; defaults hold no `~`.
+        work_root = self.work_root
         if not work_root.is_absolute():
             work_root = Path.cwd() / work_root
         object.__setattr__(self, "work_root", work_root)
 
-        work_dir = self.work_dir.expanduser()
+        work_dir = self.work_dir
         if "work_dir" not in self.model_fields_set:
             work_dir = work_root
         elif not work_dir.is_absolute():
             work_dir = Path.cwd() / work_dir
         object.__setattr__(self, "work_dir", work_dir)
 
-        if not self.segments_file.is_absolute():
-            object.__setattr__(self, "segments_file", self.work_dir / self.segments_file)
-        if not self.state_file.is_absolute():
-            object.__setattr__(self, "state_file", self.work_dir / self.state_file)
+        for attr in ("segments_file", "state_file"):
+            path = getattr(self, attr)
+            if not path.is_absolute():
+                path = self.work_dir / path
+            object.__setattr__(self, attr, path)
 
     def ensure_directories(self) -> None:
         # Create work_dir (which creates work_root as parent if needed)
@@ -212,7 +284,9 @@ class AppSettings(BaseModel):
         self.segments_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
-    def model_copy(self, *, update: dict[str, Any] | None = None, deep: bool = False) -> AppSettings:  # type: ignore[override]
+    def model_copy(  # type: ignore[override]
+        self, *, update: dict[str, Any] | None = None, deep: bool = False
+    ) -> AppSettings:
         if not update:
             return super().model_copy(deep=deep)
 
@@ -222,8 +296,15 @@ class AppSettings(BaseModel):
         # in Path fields and dicts in ProviderConfig fields were accepted here and
         # only crashed later in whichever consumer used them. Rebuilding through
         # model_validate applies the same checks a fresh construction would.
-        merged = {**self.model_dump(), **update}
+        # Paths that were derived rather than set are left out, so they are
+        # derived again from the updated values: carried over, a copy with a
+        # new work_root kept the old work_dir and artifact paths.
+        derived = {"work_dir", "segments_file", "state_file"} - self.model_fields_set
+        merged = {**self.model_dump(exclude=derived), **update}
         copied: AppSettings = type(self).model_validate(merged)
+        # Rebuilt rather than copied, so where the settings came from is
+        # carried across by hand.
+        copied.config_layers = self.config_layers
         new_work_dir = copied.work_dir
 
         overridden: set[str] = set(update.keys()) if update else set()
@@ -232,7 +313,9 @@ class AppSettings(BaseModel):
             object.__setattr__(copied, "work_root", new_work_dir)
 
         if "work_dir" in overridden and new_work_dir != old_work_dir:
-            copied._refresh_workdir_bound_paths(old_work_dir, overridden)
+            # Paths never set were derived from the new work_dir already.
+            settled = overridden | derived
+            copied._refresh_workdir_bound_paths(old_work_dir, settled)
 
         return copied
 
@@ -246,6 +329,32 @@ class AppSettings(BaseModel):
             except ValueError:
                 continue
             object.__setattr__(self, attr, self.work_dir / relative)
+
+    # The workspace operations live in config.workspace, which imports this module.
+    def derive_book_workspace(self, input_epub: Path) -> Path:
+        from config.workspace import derive_book_workspace
+
+        return derive_book_workspace(self, input_epub)
+
+    def with_book_workspace(self, input_epub: Path) -> AppSettings:
+        from config.workspace import with_book_workspace
+
+        return with_book_workspace(self, input_epub)
+
+    def with_override_root(self, base_path: Path, input_epub: Path) -> AppSettings:
+        from config.workspace import with_override_root
+
+        return with_override_root(self, base_path, input_epub)
+
+    def validate_for_export(self, input_epub: Path) -> None:
+        from config.workspace import validate_for_export
+
+        validate_for_export(self, input_epub)
+
+    def validate_for_translation(self, input_epub: Path) -> None:
+        from config.workspace import validate_for_translation
+
+        validate_for_translation(self, input_epub)
 
     def dump(self, path: Path) -> None:
         import json

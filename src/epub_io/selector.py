@@ -97,7 +97,11 @@ def _collect_toc_candidates(
 
         normalized_title = _normalize_text(title)
         if href_path in decided:
-            if href_path not in candidates and back_matter_from is not None and index >= back_matter_from:
+            if (
+                href_path not in candidates
+                and back_matter_from is not None
+                and index >= back_matter_from
+            ):
                 keyword = _match_keyword(normalized_title, back_matter)
                 if keyword:
                     candidates[href_path] = SkipCandidate(
@@ -134,7 +138,9 @@ def first_line(tree) -> str:
     """A document's first line of text: its first heading or paragraph."""
     from .xhtml import local_name, text_of
 
-    body = next((e for e in tree.iter() if isinstance(e.tag, str) and local_name(e) == "body"), None)
+    body = next(
+        (e for e in tree.iter() if isinstance(e.tag, str) and local_name(e) == "body"), None
+    )
     for element in (body if body is not None else tree).iter():
         if isinstance(element.tag, str) and local_name(element) in (
             "h1", "h2", "h3", "h4", "h5", "h6", "p"
@@ -165,7 +171,8 @@ def _untitled_back_matter(
             continue
         line = first_line_of(path)
         keyword = _match_keyword(line, triggers)
-        if keyword and _keyword_pattern(keyword) is not None and _keyword_pattern(keyword).fullmatch(line):
+        pattern = _keyword_pattern(keyword) if keyword else None
+        if pattern is not None and pattern.fullmatch(line):
             return path, keyword
     return None
 
@@ -222,7 +229,8 @@ def _apply_skip_after_logic(
     # cascade if it comes before any trigger the TOC has.
     if first_line_of is not None and toc_entries:
         toc_paths = {Path(href.split("#", 1)[0]) for _, href in toc_entries}
-        threshold_href = Path(toc_entries[min(threshold_index, total_entries - 1)][1].split("#", 1)[0])
+        threshold_entry = toc_entries[min(threshold_index, total_entries - 1)]
+        threshold_href = Path(threshold_entry[1].split("#", 1)[0])
         threshold_item = spine_lookup.get(threshold_href)
         untitled = _untitled_back_matter(
             spine_lookup,
@@ -259,8 +267,13 @@ def _apply_skip_after_logic(
     return candidates
 
 
-def analyze_skip_candidates(epub_path: Path, settings: AppSettings) -> SkipAnalysis:
-    reader = EpubReader(epub_path, settings)
+def analyze_skip_candidates(
+    epub_path: Path, settings: AppSettings, *, reader: EpubReader | None = None
+) -> SkipAnalysis:
+    # A caller that already opened the book passes its reader, so the package
+    # is not read and parsed a second time.
+    if reader is None:
+        reader = EpubReader(epub_path, settings)
     keywords = [rule.keyword for rule in settings.skip_rules]
     spine_lookup = {item.href: item for item in reader.package.spine_items()}
 
@@ -293,15 +306,21 @@ def analyze_skip_candidates(epub_path: Path, settings: AppSettings) -> SkipAnaly
     return SkipAnalysis(candidates=ordered_candidates, toc_unmatched_titles=unmatched_titles)
 
 
-def collect_skip_candidates(epub_path: Path, settings: AppSettings) -> list[SkipCandidate]:
-    analysis = analyze_skip_candidates(epub_path, settings)
+def collect_skip_candidates(
+    epub_path: Path, settings: AppSettings, *, reader: EpubReader | None = None
+) -> list[SkipCandidate]:
+    analysis = analyze_skip_candidates(epub_path, settings, reader=reader)
     return analysis.candidates
 
 
 def build_skip_map(
-    epub_path: Path, settings: AppSettings, *, interactive: bool = False
+    epub_path: Path,
+    settings: AppSettings,
+    *,
+    interactive: bool = False,
+    reader: EpubReader | None = None,
 ) -> dict[Path, SkipCandidate]:
-    candidates = collect_skip_candidates(epub_path, settings)
+    candidates = collect_skip_candidates(epub_path, settings, reader=reader)
     skip_map: dict[Path, SkipCandidate] = {}
     for candidate in candidates:
         skip = candidate.flagged

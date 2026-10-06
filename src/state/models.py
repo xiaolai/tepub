@@ -37,8 +37,12 @@ class Segment(BaseModel):
     extract_mode: ExtractMode
     source_content: str = Field(..., description="Content extracted pre-translation")
     metadata: SegmentMetadata
-    skip_reason: str | None = Field(None, description="Reason for skipping (e.g., 'cover', 'index')")
-    skip_source: str | None = Field(None, description="Source of skip decision (e.g., 'content', 'rule')")
+    skip_reason: str | None = Field(
+        None, description="Reason for skipping (e.g., 'cover', 'index')"
+    )
+    skip_source: str | None = Field(
+        None, description="Source of skip decision (e.g., 'content', 'rule')"
+    )
 
 
 class TranslationRecord(BaseModel):
@@ -50,6 +54,9 @@ class TranslationRecord(BaseModel):
     model_name: str | None = None
     status: SegmentStatus = SegmentStatus.PENDING
     error_message: str | None = None
+    # Digest of the unit's source as last extracted; unit ids come from place,
+    # not text, so this is what tells an edited unit from an unchanged one.
+    source_sha256: str | None = None
 
 
 class SkippedDocument(BaseModel):

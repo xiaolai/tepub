@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -41,9 +42,9 @@ def print_extraction_summary(
             auto_table.add_column("Source")
             for skipped in toc_skips:
                 auto_table.add_row(
-                    skipped.file_path.as_posix(),
-                    skipped.reason,
-                    skipped.source,
+                    escape(skipped.file_path.as_posix()),
+                    escape(str(skipped.reason)),
+                    escape(str(skipped.source)),
                 )
             console.print(auto_table)
 
@@ -59,7 +60,7 @@ def print_extraction_summary(
             cascade_table.add_column("Files Skipped", style="bold yellow")
 
             for reason, count in sorted(trigger_reasons.items()):
-                cascade_table.add_row(reason, str(count))
+                cascade_table.add_row(escape(str(reason)), str(count))
 
             console.print(cascade_table)
             console.print("[dim]  (Use --include-back-matter to process these files)[/dim]")
@@ -82,8 +83,8 @@ def print_extraction_summary(
             if not segment:
                 continue
             sample_table.add_row(
-                seg_id,
-                segment.file_path.as_posix(),
+                escape(str(seg_id)),
+                escape(segment.file_path.as_posix()),
                 state.segments[seg_id].status.value,
             )
         console.print(sample_table)

@@ -62,7 +62,8 @@ def test_svg_and_mathml_inside_a_unit_are_left_exactly_as_written() -> None:
     (unit,) = _units(
         '<p>The value <math xmlns="http://www.w3.org/1998/Math/MathML" display="inline">'
         '<mi mathvariant="bold">x</mi></math> and a figure '
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="10"><rect width="1" height="1"/></svg>.</p>'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="10">'
+        '<rect width="1" height="1"/></svg>.</p>'
     )
     source = unit.source_content
     assert 'mathvariant="bold"' in source and 'display="inline"' in source
@@ -113,7 +114,8 @@ def test_leading_text_of_an_html_unit_is_escaped() -> None:
     from extraction.segments import ExtractMode, source_of
 
     element = etree.fromstring(
-        f'<p xmlns="{XHTML_NS}">&lt;html&gt; and AT&amp;T<br/>&lt;/html&gt; <a href="#x">link</a></p>'
+        f'<p xmlns="{XHTML_NS}">&lt;html&gt; and AT&amp;T<br/>&lt;/html&gt; '
+        '<a href="#x">link</a></p>'
     )
     source = source_of(element, ExtractMode.HTML)
     assert source.startswith("&lt;html&gt; and AT&amp;T<br/>")

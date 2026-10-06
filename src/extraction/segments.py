@@ -20,9 +20,8 @@ again by running it on the same document and checking the unit's source text.
 
 from __future__ import annotations
 
-import html
-
 import hashlib
+import html
 from collections.abc import Iterator
 from copy import deepcopy
 from pathlib import Path

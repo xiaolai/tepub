@@ -42,7 +42,10 @@ def test_only_the_given_documents_change(tmp_path: Path) -> None:
 def test_translated_only_retitles_the_table_of_contents(tmp_path: Path, version: int) -> None:
     book = build_epub(
         tmp_path / "in.epub",
-        [("text/ch1.xhtml", "Original One", "<h1>One</h1>"), ("text/ch2.xhtml", "Original Two", "<h1>Two</h1>")],
+        [
+            ("text/ch1.xhtml", "Original One", "<h1>One</h1>"),
+            ("text/ch2.xhtml", "Original Two", "<h1>Two</h1>"),
+        ],
         version=version,
     )
     out = tmp_path / "out.epub"
@@ -65,7 +68,9 @@ def test_translated_only_retitles_the_table_of_contents(tmp_path: Path, version:
 def test_translated_only_leaves_stylesheets_alone(tmp_path: Path) -> None:
     """Nothing is marked as an original in translated-only output, so there is
     nothing for a hiding rule to hide; the publisher's CSS is not edited."""
-    book = build_epub(tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")], css="p { color: black; }")
+    book = build_epub(
+        tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")], css="p { color: black; }"
+    )
     out = tmp_path / "out.epub"
     write_updated_epub(book, out, {}, css_mode="translated_only")
     assert _read(out, "OEBPS/style.css") == _read(book, "OEBPS/style.css")
@@ -93,3 +98,27 @@ def test_replacing_a_missing_document_is_an_error(tmp_path: Path) -> None:
     book = build_epub(tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")])
     with pytest.raises(EpubStructureError, match="does not have"):
         write_updated_epub(book, tmp_path / "out.epub", {Path("nope.xhtml"): b"x"})
+
+
+def test_entries_keep_the_system_their_attributes_belong_to(tmp_path: Path) -> None:
+    """A FAT-made book's attributes were relabelled as Unix, where Python's
+    stand-in for zero attributes reads as mode 600: folders unzipped with no
+    permission to open them."""
+    book = build_epub(tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")])
+    fat = tmp_path / "fat.epub"
+    with zipfile.ZipFile(book) as source, zipfile.ZipFile(fat, "w") as out:
+        for info in source.infolist():
+            data = source.read(info)
+            info.create_system, info.external_attr = 0, 0
+            out.writestr(info, data)
+        folder = zipfile.ZipInfo("OEBPS/")
+        folder.create_system, folder.external_attr = 0, 0x10
+        out.writestr(folder, b"")
+    out = tmp_path / "out.epub"
+
+    write_updated_epub(fat, out, {})
+
+    with zipfile.ZipFile(out) as archive:
+        entries = {info.filename: info for info in archive.infolist()}
+    assert {i.create_system for n, i in entries.items() if n != "mimetype"} == {0}
+    assert entries["OEBPS/"].external_attr & 0x10

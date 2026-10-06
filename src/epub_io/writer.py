@@ -45,7 +45,9 @@ def write_updated_epub(
     }
 
     if toc_updates and css_mode == "translated_only":
-        by_entry = {package.zip_path(path.as_posix()): titles for path, titles in toc_updates.items()}
+        by_entry = {
+            package.zip_path(path.as_posix()): titles for path, titles in toc_updates.items()
+        }
         with zipfile.ZipFile(input_epub) as archive:
             for toc in _toc_documents(package):
                 source = replacements.get(toc) or archive.read(toc)
@@ -63,7 +65,9 @@ def _toc_documents(package: Package) -> list[str]:
     return found
 
 
-def _lookup_title(updates: dict[str, dict[str | None, str]], entry: str, fragment: str | None) -> str | None:
+def _lookup_title(
+    updates: dict[str, dict[str | None, str]], entry: str, fragment: str | None
+) -> str | None:
     titles = updates.get(entry)
     if not titles:
         return None

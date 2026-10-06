@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import NoReturn
 
 import click
+from rich.markup import escape
 
 from config import AppSettings, load_settings_from_cli
-from exceptions import AmbiguousWorkspaceError
+from exceptions import AmbiguousWorkspaceError, TepubError
 from logging_utils.logger import configure_logging
-from state.store import load_segments, load_state
+from state.base import safe_load_state
+from state.models import SegmentsDocument, StateDocument
 
 
 def prepare_initial_settings(
@@ -38,7 +41,12 @@ def prepare_initial_settings(
 
 
 def prepare_settings_for_epub(
-    ctx: click.Context, settings: AppSettings, input_epub: Path, override: Path | None
+    ctx: click.Context,
+    settings: AppSettings,
+    input_epub: Path,
+    override: Path | None,
+    *,
+    create: bool = True,
 ) -> AppSettings:
     """Prepare settings for a specific EPUB file.
 
@@ -47,6 +55,9 @@ def prepare_settings_for_epub(
         settings: Base settings
         input_epub: Path to EPUB file
         override: Optional work directory override
+        create: Create the workspace's directories. Commands that only read an
+            existing workspace pass False: creating it left empty folders
+            behind, and failed on read-only storage before saying anything.
 
     Returns:
         Settings configured for the specific EPUB
@@ -60,7 +71,8 @@ def prepare_settings_for_epub(
     elif not ctx.obj.get("work_dir_overridden", False):
         settings = settings.with_book_workspace(input_epub)
 
-    settings.ensure_directories()
+    if create:
+        settings.ensure_directories()
     ctx.obj["settings"] = settings
     return settings
 
@@ -72,20 +84,31 @@ def resolve_bookless_workspace(settings: AppSettings) -> AppSettings:
     while commands without a book read --work-dir itself, so they reported no
     state for a book that was half translated. A folder that is a workspace is
     used as it is; a single book workspace inside it is used; several are
-    listed rather than guessed.
+    listed rather than guessed. The chosen workspace's config.yaml applies, as
+    it does when the book is given.
     """
+    from config.workspace import _with_book_config
+
     root = settings.work_dir
-    if (root / "segments.json").exists() or (root / "state.json").exists():
-        return settings
+    # The artifact names as configured, relative to a workspace; fixed names
+    # missed renamed artifacts and took an artifact subfolder for a workspace.
+    names = [
+        path.relative_to(root) if path.is_relative_to(root) else Path(path.name)
+        for path in (settings.segments_file, settings.state_file)
+    ]
+
+    def is_workspace(folder: Path) -> bool:
+        return any((folder / name).exists() for name in names)
+
+    if is_workspace(root):
+        return _with_book_config(settings)
     if not root.is_dir():
         return settings
-    candidates = sorted(
-        child
-        for child in root.iterdir()
-        if child.is_dir() and ((child / "segments.json").exists() or (child / "state.json").exists())
-    )
+    candidates = sorted(child for child in root.iterdir() if child.is_dir() and is_workspace(child))
     if len(candidates) == 1:
-        return settings.model_copy(update={"work_root": root, "work_dir": candidates[0]})
+        return _with_book_config(
+            settings.model_copy(update={"work_root": root, "work_dir": candidates[0]})
+        )
     if len(candidates) > 1:
         raise AmbiguousWorkspaceError(root, candidates)
     return settings
@@ -101,23 +124,13 @@ def bookless_settings(ctx: click.Context) -> AppSettings:
     try:
         settings = resolve_bookless_workspace(ctx.obj["settings"])
     except AmbiguousWorkspaceError as exc:
-        get_console().print(f"[red]{exc}[/red]")
+        # Escaped: a folder named like "[/blue]" ended in a MarkupError.
+        get_console().print(f"[red]{escape(str(exc))}[/red]")
         raise SystemExit(1) from exc
+    except OSError as exc:
+        _unreadable_workspace(ctx.obj["settings"].work_dir, exc)
     ctx.obj["settings"] = settings
     return settings
-
-
-def check_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> bool:
-    """Check if valid pipeline artifacts exist for resuming.
-
-    Args:
-        settings: Application settings
-        input_epub: EPUB file path
-
-    Returns:
-        True if valid artifacts exist, False otherwise
-    """
-    return describe_pipeline_artifacts(settings, input_epub)[0]
 
 
 def describe_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> tuple[bool, str]:
@@ -126,6 +139,9 @@ def describe_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> tupl
     The boolean-only check collapsed missing, unreadable, wrong-EPUB and
     incomplete artifacts into a single False, so the pipeline silently re-ran a
     full extraction with no indication of which condition applied.
+
+    Unreadable or corrupt artifacts raise: extraction reads them too, so
+    re-extracting could not repair them, only fail later with a traceback.
     """
     segments_path = settings.segments_file
     state_path = settings.state_file
@@ -135,14 +151,8 @@ def describe_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> tupl
     if not state_path.exists():
         return False, f"no translation state at {state_path}"
 
-    try:
-        segments_doc = load_segments(segments_path)
-        state_doc = load_state(state_path)
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        # A bare `except Exception` also swallowed programming defects and
-        # permission errors, silently triggering a full re-extraction instead of
-        # surfacing the real problem.
-        return False, f"artifacts could not be read ({exc})"
+    segments_doc = safe_load_state(segments_path, SegmentsDocument, "segments")
+    state_doc = safe_load_state(state_path, StateDocument, "translation")
 
     # The book is identified by its content, as translate and export do: a
     # moved or renamed book was re-extracted when its path was compared.
@@ -154,18 +164,43 @@ def describe_pipeline_artifacts(settings: AppSettings, input_epub: Path) -> tupl
     except ArtifactMismatchError:
         return False, f"artifacts belong to a different EPUB ({segments_doc.epub_path})"
 
+    # Older segmentation is updated by extraction, which carries translations
+    # over; resumed as it was, its units no longer match the book on export.
+    from extraction.migrate import SEGMENTS_FORMAT
+
+    if segments_doc.format_version < SEGMENTS_FORMAT:
+        return False, f"segments use an older format ({segments_doc.format_version})"
+
     # Validate segments match state.
     # Requiring *every* extracted segment id to appear in state was too strict:
     # translation filtering and skip rules legitimately leave some segments out,
     # so valid workspaces were reported invalid and re-extracted. A shared subset
     # is enough to prove the two artifacts came from the same extraction, while
     # no overlap at all still catches genuinely mismatched files.
-    segment_ids = {segment.segment_id for segment in segments_doc.segments}
-    if not segment_ids:
+    if not segments_doc.segments:
         return False, "segments file contains no segments"
-
-    if not segment_ids & state_doc.segments.keys():
+    records = state_doc.segments
+    shared = [segment for segment in segments_doc.segments if segment.segment_id in records]
+    if not shared:
         return False, "segments and translation state share no segment ids"
+
+    # Unit ids come from a unit's place, not its text, so another book's state
+    # can share them; the epub digest vouches for segments.json only. Each
+    # record carries the digest of the source it was extracted with, so the
+    # state must match these units' text. Re-extraction stamps records that
+    # lack one and resets those that differ, which reuse would skip.
+    from extraction.pipeline import source_digest
+
+    unstamped = sum(1 for segment in shared if records[segment.segment_id].source_sha256 is None)
+    if unstamped:
+        return False, f"{unstamped} translation records have no source digest yet"
+    changed = sum(
+        1
+        for segment in shared
+        if records[segment.segment_id].source_sha256 != source_digest(segment)
+    )
+    if changed:
+        return False, f"{changed} translation records were made from other source text"
 
     return True, "reusable"
 
@@ -176,8 +211,12 @@ def translation_options(func):
     from translation.providers import PROVIDER_NAMES
 
     options = [
-        click.option("--from", "source_language", default=None, help="Source language (code or name)."),
-        click.option("--to", "target_language", default=None, help="Target language (code or name)."),
+        click.option(
+            "--from", "source_language", default=None, help="Source language (code or name)."
+        ),
+        click.option(
+            "--to", "target_language", default=None, help="Target language (code or name)."
+        ),
         click.option(
             "--provider",
             type=click.Choice(PROVIDER_NAMES, case_sensitive=False),
@@ -202,6 +241,7 @@ def with_provider(settings: AppSettings, provider: str | None, model: str | None
     provider needs its model too: model names do not carry across providers.
     """
     from config import ProviderConfig
+    from config.loader import _prepare_provider_credentials
 
     if provider is None and model is None:
         return settings
@@ -215,10 +255,26 @@ def with_provider(settings: AppSettings, provider: str | None, model: str | None
         )
     else:
         config = ProviderConfig(name=provider, model=model)
-    return settings.model_copy(update={"primary_provider": config})
+    # The environment's keys and server, such as OLLAMA_BASE_URL, were applied
+    # to the configured provider only, so another one chosen here lost them.
+    return _prepare_provider_credentials(settings.model_copy(update={"primary_provider": config}))
 
 
-# Exit code for a run that finished with units it could not translate.
+def with_languages(
+    settings: AppSettings, source: str | None, target: str | None
+) -> tuple[AppSettings, str, str]:
+    """Settings using this run's --from and --to, when given, and the two
+    languages' codes; shared by translate and pipeline, which had drifted."""
+    from translation.languages import normalize_language
+
+    source = source or settings.source_language
+    target = target or settings.target_language
+    settings = settings.model_copy(update={"source_language": source, "target_language": target})
+    return settings, normalize_language(source)[0], normalize_language(target)[0]
+
+
+# Exit code for a run that finished with units it could not translate, or
+# could not insert into the exported book.
 EXIT_UNITS_FAILED = 3
 
 
@@ -228,10 +284,56 @@ def settings_for_book(ctx: click.Context, book: Path | None) -> AppSettings:
     resume, format and several debug commands took no book and looked for a
     workspace in the current folder or --work-dir, unlike every other
     command; given the book, they use its workspace as the others do.
+
+    An existing workspace must belong to the book: --work-dir naming another
+    book's workspace let format and purge-refusals change that book's state.
+    These commands work on an existing workspace, so none is created.
     """
     if book is None:
         return bookless_settings(ctx)
-    return prepare_settings_for_epub(ctx, ctx.obj["settings"], book, override=None)
+    base: AppSettings = ctx.obj["settings"]
+    try:
+        settings = prepare_settings_for_epub(ctx, base, book, override=None, create=False)
+        has_segments = settings.segments_file.exists()
+        has_state = settings.state_file.exists()
+    except OSError as exc:
+        _unreadable_workspace(base.work_dir, exc)
+    if has_segments:
+        from config.workspace import assert_same_book
+
+        try:
+            segments_doc = safe_load_state(settings.segments_file, SegmentsDocument, "segments")
+        except OSError as exc:
+            _unreadable_workspace(settings.work_dir, exc)
+        try:
+            assert_same_book(segments_doc, book)
+        except OSError as exc:
+            # Hashing the book to confirm it is the workspace's.
+            _unreadable(f"The book {book}", exc)
+    elif has_state:
+        # Only segments.json records the book; a state without it could be any
+        # book's, and was formatted or purged as this one's.
+        raise TepubError(
+            f"{settings.work_dir} has translation state but no segments file, so it "
+            f"cannot be confirmed to belong to {book.name}.\n"
+            "Extract the book into it again with tepub extract, which keeps the "
+            "translations of an unchanged book."
+        )
+    return settings
+
+
+def _unreadable_workspace(path: Path, exc: OSError) -> NoReturn:
+    """End the command on a workspace that cannot be read, such as one without
+    permission: resolving it raised a traceback."""
+    _unreadable(f"The workspace at {path}", exc)
+
+
+def _unreadable(what: str, exc: OSError) -> NoReturn:
+    """End the command on a file that cannot be read, naming it and the error."""
+    from console_singleton import get_console
+
+    get_console().print(f"[red]{escape(what)} could not be read: {escape(str(exc))}[/red]")
+    raise SystemExit(1) from exc
 
 
 def optional_book(func):
