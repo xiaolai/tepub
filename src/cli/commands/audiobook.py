@@ -286,8 +286,14 @@ def generate(
                 selected_voice = available_voices[choice - 1]["ShortName"]
                 console.print(f"[cyan]Using voice:[/cyan] {selected_voice}")
             else:
-                selected_voice = available_voices[0]["ShortName"]
-                console.print(f"[cyan]Using voice:[/cyan] {selected_voice}")
+                # With no terminal to ask in, the first voice in a sorted list was
+                # taken: an Australian voice for an American book, chosen silently
+                # before hours of synthesis. Stop and say how to choose.
+                examples = ", ".join(v["ShortName"] for v in available_voices[:4])
+                raise click.UsageError(
+                    "No voice chosen and no terminal to ask in. Pass --voice, or set "
+                    f"audiobook_voice in the config; voices for this book include {examples}."
+                )
     else:
         if stored_voice and selected_voice == stored_voice and not voice:
             console.print(f"[cyan]Using stored voice:[/cyan] {selected_voice}")
