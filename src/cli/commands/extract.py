@@ -31,11 +31,27 @@ console = get_console()
     is_flag=True,
     help="Include back-matter continuation pages (index, notes, etc.). By default, files after back-matter triggers are skipped.",
 )
+@click.option("--raw", is_flag=True, help="Also unzip the whole book into the workspace (epub_raw/).")
+@click.option(
+    "--markdown", is_flag=True, help="Also export the book as Markdown, with its images (markdown/)."
+)
 @click.pass_context
 def extract(
-    ctx: click.Context, input_epub: Path, output: Path | None, include_back_matter: bool
+    ctx: click.Context,
+    input_epub: Path,
+    output: Path | None,
+    include_back_matter: bool,
+    raw: bool,
+    markdown: bool,
 ) -> None:
-    """Extract segments from the EPUB file."""
+    """Find the text to translate, and write the book's workspace.
+
+    The workspace holds the units to translate (segments.json), the
+    translation state, and the book's config.yaml. --raw and --markdown also
+    write an unzipped copy of the book and a Markdown export.
+    """
+    # The unzip and the Markdown export used to be written on every run,
+    # hundreds of files no translation needs; they are opt-in now.
     settings: AppSettings = ctx.obj["settings"]
     settings = prepare_settings_for_epub(ctx, settings, input_epub, output)
 
@@ -59,7 +75,13 @@ def extract(
     )
 
     print_extraction_summary(settings, epub_path=input_epub)
+    if raw:
+        _write_raw(settings, input_epub)
+    if markdown:
+        _write_markdown(settings, input_epub)
 
+
+def _write_raw(settings: AppSettings, input_epub: Path) -> None:
     # Extract complete EPUB structure.
     # Clear the previous tree first: it was reused in place, so files removed from
     # a re-published EPUB lingered and the raw tree drifted out of sync with the
@@ -91,6 +113,9 @@ def extract(
         # partial raw tree.
         console.print(f"[yellow]Warning: Could not extract EPUB structure: {e}[/yellow]")
 
+
+
+def _write_markdown(settings: AppSettings, input_epub: Path) -> None:
     # Extract images to markdown/images directory
     markdown_dir = settings.work_dir / "markdown"
     images_dir = markdown_dir / "images"
