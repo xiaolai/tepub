@@ -4,7 +4,7 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.5.0] - 2026-10-06
 
 The command line, audited command by command against a real book.
 

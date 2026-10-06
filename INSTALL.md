@@ -289,7 +289,7 @@ tepub --version
 
 You should see something like:
 ```
-tepub, version 0.4.1
+tepub, version 0.5.0
 ```
 
 ### 3. Check Python Version
