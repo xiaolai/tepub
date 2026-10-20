@@ -4,6 +4,30 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.5.1] - 2026-10-21
+
+Three defects in the exported editions, measured on a real book.
+
+### 🐛 Fixed
+
+- **The translated table of contents reused one heading.** A converted book's
+  nav fragments name a `<section>`, not the heading inside it, so every lookup
+  missed and fell back to the file's first heading: thirteen chapters were all
+  labelled from the contents title. Entries are now matched by their own label
+  as well, which is what the nav actually preserves.
+- **Every edition declared the source language.** `dc:language` and the XHTML
+  root stayed `en-US` in a Chinese-only book, so readers and screen readers
+  were told translated prose was English. Translated output now declares the
+  target; bilingual output declares both source and target, and each bilingual
+  paragraph carries `lang`/`xml:lang` beside `data-lang`.
+- **A model's fenced copy reached the reader.** Two chapter titles were stored
+  as the title followed by a fenced HTML copy of the same title, visible in
+  both editions. A fenced tail is now stripped from plain-text replies before
+  they are stored or injected. Tags outside a fence are still left to the
+  retry that exists to catch added HTML.
+
+---
+
 ## [0.5.0] - 2026-10-06
 
 The command line, audited command by command against a real book.

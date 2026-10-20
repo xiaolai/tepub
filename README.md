@@ -4,7 +4,7 @@
 
 TEPUB is a comprehensive toolkit for processing EPUB files. Translate books into any language, create professional audiobooks with natural voices, export to markdown, or publish as interactive websites.
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -553,4 +553,4 @@ src/
 
 **Made with ❤️ for language learners, audiobook enthusiasts, and book lovers everywhere.**
 
-**Version 0.2.0** | [Changelog](CHANGELOG.md) | [Issues](https://github.com/xiaolai/tepub/issues)
+**Version 0.5.1** | [Changelog](CHANGELOG.md) | [Issues](https://github.com/xiaolai/tepub/issues)
