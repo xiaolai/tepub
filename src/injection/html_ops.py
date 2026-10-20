@@ -9,13 +9,34 @@ from lxml import etree
 from epub_io.xhtml import XHTML_NS, local_name, parse_fragment
 from state.models import ExtractMode, Segment
 
+XML_NS = "http://www.w3.org/XML/1998/namespace"
 
-def _mark(element: etree._Element, side: str, *, data_attributes: bool) -> None:
+
+def _set_language(element: etree._Element, language: str | None) -> None:
+    """Declare the language of an element's own text.
+
+    Both attributes are required: XHTML 1.1 (EPUB 2) defines lang and xml:lang,
+    and readers and screen readers pick whichever they implement.
+    """
+    if not language:
+        return
+    element.set("lang", language)
+    element.set(f"{{{XML_NS}}}lang", language)
+
+
+def _mark(
+    element: etree._Element,
+    side: str,
+    *,
+    data_attributes: bool,
+    language: str | None = None,
+) -> None:
     """Mark an element as the original or the translation.
 
     A class works in every EPUB version. data-lang is added only where data-*
     attributes are valid: EPUB 2 content is XHTML 1.1, where epubcheck rejects
-    them.
+    them. lang/xml:lang are valid everywhere and let a bilingual book declare
+    which paragraphs are which.
     """
     token = f"tepub-{side}"
     classes = (element.get("class") or "").split()
@@ -23,10 +44,16 @@ def _mark(element: etree._Element, side: str, *, data_attributes: bool) -> None:
         element.set("class", " ".join([*classes, token]))
     if data_attributes:
         element.set("data-lang", side)
+    _set_language(element, language)
 
 
-def prepare_original(element: etree._Element, *, data_attributes: bool = True) -> None:
-    _mark(element, "original", data_attributes=data_attributes)
+def prepare_original(
+    element: etree._Element,
+    *,
+    data_attributes: bool = True,
+    language: str | None = None,
+) -> None:
+    _mark(element, "original", data_attributes=data_attributes, language=language)
 
 
 def _clear_children(element: etree._Element) -> None:
@@ -130,6 +157,7 @@ def build_translation_element(
     translation: str,
     *,
     data_attributes: bool = True,
+    language: str | None = None,
 ) -> etree._Element:
     clone = deepcopy(original)
     clone.tail = None
@@ -144,7 +172,7 @@ def build_translation_element(
         clone.set("class", " ".join(classes))
     else:
         clone.attrib.pop("class", None)
-    _mark(clone, "translation", data_attributes=data_attributes)
+    _mark(clone, "translation", data_attributes=data_attributes, language=language)
     return clone
 
 
@@ -168,6 +196,8 @@ def inject_into_item(
     translation: str,
     *,
     data_attributes: bool = True,
+    source_language: str | None = None,
+    target_language: str | None = None,
 ) -> None:
     """Put a list item's or cell's translation inside it, under the original.
 
@@ -181,7 +211,12 @@ def inject_into_item(
     original.text, item.text = item.text, None
     for child in list(item):
         original.append(child)  # moves it, tail included
-    _mark(original, "original", data_attributes=data_attributes)
+    _mark(
+        original,
+        "original",
+        data_attributes=data_attributes,
+        language=source_language,
+    )
     item.append(original)
 
     translated = etree.Element(f"{{{XHTML_NS}}}{tag}")
@@ -190,7 +225,12 @@ def inject_into_item(
     else:
         _set_html_content(translated, translation)
     _strip_ids(translated)
-    _mark(translated, "translation", data_attributes=data_attributes)
+    _mark(
+        translated,
+        "translation",
+        data_attributes=data_attributes,
+        language=target_language,
+    )
     if tag == "span":
         item.append(etree.Element(f"{{{XHTML_NS}}}br"))
     item.append(translated)

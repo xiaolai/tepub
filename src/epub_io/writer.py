@@ -11,12 +11,22 @@ carries that marker: the rule did nothing but edit the publisher's CSS.
 
 from __future__ import annotations
 
+import re
 import zipfile
 from pathlib import Path, PurePosixPath
 
 from lxml import etree
 
-from .container import Package, read_package, resolve, secure_xml_parser, write_copy
+from .container import (
+    DC_NS,
+    OPF_NS,
+    Package,
+    read_package,
+    resolve,
+    secure_xml_parser,
+    write_copy,
+)
+from .titles import title_key
 
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 OPS_NS = "http://www.idpf.org/2007/ops"
@@ -32,6 +42,8 @@ def write_updated_epub(
     *,
     toc_updates: TitleUpdates | None = None,
     css_mode: str = "bilingual",
+    source_language: str | None = None,
+    target_language: str | None = None,
 ) -> None:
     """Write ``input_epub`` to ``output_epub`` with ``updated_html`` applied.
 
@@ -44,14 +56,24 @@ def write_updated_epub(
         for href, content in updated_html.items()
     }
 
-    if toc_updates and css_mode == "translated_only":
-        by_entry = {
-            package.zip_path(path.as_posix()): titles for path, titles in toc_updates.items()
-        }
-        with zipfile.ZipFile(input_epub) as archive:
+    with zipfile.ZipFile(input_epub) as archive:
+        if toc_updates and css_mode == "translated_only":
+            by_entry = {
+                package.zip_path(path.as_posix()): titles
+                for path, titles in toc_updates.items()
+            }
             for toc in _toc_documents(package):
                 source = replacements.get(toc) or archive.read(toc)
                 replacements[toc] = _retitle(toc, source, by_entry)
+
+        replacements = _declare_languages(
+            package,
+            replacements,
+            archive,
+            css_mode=css_mode,
+            source_language=source_language,
+            target_language=target_language,
+        )
 
     write_copy(input_epub, output_epub, replacements)
 
@@ -66,13 +88,19 @@ def _toc_documents(package: Package) -> list[str]:
 
 
 def _lookup_title(
-    updates: dict[str, dict[str | None, str]], entry: str, fragment: str | None
+    updates: dict[str, dict[str | None, str]],
+    entry: str,
+    fragment: str | None,
+    label: str | None = None,
 ) -> str | None:
     titles = updates.get(entry)
     if not titles:
         return None
     if fragment and fragment in titles:
         return titles[fragment]
+    key = title_key(label)
+    if key and key in titles:
+        return titles[key]
     return titles.get(None)
 
 
@@ -90,7 +118,9 @@ def _retitle(toc_path: str, source: bytes, updates: dict[str, dict[str | None, s
             if content is None or label is None:
                 continue
             path, fragment = _split(content.get("src", ""))
-            title = _lookup_title(updates, resolve(toc_path, path), fragment)
+            title = _lookup_title(
+                updates, resolve(toc_path, path), fragment, label.text
+            )
             if title:
                 label.text = title
     else:
@@ -99,9 +129,79 @@ def _retitle(toc_path: str, source: bytes, updates: dict[str, dict[str | None, s
                 continue
             for link in nav.iter(f"{{{XHTML_NS}}}a"):
                 path, fragment = _split(link.get("href", ""))
-                title = _lookup_title(updates, resolve(toc_path, path), fragment)
+                title = _lookup_title(
+                    updates,
+                    resolve(toc_path, path),
+                    fragment,
+                    "".join(link.itertext()),
+                )
                 if title:
                     for child in list(link):
                         link.remove(child)
                     link.text = title
     return etree.tostring(root.getroottree(), xml_declaration=True, encoding="utf-8")
+
+
+def _declare_languages(
+    package: Package,
+    replacements: dict[str, bytes],
+    archive: zipfile.ZipFile,
+    *,
+    css_mode: str,
+    source_language: str | None,
+    target_language: str | None,
+) -> dict[str, bytes]:
+    """Declare the language(s) the edition is actually written in.
+
+    A translated-only book used to keep the source package's dc:language and
+    lang attributes: every reader and screen reader was told Chinese prose was
+    English. A bilingual book declared one language although it contains two.
+    """
+    if not target_language:
+        return replacements
+
+    if css_mode == "translated_only":
+        codes = [target_language]
+    else:
+        codes = [code for code in (source_language, target_language) if code]
+    codes = list(dict.fromkeys(codes))
+
+    opf = replacements.get(package.opf_path) or archive.read(package.opf_path)
+    replacements[package.opf_path] = _relabel_package(opf, codes)
+
+    if css_mode == "translated_only":
+        for document in package.spine_items():
+            if "html" not in document.media_type:
+                continue
+            entry = package.zip_path(document.href.as_posix())
+            content = replacements.get(entry) or archive.read(entry)
+            replacements[entry] = _relabel_document(content, target_language)
+    return replacements
+
+
+def _relabel_package(source: bytes, codes: list[str]) -> bytes:
+    root = etree.fromstring(source, parser=secure_xml_parser())
+    metadata = root.find(f"{{{OPF_NS}}}metadata")
+    if metadata is None:
+        metadata = etree.SubElement(root, f"{{{OPF_NS}}}metadata")
+    for node in metadata.findall(f"{{{DC_NS}}}language"):
+        metadata.remove(node)
+    for code in codes:
+        language = etree.SubElement(metadata, f"{{{DC_NS}}}language")
+        language.text = code
+    return etree.tostring(root.getroottree(), xml_declaration=True, encoding="utf-8")
+
+
+def _relabel_document(source: bytes, language: str) -> bytes:
+    """Set lang and xml:lang on the root element, keeping the DOCTYPE.
+
+    Parsing and re-serialising would drop the document type declaration, which
+    XHTML 1.1 content (EPUB 2) still carries.
+    """
+    text = source.decode("utf-8")
+    match = re.search(r"<html\b[^>]*>", text)
+    if match is None:
+        return source
+    opening = re.sub(r'\s(?:xml:)?lang="[^"]*"', "", match.group(0))
+    opening = opening[:-1] + f' lang="{language}" xml:lang="{language}">'
+    return (text[: match.start()] + opening + text[match.end() :]).encode("utf-8")

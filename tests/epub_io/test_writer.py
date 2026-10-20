@@ -122,3 +122,71 @@ def test_entries_keep_the_system_their_attributes_belong_to(tmp_path: Path) -> N
         entries = {info.filename: info for info in archive.infolist()}
     assert {i.create_system for n, i in entries.items() if n != "mimetype"} == {0}
     assert entries["OEBPS/"].external_attr & 0x10
+
+
+def test_translated_only_matches_an_entry_by_its_source_label(tmp_path: Path) -> None:
+    """The fragment often names a <section>, not the heading; the label still does."""
+    book = build_epub(
+        tmp_path / "in.epub",
+        [
+            ("text/ch1.xhtml", "Original One", "<h1>One</h1>"),
+            ("text/ch2.xhtml", "Original Two", "<h1>Two</h1>"),
+        ],
+    )
+    out = tmp_path / "out.epub"
+
+    write_updated_epub(
+        book,
+        out,
+        {},
+        toc_updates={
+            PurePosixPath("text/ch1.xhtml"): {"text:original one": "第一章"},
+            PurePosixPath("text/ch2.xhtml"): {"text:original two": "第二章"},
+        },
+        css_mode="translated_only",
+    )
+
+    nav = _read(out, "OEBPS/nav.xhtml").decode("utf-8")
+    assert "第一章" in nav and "第二章" in nav
+    assert "Original One" not in nav and "Original Two" not in nav
+    etree.fromstring(_read(out, "OEBPS/nav.xhtml"))
+
+
+def test_translated_only_declares_the_target_language(tmp_path: Path) -> None:
+    book = build_epub(
+        tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")], lang="en"
+    )
+    out = tmp_path / "out.epub"
+
+    write_updated_epub(
+        book, out, {}, css_mode="translated_only", target_language="zh-CN"
+    )
+
+    opf = _read(out, "OEBPS/content.opf").decode("utf-8")
+    assert opf.count("<dc:language>") == 1
+    assert "<dc:language>zh-CN</dc:language>" in opf
+    document = _read(out, "OEBPS/ch1.xhtml").decode("utf-8")
+    assert 'lang="zh-CN"' in document and 'xml:lang="zh-CN"' in document
+
+
+def test_bilingual_declares_both_languages_and_leaves_documents_alone(
+    tmp_path: Path,
+) -> None:
+    book = build_epub(
+        tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")], lang="en"
+    )
+    out = tmp_path / "out.epub"
+
+    write_updated_epub(
+        book,
+        out,
+        {},
+        css_mode="bilingual",
+        source_language="en",
+        target_language="zh-CN",
+    )
+
+    opf = _read(out, "OEBPS/content.opf").decode("utf-8")
+    assert "<dc:language>en</dc:language>" in opf
+    assert "<dc:language>zh-CN</dc:language>" in opf
+    assert _read(out, "OEBPS/ch1.xhtml") == _read(book, "OEBPS/ch1.xhtml")

@@ -24,7 +24,13 @@ from state.models import ExtractMode, SegmentStatus, TranslationRecord
 from state.store import backup_state, ensure_state, load_segments, load_state, save_state
 from state.writer import StateWriter, exclusive_run
 from translation.languages import describe_language, normalize_language
-from translation.markup import markup_mismatch, protect, restore, stray_tags, strip_code_fence
+from translation.markup import (
+    markup_mismatch,
+    protect,
+    restore,
+    stray_tags,
+    strip_model_artifacts,
+)
 from translation.polish import polish_translation
 from translation.providers import (
     ProviderError,
@@ -149,10 +155,11 @@ class TranslationResult:
 
 def _reply(segment, provider, source_language: str, target_language: str) -> str:
     """One provider call, refused if it declines the task, polished if not."""
-    text = strip_code_fence(
+    text = strip_model_artifacts(
         provider.translate(
             segment, source_language=source_language, target_language=target_language
-        )
+        ),
+        markup=segment.extract_mode == ExtractMode.HTML,
     )
     # A refusal is not a translation. This check used to run only in the debug
     # purge command, so refusals were stored as COMPLETED and exported. A source

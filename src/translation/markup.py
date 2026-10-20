@@ -364,6 +364,38 @@ def strip_code_fence(reply: str) -> str:
     return match.group(1).strip() if match else reply
 
 
+_TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n.*?\n```[ \t]*\Z", re.DOTALL)
+_OPEN_TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n.*\Z", re.DOTALL)
+
+
+def strip_model_artifacts(reply: str, *, markup: bool) -> str:
+    """Remove what a model added around the translation rather than in it.
+
+    A fence around the whole reply is handled by :func:`strip_code_fence`. The
+    other shape is a translation followed by a second, fenced copy of part of
+    itself: measured, two chapter titles came back as the title, a blank line,
+    then ``​```html`` holding an escaped ``<h1>`` of the same title. Left in,
+    that reaches the reader as visible text; it carries no content, so the
+    fenced tail is removed rather than unwrapped.
+
+    Tags outside such a fence are deliberately left for :func:`stray_tags`: a
+    reply that adds HTML to plain text is retried, not silently rewritten.
+
+    For markup replies a fence may be the wrapper around the real content, so
+    it is unwrapped and the content kept.
+    """
+    text = strip_code_fence(reply)
+    if markup:
+        return text.strip()
+
+    previous = None
+    while previous != text:
+        previous = text
+        text = _TRAILING_FENCE.sub("", text)
+        text = _OPEN_TRAILING_FENCE.sub("", text)
+    return text.strip()
+
+
 def stray_tags(source: str, reply: str) -> str | None:
     """Tags in a reply to plain text that the source does not have.
 

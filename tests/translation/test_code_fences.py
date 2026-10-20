@@ -11,7 +11,12 @@ from pathlib import Path
 
 from state.models import ExtractMode, Segment, SegmentMetadata
 from translation.controller import _translate_segment
-from translation.markup import markup_mismatch, stray_tags, strip_code_fence
+from translation.markup import (
+    markup_mismatch,
+    stray_tags,
+    strip_code_fence,
+    strip_model_artifacts,
+)
 
 
 def _segment(text: str, mode=ExtractMode.TEXT) -> Segment:
@@ -79,3 +84,35 @@ def test_tags_the_source_itself_shows_are_allowed() -> None:
         stray_tags("A plain sentence.", "一个 <em>普通</em> 句子。")
         == "added HTML tags <em> to plain text"
     )
+
+
+def test_a_fenced_copy_appended_to_the_translation_is_removed() -> None:
+    """Measured: a title came back as the title, then a fenced escaped copy of it."""
+    reply = (
+        "第一章：为什么信任才是真正的价值\n\n"
+        "```html\n&lt;h1&gt;第一章：为什么信任才是真正的价值&lt;/h1&gt;\n```"
+    )
+    assert (
+        strip_model_artifacts(reply, markup=False)
+        == "第一章：为什么信任才是真正的价值"
+    )
+
+
+def test_a_markup_fence_is_unwrapped_not_deleted() -> None:
+    assert strip_model_artifacts("```html\n<p>一</p>\n```", markup=True) == "<p>一</p>"
+
+
+def test_plain_prose_is_not_mistaken_for_markup() -> None:
+    assert strip_model_artifacts("x < y and z > w", markup=False) == "x < y and z > w"
+
+
+def test_a_tag_outside_a_fence_is_still_left_to_the_retry() -> None:
+    """Silently deleting added HTML would hide a provider ignoring the prompt."""
+    assert strip_model_artifacts("<p>一</p>", markup=False) == "<p>一</p>"
+
+
+def test_the_fenced_tail_never_reaches_the_state() -> None:
+    reply = "第一章\n\n```html\n&lt;h1&gt;第一章&lt;/h1&gt;\n```"
+    result = _translate_segment(_segment("Original text"), Replies(reply), "en", "zh-CN")
+    assert result.error is None
+    assert "```" not in result.translation

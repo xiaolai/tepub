@@ -42,6 +42,50 @@ def test_apply_translations_inserts_translation_node():
     assert title_map == {}
 
 
+def test_bilingual_units_declare_their_languages():
+    """data-lang is for the hide switches; lang is what a reader trusts."""
+    document, (segment,) = _document("<p>Original text</p>")
+
+    _apply_translations_to_document(
+        document,
+        [(segment, "Translated")],
+        "bilingual",
+        defaultdict(dict),
+        source_language="en",
+        target_language="zh-CN",
+    )
+
+    original, translated = _elements(document, "p")
+    xml_lang = "{http://www.w3.org/XML/1998/namespace}lang"
+    assert (original.get("lang"), original.get(xml_lang)) == ("en", "en")
+    assert (translated.get("lang"), translated.get(xml_lang)) == ("zh-CN", "zh-CN")
+
+
+def test_a_heading_without_an_id_is_keyed_by_its_source_text():
+    """Converted books put the TOC's fragment id on a <section>, not the heading."""
+    document, (segment,) = _document("<h1>Chapter One</h1>")
+
+    title_map = defaultdict(dict)
+    _apply_translations_to_document(
+        document, [(segment, "第一章")], "translated_only", title_map
+    )
+
+    mapped = title_map[PurePosixPath("Text/ch1.xhtml")]
+    assert mapped["text:chapter one"] == "第一章"
+
+
+def test_a_fenced_copy_of_the_heading_is_not_injected():
+    document, (segment,) = _document("<p>Original text</p>")
+    reply = "第一章\n\n```html\n&lt;h1&gt;第一章&lt;/h1&gt;\n```"
+
+    _apply_translations_to_document(
+        document, [(segment, reply)], "bilingual", defaultdict(dict)
+    )
+
+    _, translated = _elements(document, "p")
+    assert translated.text == "第一章"
+
+
 def test_apply_translations_replaces_in_translated_only_mode():
     document, (segment,) = _document("<h1 id='t'>Original heading</h1>")
 
