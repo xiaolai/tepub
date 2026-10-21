@@ -4,6 +4,61 @@ All notable changes to TEPUB are documented in this file.
 
 ---
 
+## [0.6.0] - 2026-10-21
+
+The full repository audit: 173 findings across nine dimensions, fixed and
+independently verified over four rounds.
+
+### ⬆️ Upgrading
+
+- **`SEGMENTS_FORMAT` is 7.** Extracted source now carries `xml:id`, and
+  loose text and skipped subtrees define units of their own. An existing
+  workspace is migrated by text from its journal; units that no longer match
+  are translated again.
+- **The web export writes archive-root-relative paths.** A legitimate
+  `../Text/ch.xhtml` manifest href now exports under `content/Text/` instead
+  of failing or escaping the output directory.
+- **Exported EPUBs keep the source file's mode**, instead of `mkstemp`'s 0600.
+
+### 🐛 Fixed
+
+- Input safety: aggregate decompression budgets across package, reader and
+  web-export reads; Windows drive escapes anywhere in an archive member;
+  executable elements and event attributes stripped from translated markup;
+  handlers rejected per element, not as a set.
+- Extraction and injection: loose container text and child tails are
+  injectable units; lists, tables and definition lists rebuild with their
+  structure; split items keep multiple paragraphs; note references and back
+  links survive; anchors on non-unit containers are emitted.
+- Migration: audio clip renames are journaled and idempotent across retries
+  and swapped IDs; the journal ignores torn UTF-8/JSON tails and whitespace
+  lines; HTML-to-HTML carries are checked against the new source.
+- Providers: refusal and context-window stop reasons are rejected, every
+  text block is read, Gemini requests use a valid `contents`, DeepL free keys
+  select the free host, Retry-After is bounded, and provider errors carry a
+  classification.
+- Audiobook: state is journaled per result and flushed once per pass; TTS
+  formats are normalised; note definitions and scripts are removed before
+  narration; covers decode inside the guarded path.
+- Web export: resources are sanitised, swaps are reversible, non-spine
+  documents are navigable, and the viewer refuses unsanitised targets.
+- Tests and gates: silent paths now have assertions (aggregate budgets,
+  export mode, journal tails, translated-marker counts, per-location
+  epubcheck errors).
+
+### ⚠️ Known limits
+
+Four audit findings remain PARTIAL after four verification rounds: three
+narrow Markdown escaping/structure heuristics and one refusal-filter
+false-positive edge. None is a gate failure.
+
+### ✅ Gate
+
+1,151 tests passed, 10 skipped (corpus/live opt-in); ruff clean including
+the advisory ruleset.
+
+---
+
 ## [0.5.1] - 2026-10-21
 
 Three defects in the exported editions, measured on a real book.
