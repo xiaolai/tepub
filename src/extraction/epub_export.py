@@ -293,7 +293,12 @@ def get_epub_metadata_files(mapping: dict[str, Path]) -> dict[str, Path]:
         ncx_key = _ncx_reference(mapping, opf_key)
         if ncx_key is not None:
             result["ncx"] = mapping[ncx_key]
-    if "ncx" not in result and (ncx_key := _shallowest(mapping, ".ncx")):
-        result["ncx"] = mapping[ncx_key]
+    else:
+        # Depth is only a fallback when there is no package to follow. With a
+        # package that names no NCX, borrowing another .ncx from the archive
+        # reported an unrelated navigation document as this book's.
+        ncx_key = _shallowest(mapping, ".ncx")
+        if ncx_key is not None:
+            result["ncx"] = mapping[ncx_key]
 
     return result

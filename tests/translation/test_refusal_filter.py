@@ -66,3 +66,19 @@ def test_a_model_opener_needs_a_word_boundary():
 
 def test_ordinary_prose_that_merely_uses_help_is_not_a_refusal():
     assert not looks_like_refusal("I cannot help smiling when I see it.")
+
+
+def test_a_task_mentioned_outside_the_refusal_is_not_enough():
+    """Naming a translation is not declining one.
+
+    "I cannot help smiling at that translation" mentions the translation as
+    the object of the smiling; the refusal predicate's own object is "help".
+    """
+    assert not looks_like_refusal("I cannot help smiling at that translation.")
+    assert not looks_like_refusal("I cannot stop thinking about that translation.")
+    assert not looks_like_refusal("I'm sorry, I can't remember that translation.")
+
+
+def test_a_real_task_refusal_is_still_flagged():
+    assert looks_like_refusal("I cannot provide a translation of this passage.")
+    assert looks_like_refusal("I am unable to translate this passage.")

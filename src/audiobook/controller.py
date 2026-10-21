@@ -34,7 +34,6 @@ from .state import (
     AudioStateWriter,
     apply_text_digests,
     ensure_state,
-    mark_status,
     reset_error_segments,
     save_state,
     set_consecutive_failures,
@@ -402,50 +401,50 @@ class AudiobookRunner:
                 for seg_id, record in translation_state.segments.items()
                 if record.status == SegmentStatus.SKIPPED
             }
-        audio_state = load_audio_state(self.state_path)
         ordered_segments = sorted(
             included,
             key=lambda seg: (seg.metadata.spine_index, seg.metadata.order_in_file),
         )
         works: list[SegmentWork] = []
-        for segment in ordered_segments:
-            if segment.segment_id in translation_skips:
-                mark_status(
-                    self.state_path,
-                    segment.segment_id,
-                    AudioSegmentStatus.SKIPPED,
-                    last_error="translation skip",
-                )
-                continue
-            text = segment_to_text(segment, reader=self.epub_reader)
-            if not text:
-                mark_status(
-                    self.state_path,
-                    segment.segment_id,
-                    AudioSegmentStatus.SKIPPED,
-                    last_error="empty or non-text content",
-                )
-                continue
-            sentences = split_sentences(text, language=self.language)
-            if not sentences:
-                mark_status(
-                    self.state_path,
-                    segment.segment_id,
-                    AudioSegmentStatus.SKIPPED,
-                    last_error="could not split sentences",
-                )
-                continue
-            previous = audio_state.segments.get(segment.segment_id)
-            if previous is not None and previous.status == AudioSegmentStatus.SKIPPED:
-                # Skipped by an earlier run but speakable now; left SKIPPED, the
-                # queue passed over it and the book silently lacked it.
-                mark_status(
-                    self.state_path,
-                    segment.segment_id,
-                    AudioSegmentStatus.PENDING,
-                    last_error=None,
-                )
-            works.append(SegmentWork(segment, sentences))
+        # A skipped segment used to reload and rewrite the whole state document
+        # per segment; the writer keeps the document in memory and appends one
+        # journal line per status change instead.
+        with AudioStateWriter(self.state_path) as writer:
+            audio_state = writer.doc
+            for segment in ordered_segments:
+                if segment.segment_id in translation_skips:
+                    writer.mark(
+                        segment.segment_id,
+                        AudioSegmentStatus.SKIPPED,
+                        last_error="translation skip",
+                    )
+                    continue
+                text = segment_to_text(segment, reader=self.epub_reader)
+                if not text:
+                    writer.mark(
+                        segment.segment_id,
+                        AudioSegmentStatus.SKIPPED,
+                        last_error="empty or non-text content",
+                    )
+                    continue
+                sentences = split_sentences(text, language=self.language)
+                if not sentences:
+                    writer.mark(
+                        segment.segment_id,
+                        AudioSegmentStatus.SKIPPED,
+                        last_error="could not split sentences",
+                    )
+                    continue
+                previous = audio_state.segments.get(segment.segment_id)
+                if previous is not None and previous.status == AudioSegmentStatus.SKIPPED:
+                    # Skipped by an earlier run but speakable now; left SKIPPED, the
+                    # queue passed over it and the book silently lacked it.
+                    writer.mark(
+                        segment.segment_id,
+                        AudioSegmentStatus.PENDING,
+                        last_error=None,
+                    )
+                works.append(SegmentWork(segment, sentences))
 
         # Segment IDs are positions, so completed audio is reused only while the
         # text it was rendered from is unchanged.
@@ -707,7 +706,8 @@ class AudiobookRunner:
         # The whole pass runs under the workspace lock, so one in-memory
         # document is current for the duration. Reading and rewriting the
         # state file for every queued segment and every result was O(segments)
-        # per segment; the writer batches the writes instead.
+        # per segment; each result is now one journal append, written whole
+        # once when the pass ends.
         with AudioStateWriter(self.state_path) as writer:
             try:
                 for seg_id in pending_queue:

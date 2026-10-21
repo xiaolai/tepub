@@ -18,6 +18,10 @@ class Finding:
     code: str
     path: str
     message: str
+    #: Every place the message applies to, as (path, line, column). epubcheck
+    #: groups repeat occurrences of one message into a single entry, so the
+    #: list length is the number of occurrences.
+    locations: tuple[tuple[str, int, int], ...] = ()
 
 
 def check(epub: Path) -> list[Finding]:
@@ -38,6 +42,10 @@ def check(epub: Path) -> list[Finding]:
                 code=message.get("ID", ""),
                 path=locations[0].get("path", ""),
                 message=message.get("message", ""),
+                locations=tuple(
+                    (location.get("path", ""), location.get("line", 0), location.get("column", 0))
+                    for location in locations
+                ),
             )
         )
     return findings

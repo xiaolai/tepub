@@ -29,15 +29,22 @@ PENDING: dict[tuple[str, str], str] = {
 }
 
 
-def _translate_everything(settings: AppSettings) -> None:
+#: Prefixes every fake translation, so the gate can prove the translation,
+#: rather than the source text, reached the output.
+MARKER = "【译】"
+
+
+def _translate_everything(settings: AppSettings) -> list[str]:
     segments = json.loads(settings.segments_file.read_text(encoding="utf-8"))["segments"]
     state = json.loads(settings.state_file.read_text(encoding="utf-8"))
+    translations = []
     for segment in segments:
         # A marker before the source text changes every unit, markup included,
         # without disturbing the markup itself. A translation equal to the
         # source let an injection that never happened pass this gate.
         text = segment["source_content"]
-        translation = f"【译】{text}"
+        translation = f"{MARKER}{text}"
+        translations.append(translation)
         state["segments"][segment["segment_id"]] = {
             "segment_id": segment["segment_id"],
             "translation": translation,
@@ -47,6 +54,7 @@ def _translate_everything(settings: AppSettings) -> None:
             "error_message": None,
         }
     settings.state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    return translations
 
 
 def _head_of(data: bytes) -> list[str]:
@@ -119,8 +127,36 @@ def _noterefs(output: Path) -> int:
     return text.count('epub:type="noteref"')
 
 
+def _translated_units(output: Path) -> int:
+    """How many translated units are in the output's content documents.
+
+    A document whose translation never landed still parses, still validates
+    and still keeps every head; only its text is the source's. Counting the
+    marker is what separates that from a real injection. The tables of
+    contents are left out: translated-only output retitles them to the
+    translated headings, which repeats those units in another file.
+    """
+    from epub_io.container import read_package
+
+    package = read_package(output)
+    toc_paths = {
+        item.path for item in (package.nav_item(), package.ncx_item()) if item is not None
+    }
+    with zipfile.ZipFile(output) as archive:
+        return sum(
+            archive.read(name).decode("utf-8", "replace").count(MARKER)
+            for name in archive.namelist()
+            if name.endswith((".xhtml", ".html")) and name not in toc_paths
+        )
+
+
 def _error_counts(findings) -> collections.Counter:
     return collections.Counter(f.code for f in epubcheck.errors(findings))
+
+
+#: Broken links: a resource that is missing, and a fragment that is not
+#: defined. Both repeat silently when only the kind is compared.
+_REFERENCE_ERROR_CODES = frozenset({"RSC-007", "RSC-012"})
 
 
 def _new_kinds_of_error(book: Path, out: Path) -> set[tuple[str, str, str]]:
@@ -134,15 +170,29 @@ def _new_kinds_of_error(book: Path, out: Path) -> set[tuple[str, str, str]]:
     still allowed, which changes when a copy loses its id) and the document.
     Keeping the document means a link newly broken in another file is a new
     kind, while markup repeated in the same file is allowed to duplicate.
+
+    A reference error is not markup repeated: a second one in the same
+    document is a second broken link, so those are compared occurrence by
+    occurrence instead of kind by kind.
     """
 
-    def kinds(epub: Path) -> set[tuple[str, str, str]]:
-        return {
-            (f.code, f.message.split("; expected")[0], f.path)
-            for f in epubcheck.errors(epubcheck.check(epub))
-        }
+    def counts(epub: Path) -> collections.Counter[tuple[str, str, str]]:
+        counted: collections.Counter[tuple[str, str, str]] = collections.Counter()
+        for finding in epubcheck.errors(epubcheck.check(epub)):
+            message = finding.message.split("; expected")[0]
+            # One epubcheck message can list several locations; each one is a
+            # separate occurrence, and epubcheck's cap on listed locations is
+            # what made counting messages miscount before.
+            for path, _, _ in finding.locations or ((finding.path, 0, 0),):
+                counted[(finding.code, message, path)] += 1
+        return counted
 
-    return kinds(out) - kinds(book)
+    book_counts = counts(book)
+    added = counts(out) - book_counts
+    in_book = set(book_counts)
+    return {
+        kind for kind in added if kind[0] in _REFERENCE_ERROR_CODES or kind not in in_book
+    }
 
 
 CASES = [(name, mode) for name in sorted(FIXTURES) for mode in ("bilingual", "translated_only")]
@@ -161,13 +211,14 @@ def test_translated_output_adds_no_epubcheck_errors(name: str, mode: str, tmp_pa
     book = FIXTURES[name](tmp_path / f"{name}.epub")
     settings = AppSettings(work_dir=tmp_path / "work")
     run_extraction(settings, book)
-    _translate_everything(settings)
+    translations = _translate_everything(settings)
     out = tmp_path / f"out-{mode}.epub"
 
     injection = run_injection(settings, book, out, mode=mode)
 
     assert injection.updated_html, "nothing was injected"
     assert not injection.failed
+    assert _translated_units(out) == len(translations), "the translated text is not in the output"
     _assert_heads_kept(book, out)
     assert _links_resolve(out) == []
     # Footnote references survive translation in both modes; translated-only
@@ -197,13 +248,14 @@ def _corpus_books() -> list[Path]:
 def test_real_books_translate_into_valid_epubs(book: Path, mode: str, tmp_path: Path) -> None:
     settings = AppSettings(work_dir=tmp_path / "work")
     run_extraction(settings, book)
-    _translate_everything(settings)
+    translations = _translate_everything(settings)
     out = tmp_path / f"out-{mode}.epub"
 
     injection = run_injection(settings, book, out, mode=mode)
 
     assert injection.updated_html, "nothing was injected"
     assert not injection.failed
+    assert _translated_units(out) == len(translations), "the translated text is not in the output"
     _assert_heads_kept(book, out)
     added = _new_kinds_of_error(book, out)
     assert not added, added

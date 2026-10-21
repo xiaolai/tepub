@@ -154,6 +154,26 @@ def _punkt_tokenizer(prefix: str):
     return tokenizer
 
 
+def _last_text_position(element) -> tuple[lxml_html.HtmlElement, str] | None:
+    """Where the element's text ends, in document order.
+
+    A pre-order walk that looks at each node's text before descending records
+    the deepest child, not the last text: in "Red <em><strong>blue</strong></em>
+    green" it stopped at "blue" and put the full stop before "green". A node's
+    tail comes after its whole subtree, so descend first, then take the tail.
+    """
+    target = (element, "text") if element.text and element.text.strip() else None
+    for child in element:
+        if not isinstance(child.tag, str):
+            continue
+        found = _last_text_position(child)
+        if found is not None:
+            target = found
+        if child.tail and child.tail.strip():
+            target = (child, "tail")
+    return target
+
+
 def _ensure_list_punctuation(root: lxml_html.HtmlElement) -> None:
     for li in root.xpath("//li"):
         if not li.text_content():
@@ -164,14 +184,7 @@ def _ensure_list_punctuation(root: lxml_html.HtmlElement) -> None:
         if BLOCK_PUNCTUATION.search(li.text_content().rstrip()):
             continue
         # Append after the item's last text-bearing node, wherever it is.
-        target: tuple[lxml_html.HtmlElement, str] | None = None
-        for node in li.iter():
-            if not isinstance(node.tag, str):
-                continue
-            if node.text and node.text.strip():
-                target = (node, "text")
-            if node is not li and node.tail and node.tail.strip():
-                target = (node, "tail")
+        target = _last_text_position(li)
         if target is not None:
             node, attr = target
             setattr(node, attr, getattr(node, attr).rstrip() + ". ")

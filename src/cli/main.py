@@ -17,7 +17,7 @@ from rich.markup import escape
 from cli.commands import register_commands
 from cli.core import prepare_initial_settings
 from cli.debug import register_debug_commands
-from config.loader import ConfigFileError
+from config.loader import ConfigFileError, validation_error_detail
 from console_singleton import configure_console, get_console
 from exceptions import TepubError
 
@@ -39,10 +39,7 @@ def _config_error_detail(exc: Exception) -> str:
     failed validation printed its api_key to the terminal."""
     if not isinstance(exc, pydantic.ValidationError):
         return str(exc)
-    return "; ".join(
-        f"{'.'.join(str(part) for part in error['loc']) or '(settings)'}: {error['msg']}"
-        for error in exc.errors(include_url=False)
-    )
+    return validation_error_detail(exc)
 
 
 class DefaultCommandGroup(click.Group):

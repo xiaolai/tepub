@@ -165,6 +165,9 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
             segment, source_language=source_language, target_language=target_language
         ),
         markup=segment.extract_mode == ExtractMode.HTML,
+        # A book about markup repeats its examples in the source; the reply's
+        # fence is then translated content, not an appended copy.
+        source=segment.source_content,
     )
     # A refusal is not a translation. This check used to run only in the debug
     # purge command, so refusals were stored as COMPLETED and exported. A source

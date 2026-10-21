@@ -58,16 +58,23 @@ def test_a_picture_with_no_words_is_not_a_unit() -> None:
     assert _units(SVG_COVER) == []
 
 
-def test_svg_and_mathml_inside_a_unit_are_left_exactly_as_written() -> None:
-    (unit,) = _units(
+def test_svg_and_mathml_inside_a_unit_are_split_out_of_it() -> None:
+    """A raw-HTML request has no marker to give a drawing or formula back
+    unchanged, so its text travelled with the paragraph and could be
+    translated. The elements stay in the document; the units around them do
+    not carry them."""
+    units = _units(
         '<p>The value <math xmlns="http://www.w3.org/1998/Math/MathML" display="inline">'
         '<mi mathvariant="bold">x</mi></math> and a figure '
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="10">'
         '<rect width="1" height="1"/></svg>.</p>'
     )
-    source = unit.source_content
-    assert 'mathvariant="bold"' in source and 'display="inline"' in source
-    assert 'viewBox="0 0 1 1"' in source and 'width="10"' in source
+    source = " ".join(unit.source_content for unit in units)
+    assert "The value" in source and "and a figure" in source
+    assert all("<math" not in unit.source_content for unit in units)
+    assert all("<svg" not in unit.source_content for unit in units)
+    assert all("mathvariant" not in unit.source_content for unit in units)
+    assert all("viewBox" not in unit.source_content for unit in units)
 
 
 def test_anchor_and_page_break_spans_are_kept() -> None:

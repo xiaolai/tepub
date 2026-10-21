@@ -32,6 +32,8 @@ _KEPT_VALUES = (
     "href",
     "src",
     "id",
+    # An EPUB may key its links on xml:id rather than id.
+    "xml:id",
     "epub:type",
     # Structural attributes: a model that drops colspan or start changes the
     # table or list, so they are pinned like a link or an anchor.
@@ -40,6 +42,7 @@ _KEPT_VALUES = (
     "start",
     "reversed",
     "value",
+    "type",
 )
 
 #: Attributes that can execute. A translation may keep the source's own links,
@@ -48,22 +51,44 @@ _URL_ATTRIBUTES = frozenset({"href", "src", "xlink:href", "poster", "action", "f
 _UNSAFE_SCHEMES = ("javascript:", "vbscript:", "data:text/html", "data:application/xhtml")
 
 
-def _unsafe_attributes(markup: str) -> set[str]:
+def _unsafe_attributes(markup: str) -> Counter:
+    """The attributes that can execute, counted per element, by name and value.
+
+    Counted rather than collected as a set: a set let a reply add a second
+    ``onclick``, or change the value of one the source already had, whenever
+    that handler name appeared anywhere in the source.
+
+    The element the attribute sits on is part of the key. A global multiset
+    left the counts unchanged when an existing ``onclick`` was moved onto
+    another element, which hands the code to a different piece of text.
+    Elements may still move within the unit: the key is the element's tag and
+    its protected attributes, plus its ordinal among otherwise identical
+    elements, never its document position.
+    """
     root = lxml_html.fragment_fromstring(markup or "", create_parent="tepub-fragment")
-    found: set[str] = set()
+    found: Counter = Counter()
+    occurrences: Counter = Counter()
     for node in root.iterdescendants():
         if not isinstance(node.tag, str):
             continue
+        kept = tuple(
+            (attribute, node.get(attribute))
+            for attribute in _KEPT_VALUES
+            if node.get(attribute) is not None
+        )
+        identity = (node.tag.lower(), kept)
+        occurrences[identity] += 1
+        element = (*identity, occurrences[identity])
         for name, value in node.attrib.items():
             lower = name.lower()
             if lower.startswith("on"):
-                found.add(lower)
+                found[(*element, lower, value)] += 1
             elif lower in _URL_ATTRIBUTES:
                 # Browsers ignore whitespace and control characters in a
                 # scheme, so "java\nscript:" is still javascript:.
                 normalised = re.sub(r"[\x00-\x20]", "", value).lower()
                 if normalised.startswith(_UNSAFE_SCHEMES):
-                    found.add(f"{lower}={value}")
+                    found[(*element, lower, value)] += 1
     return found
 
 
@@ -156,9 +181,13 @@ def markup_mismatch(source: str, translated: str) -> str | None:
         problems.append("text outside the list items or table cells")
     added_executable = _unsafe_attributes(translated) - _unsafe_attributes(source)
     if added_executable:
-        problems.append(
-            "added executable attributes " + ", ".join(sorted(added_executable))
+        labels = sorted(
+            {
+                f"{name}={attribute}" if name in _URL_ATTRIBUTES else name
+                for _tag, _kept, _ordinal, name, attribute in added_executable
+            }
         )
+        problems.append("added executable attributes " + ", ".join(labels))
     if missing := source_tags - translated_tags:
         problems.append("missing " + _describe(missing, kind="tag"))
     if extra := translated_tags - source_tags:
@@ -447,23 +476,48 @@ def strip_code_fence(reply: str) -> str:
 _TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n(?P<body>.*?)\n?```[ \t]*\Z", re.DOTALL)
 _OPEN_TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n(?P<body>.*)\Z", re.DOTALL)
 _ANY_TAG = re.compile(r"</?[a-zA-Z][^<>]*>")
+_ESCAPED_TAG = re.compile(r"&lt;/?[a-zA-Z][a-zA-Z0-9]*\b", re.IGNORECASE)
 _NO_SPACE = re.compile(r"\s+")
 
 
+def _source_shows_an_example(source: str | None) -> bool:
+    """Whether the source itself shows markup or a fence as visible text.
+
+    A book about HTML prints ``<p>`` as text, and its translation may repeat
+    that example inside a fence. The repeated tail is then content the source
+    carries, not the model echoing its reply. TEXT units hold no markup of
+    their own, so a tag in one is visible text by construction; only a source
+    with no such example leaves a fenced copy unaccounted for.
+    """
+    if not source:
+        return False
+    return (
+        "```" in source
+        or _ANY_TAG.search(source) is not None
+        or _ESCAPED_TAG.search(source) is not None
+    )
+
+
 def _repeats_the_reply(before: str, body: str) -> bool:
-    """Whether a fenced tail is a second copy of the reply before it.
+    """Whether a fenced tail is a second copy of the whole reply before it.
 
     The copy is escaped markup of the same translation. A fenced example the
-    model wrote itself is content, not an artifact, and is left alone.
+    model wrote itself is content, not an artifact, and is left alone: a
+    translation may legitimately show tags as tags, and its visible text may
+    repeat all of the prose before it while still being what the reader should
+    see. Escaping alone cannot tell that example from an echo, so the source
+    decides: see :func:`_source_shows_an_example`.
     """
+    if _ESCAPED_TAG.search(body) is None:
+        return False
     unescaped = html.unescape(body)
     if _ANY_TAG.search(unescaped) is None:
         return False
     visible = _NO_SPACE.sub("", _ANY_TAG.sub("", unescaped))
-    return bool(visible) and visible in _NO_SPACE.sub("", before)
+    return bool(visible) and visible == _NO_SPACE.sub("", before)
 
 
-def strip_model_artifacts(reply: str, *, markup: bool) -> str:
+def strip_model_artifacts(reply: str, *, markup: bool, source: str | None = None) -> str:
     """Remove what a model added around the translation rather than in it.
 
     A fence around the whole reply is handled by :func:`strip_code_fence`. The
@@ -474,6 +528,11 @@ def strip_model_artifacts(reply: str, *, markup: bool) -> str:
     fenced tail is removed rather than unwrapped. A fence whose content is not
     such a copy is kept: it may be a code example in the translation.
 
+    When the source itself shows an example the reply repeats — a book about
+    markup, whose visible text includes tags or a fence — the tail is that
+    example translated, not an echo, and it is kept. Without the source an
+    escaped copy that repeats the reply is the only evidence there is.
+
     Tags outside such a fence are deliberately left for :func:`stray_tags`: a
     reply that adds HTML to plain text is retried, not silently rewritten.
 
@@ -482,6 +541,8 @@ def strip_model_artifacts(reply: str, *, markup: bool) -> str:
     """
     text = strip_code_fence(reply)
     if markup:
+        return text.strip()
+    if _source_shows_an_example(source):
         return text.strip()
 
     previous = None

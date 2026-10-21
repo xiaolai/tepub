@@ -369,6 +369,23 @@ def test_whitespace_inside_text_is_not_deleted_for_matching() -> None:
     assert legacy_mapping(old, new) == {}
 
 
+def test_whitespace_between_paragraphs_is_not_deleted_for_matching() -> None:
+    """The space separates two text-bearing blocks, so it is not serialisation:
+    "<p>Now</p> <p>here.</p>" must not match "Nowhere."."""
+    old = [_segment("o", 1, "<p>Now</p> <p>here.</p>", ExtractMode.HTML)]
+    new = [_segment("n", 1, "<p>Nowhere.</p>", ExtractMode.HTML)]
+
+    assert legacy_mapping(old, new) == {}
+
+
+def test_paragraphs_written_together_may_match() -> None:
+    """With no whitespace between them the blocks are one run of text."""
+    old = [_segment("o", 1, "<p>Now</p><p>here.</p>", ExtractMode.HTML)]
+    new = [_segment("n", 1, "<p>Nowhere.</p>", ExtractMode.HTML)]
+
+    assert legacy_mapping(old, new) == {"o": "n"}
+
+
 def test_item_text_that_looks_like_a_tag_stays_text() -> None:
     """Leading item text was decoded into markup; "<b>" became an element."""
     from extraction.migrate import _items

@@ -36,11 +36,50 @@ def _rendered(segment: Segment) -> str:
 
 
 def test_plain_text_segments_are_not_parsed_as_html():
-    """Parsed as HTML, "Use <foo> &copy;" lost <foo> and changed &copy;."""
+    """Parsed as HTML, "Use <foo> &copy;" lost <foo> and changed &copy;.
+
+    Escaping it as HTML was not enough: CommonMark still reads a literal <foo>
+    as raw HTML and &copy; as an entity, so the tag disappeared and the entity
+    rendered as its character. The text is escaped for Markdown instead.
+    """
     segment = _html_segment("Use <foo> &copy; here", "p")
     segment.extract_mode = ExtractMode.TEXT
 
-    assert "Use <foo> &copy; here" in _rendered(segment)
+    rendered = _rendered(segment)
+    assert "Use \\<foo\\> \\&copy; here" in rendered
+
+
+def test_a_backslash_escaped_entity_stays_text():
+    """Literal "\\&copy;" arrived as one backslash and an ampersand; escaping
+    the ampersand again made "\\\\&copy;", which renders as "\\©"."""
+    segment = _html_segment("\\&copy;", "p")
+    segment.extract_mode = ExtractMode.TEXT
+
+    assert _rendered(segment).strip() == "\\&copy;"
+
+
+def test_a_nested_list_stays_inside_its_item(tmp_path):
+    """A whole nested list is a unit of its own; emitted after the outer list
+    it lost its nesting and its place in document order."""
+    from config import AppSettings
+    from extraction.pipeline import run_extraction
+
+    filler = "".join(f"<li>Outer item {n} " + "x" * 80 + "</li>" for n in range(40))
+    body = (
+        "<ol><li><p>Outer item with nested</p>"
+        "<ul><li>Nested one</li><li>Nested two</li></ul></li>"
+        f"{filler}</ol>"
+    )
+    epub = build_epub(tmp_path / "book.epub", [("c.xhtml", "C", body)])
+    settings = AppSettings(work_dir=tmp_path / "work")
+    run_extraction(settings, epub)
+
+    chapters, _combined = export_markdown(settings, epub, tmp_path / "markdown")
+    content = chapters[0].read_text()
+
+    nested = content.index("    * Nested one")
+    second = content.index("2. Outer item 0")
+    assert content.index("1. Outer item with nested") < nested < second
 
 
 def test_an_ordered_list_keeps_its_numbers():

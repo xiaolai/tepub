@@ -22,7 +22,6 @@ from __future__ import annotations
 import html
 import json
 import re
-import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,7 +42,9 @@ from translation.markup import markup_mismatch
 #    escaped like the rest of its source.
 # 6: loose container text and child tails become injectable units, so unit
 #    positions shift; old workspaces must be migrated rather than reused.
-SEGMENTS_FORMAT = 6
+# 7: xml:id travels in the extracted source and anchor attributes, so a
+#    translated copy can keep its anchor associations.
+SEGMENTS_FORMAT = 7
 
 
 @dataclass
@@ -180,19 +181,20 @@ def _split_whole_lists(
     return carried, used
 
 
-_BLOCK_TAG = (
-    "address|article|aside|blockquote|caption|dd|div|dl|dt|figure|figcaption|footer|"
-    "h[1-6]|header|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul"
-)
-# Whitespace next to a block tag is serialisation, not a word separator. Between
-# inline elements it is the opposite: "<a>x</a> <a>y</a>" has two words.
+#: List and table structure. Whitespace between these tags is serialisation:
+#: "<li>One</li>\n<li>Two</li>" is the same markup as the one-line spelling,
+#: and its items are joined by structure, not by a word space. Elsewhere a
+#: block boundary is a word boundary: deleting the space in
+#: "<p>Now</p> <p>here.</p>" made it match "Nowhere." and carried a
+#: translation onto a different paragraph.
+_STRUCTURAL_TAG = "dd|dl|dt|li|ol|table|tbody|td|tfoot|th|thead|tr|ul"
 _SERIALISATION_SPACE = re.compile(
-    rf"(</?(?:{_BLOCK_TAG})\b[^>]*>)\s+|\s+(</?(?:{_BLOCK_TAG})\b)"
+    rf"(</?(?:{_STRUCTURAL_TAG})\b[^>]*>)\s+(?=</?(?:{_STRUCTURAL_TAG})\b)"
 )
 
 
-def _without_serialisation_space(markup: str) -> str:
-    return _SERIALISATION_SPACE.sub(lambda match: match.group(1) or match.group(2), markup)
+def _strip_serialisation_space(markup: str) -> str:
+    return _SERIALISATION_SPACE.sub(r"\1", markup)
 
 
 def _match_key(segment: Segment) -> tuple[str, str]:
@@ -201,7 +203,7 @@ def _match_key(segment: Segment) -> tuple[str, str]:
         # Whitespace inside text separates words and must not be deleted:
         # removing all of it made "Now here." match "Nowhere." and carried a
         # translation onto the wrong paragraph.
-        text = _plain_text(_without_serialisation_space(text))
+        text = _plain_text(_strip_serialisation_space(text))
     return segment.file_path.as_posix(), " ".join(text.split())
 
 
@@ -223,15 +225,22 @@ def legacy_mapping(old: list[Segment], new: list[Segment]) -> dict[str, str]:
 _JOURNAL = "migration.json"
 
 
-def _journal_sources(work_dir: Path, state_file: Path) -> dict[Path, Path]:
-    """live file -> the copy an interrupted import took of it before
-    rewriting it; empty when no import was interrupted."""
+def _read_journal(work_dir: Path) -> dict | None:
     journal = work_dir / _JOURNAL
     if not journal.exists():
+        return None
+    return json.loads(journal.read_text(encoding="utf-8"))
+
+
+def _journal_sources(
+    journal: dict | None, work_dir: Path, state_file: Path
+) -> dict[Path, Path]:
+    """live file -> the copy an interrupted import took of it before
+    rewriting it; empty when no import was interrupted."""
+    if journal is None:
         return {}
-    data = json.loads(journal.read_text(encoding="utf-8"))
     sources = {}
-    for name, backup in data["backups"].items():
+    for name, backup in journal["backups"].items():
         live = state_file if name == "state" else work_dir / name
         sources[live] = live.with_name(backup)
     return sources
@@ -242,17 +251,25 @@ def finish_legacy_import(work_dir: Path) -> None:
     (work_dir / _JOURNAL).unlink(missing_ok=True)
 
 
-def _remap_audio_files(audio_state: Path, data: dict, mapping: dict[str, str]) -> None:
+def _audio_rename_plan(
+    audio_state: Path, data: dict, mapping: dict[str, str]
+) -> list[dict]:
     """Rename each carried clip to its new segment id, without overwriting one.
 
     Segment ids name positions, so a new id can already have a clip from a
     different old unit. Synthesis names its output after the id, so leaving the
     carried clip under the old name let a later synthesis overwrite it.
+
+    The whole plan is settled before any file moves, and is journalled, so a
+    retry replays it instead of reading the already-renamed files as if they
+    were the old ones: with a swap (A->B, B->A) that swapped the audio again
+    and gave each unit the other's clip.
     """
     segments_dir = audio_state.parent / "segments"
-    moves: list[tuple[str, str, Path, dict]] = []
+    moves: list[tuple[str, str, Path]] = []
     for old_id, record in (data.get("segments") or {}).items():
-        if old_id not in mapping:
+        new_id = mapping.get(old_id)
+        if new_id is None:
             continue
         candidates: list[Path] = []
         stored = record.get("audio_path")
@@ -263,26 +280,76 @@ def _remap_audio_files(audio_state: Path, data: dict, mapping: dict[str, str]) -
             candidates.extend(sorted(segments_dir.glob(f"{old_id}.*")))
         source = next((candidate for candidate in candidates if candidate.is_file()), None)
         if source is not None:
-            moves.append((old_id, mapping[old_id], source, record))
+            moves.append((old_id, new_id, source))
     if not moves:
-        return
+        return []
 
-    # Two phases: every source moves aside before any takes a final name, so
-    # swapping A->B and B->A cannot destroy one of them.
-    staged: list[tuple[str, Path, str, dict]] = []
-    for old_id, new_id, source, record in moves:
-        temporary = source.with_name(f".{old_id}.{uuid.uuid4().hex}.migrate")
-        source.replace(temporary)
-        staged.append((new_id, temporary, source.suffix, record))
-
-    for new_id, temporary, suffix, record in staged:
-        target = temporary.parent / f"{new_id}{suffix}"
+    vacated = {source.resolve() for _old_id, _new_id, source in moves}
+    reserved: set[Path] = set()
+    plan: list[dict] = []
+    for old_id, new_id, source in moves:
+        target = source.with_name(f"{new_id}{source.suffix}")
         counter = 1
-        while target.exists():
-            target = temporary.parent / f"{new_id}-{counter}{suffix}"
+        while target in reserved or (target.exists() and target.resolve() not in vacated):
+            target = source.with_name(f"{new_id}-{counter}{source.suffix}")
             counter += 1
-        temporary.replace(target)
-        record["audio_path"] = str(target)
+        reserved.add(target)
+        stat = source.stat()
+        plan.append(
+            {
+                "old": old_id,
+                "new": new_id,
+                "source": str(source),
+                # Deterministic so an interrupted staging can be resumed.
+                "temporary": str(source.with_name(f".migrate-{old_id}{source.suffix}")),
+                "target": str(target),
+                # A rename keeps the inode, so this says which file the clip is
+                # wherever it now sits. Names alone cannot: after a swap
+                # (A->B, B->A) both old names exist again, holding each other's
+                # audio, and a replay would swap them back.
+                "identity": [stat.st_dev, stat.st_ino],
+            }
+        )
+    return plan
+
+
+def _is_the_clip(path: Path, identity: list[int]) -> bool:
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    return [stat.st_dev, stat.st_ino] == identity
+
+
+def _apply_audio_renames(plan: list[dict]) -> None:
+    """Carry out a plan, or resume one interrupted part way; idempotent.
+
+    Every source is staged aside before any takes its final name, so swapping
+    A->B and B->A cannot destroy one of them. Each step checks the filesystem
+    first, and identifies a clip by its inode rather than its name, so running
+    the plan again after a crash changes nothing.
+    """
+    for entry in plan:
+        source, temporary = Path(entry["source"]), Path(entry["temporary"])
+        if temporary.exists() or _is_the_clip(Path(entry["target"]), entry["identity"]):
+            continue
+        if _is_the_clip(source, entry["identity"]):
+            source.replace(temporary)
+    for entry in plan:
+        target, temporary = Path(entry["target"]), Path(entry["temporary"])
+        if _is_the_clip(target, entry["identity"]):
+            continue
+        if temporary.exists() and not target.exists():
+            temporary.replace(target)
+
+
+def _apply_audio_paths(data: dict, plan: list[dict]) -> None:
+    """Point every renamed clip's record at the name the plan gives it."""
+    targets = {entry["old"]: entry["target"] for entry in plan}
+    for old_id, record in (data.get("segments") or {}).items():
+        target = targets.get(old_id)
+        if target is not None:
+            record["audio_path"] = target
 
 
 def import_legacy_workspace(
@@ -303,7 +370,9 @@ def import_legacy_workspace(
     report = ImportReport(mapped=len(mapping))
     old_by_id = {segment.segment_id: segment for segment in old}
     new_by_id = {segment.segment_id: segment for segment in new}
-    sources = _journal_sources(work_dir, state_file)
+    journal = _read_journal(work_dir)
+    sources = _journal_sources(journal, work_dir, state_file)
+    renames: dict[str, list[dict]] = (journal or {}).get("audio_renames", {})
 
     state = None
     if state_file.exists():
@@ -332,11 +401,18 @@ def import_legacy_workspace(
         report.finished_not_carried -= len(split_from)
         state.segments = carried
 
-    audio_states: list[tuple[Path, dict]] = []
+    audio_states: list[tuple[Path, dict, list[dict]]] = []
     for audio_state in sorted(work_dir.glob("audiobook*/audio_state.json")):
         source = sources.get(audio_state, audio_state)
         data = json.loads(source.read_text(encoding="utf-8"))
-        _remap_audio_files(audio_state, data, mapping)
+        key = audio_state.relative_to(work_dir).as_posix()
+        # A retry must replay the first attempt's plan: the clips on disk are
+        # already under their new names, so planning again would rename them a
+        # second time and, for a swap, hand each unit the other's audio.
+        plan = renames.get(key)
+        if plan is None:
+            plan = _audio_rename_plan(audio_state, data, mapping)
+        _apply_audio_paths(data, plan)
         remapped = {}
         for old_id, record in data.get("segments", {}).items():
             if old_id in mapping:
@@ -344,10 +420,12 @@ def import_legacy_workspace(
                 remapped[mapping[old_id]] = record
         report.audio_files_remapped += len(remapped)
         data["segments"] = remapped
-        audio_states.append((audio_state, data))
+        audio_states.append((audio_state, data, plan))
 
-    targets = ([state_file] if state is not None else []) + [path for path, _ in audio_states]
-    if not sources:
+    targets = ([state_file] if state is not None else []) + [
+        path for path, _data, _plan in audio_states
+    ]
+    if journal is None:
         for target in targets:
             sources[target] = backup_state(target)
         backups = {
@@ -356,12 +434,26 @@ def import_legacy_workspace(
             )
             for target in targets
         }
-        atomic_write(work_dir / _JOURNAL, {"backups": backups})
+        # Written before any clip moves: the plan names where each one is
+        # going, so a crash during the (resumable) moves leaves enough behind.
+        atomic_write(
+            work_dir / _JOURNAL,
+            {
+                "backups": backups,
+                "audio_renames": {
+                    path.relative_to(work_dir).as_posix(): plan
+                    for path, _data, plan in audio_states
+                    if plan
+                },
+            },
+        )
     report.backups = [sources[target] for target in targets if target in sources]
 
+    for _audio_state, _data, plan in audio_states:
+        _apply_audio_renames(plan)
     if state is not None:
         save_state(state, state_file)
-    for audio_state, data in audio_states:
+    for audio_state, data, _plan in audio_states:
         atomic_write(audio_state, data)
 
     return report

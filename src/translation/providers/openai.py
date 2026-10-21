@@ -37,9 +37,11 @@ def _part_texts(parts: Any) -> list[str]:
             if part.get("type", "output_text") not in ("output_text", "text"):
                 continue
             text = part.get("text")
-            if isinstance(text, str) and text.strip():
+            # A whitespace-only part still joins the parts around it: dropping
+            # it turned "First" + " " + "Second" into "FirstSecond".
+            if isinstance(text, str):
                 texts.append(text)
-        elif isinstance(part, str) and part.strip():
+        elif isinstance(part, str):
             texts.append(part)
     return texts
 
@@ -79,7 +81,7 @@ def _extract_text(body: Any) -> str | None:
                 continue
 
         candidate = item.get("text") or item.get("content")
-        if isinstance(candidate, str) and candidate.strip():
+        if isinstance(candidate, str):
             texts.append(candidate)
         elif isinstance(candidate, list):
             texts.extend(_part_texts(candidate))

@@ -28,7 +28,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from epub_io.xhtml import XHTML_NS, local_name, parse_fragment, text_of
+from epub_io.xhtml import XHTML_NS, XML_NS, local_name, parse_fragment, text_of
 from extraction.cleaners import normalize_punctuation
 from state.models import ExtractMode, Segment, SegmentMetadata
 
@@ -61,14 +61,20 @@ _UNWRAPPED_INLINE = ("span", "font", "a")
 
 OPS_TYPE = "{http://www.idpf.org/2007/ops}type"
 
+#: An EPUB may key a link or an anchor on xml:id rather than id. Kept as the
+#: namespaced attribute lxml reports, so it travels in the unit's source and a
+#: translation that drops it is caught like a dropped id.
+_XML_ID = f"{{{XML_NS}}}id"
+
 # Attributes the translation must carry back unchanged: link targets, anchors,
 # images, note semantics and the structure of tables and lists. A colspan,
-# rowspan or ol/li numbering attribute is part of the table or list, not
-# presentation; dropping it silently corrupted the layout on re-injection.
+# rowspan or ol/li numbering attribute (start, reversed, value, type) is part
+# of the table or list, not presentation; dropping it silently corrupted the
+# layout on re-injection.
 _KEPT_ATTRIBUTES = frozenset(
     {
-        "href", "src", "id", "alt", "title", "role", OPS_TYPE,
-        "colspan", "rowspan", "start", "reversed", "value",
+        "href", "src", "id", _XML_ID, "alt", "title", "role", OPS_TYPE,
+        "colspan", "rowspan", "start", "reversed", "value", "type",
     }
 )
 
@@ -87,11 +93,11 @@ def _holds_skipped(element: etree._Element) -> bool:
     )
 
 
-# SVG and MathML are kept whole in a unit's source: they are drawings and
-# formulas, not prose, and taking them out of a paragraph would lose them. The
-# remaining skipped tags are subtrees whose text must never reach a model, so a
-# unit that contains one is split around it.
-_UNSEGMENTED_SKIPPED = SKIPPED_TAGS - {"svg", "math"}
+# No skipped subtree may travel inside a unit: its text would reach the model
+# with the rest of the markup, and a raw-HTML request has no marker to give it
+# back unchanged. Units are split around every one, SVG and MathML included;
+# the element itself stays in the document and is never lost.
+_UNSEGMENTED_SKIPPED = SKIPPED_TAGS
 
 
 def _holds_untranslatable(element: etree._Element) -> bool:
@@ -245,7 +251,7 @@ def _has_inline_markup(element: etree._Element) -> bool:
     )
 
 
-_ANCHOR_ATTRIBUTES = ("id", OPS_TYPE, "role", "href")
+_ANCHOR_ATTRIBUTES = ("id", _XML_ID, OPS_TYPE, "role", "href")
 
 
 def _is_anchor(node: etree._Element) -> bool:

@@ -6,6 +6,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pydantic
+
 from config.models import AppSettings
 from config.provenance import ConfigLayer
 from exceptions import TepubError
@@ -85,6 +87,19 @@ def _apply_env_file(path: Path, written: set[str] | None = None) -> dict[str, An
 
 class ConfigFileError(TepubError):
     """A config file that holds something other than settings."""
+
+
+def validation_error_detail(exc: pydantic.ValidationError) -> str:
+    """A validation error's messages, without the values that failed.
+
+    Pydantic's own text repeats every failing input, so a provider block that
+    failed validation printed its api_key. Only which setting failed and what
+    is wrong with it are reported, here and in every error built from one.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc']) or '(settings)'}: {error['msg']}"
+        for error in exc.errors(include_url=False)
+    )
 
 
 def _parse_yaml_file(path: Path) -> dict[str, Any]:

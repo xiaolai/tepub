@@ -83,6 +83,19 @@ def test_a_config_holding_only_comments_sets_nothing(tmp_path: Path) -> None:
     assert _parse_yaml_file(config) == {}
 
 
+def test_a_book_provider_error_does_not_repeat_its_api_key(tmp_path: Path) -> None:
+    """The raw ValidationError repeats the failing input, so a bad api_key
+    reached the terminal inside the error message."""
+    epub = _book(
+        tmp_path,
+        "primary_provider:\n  name: openai\n  model: m\n  api_key: [sk-book-secret]\n",
+    )
+    with pytest.raises(TepubError) as caught:
+        with_book_workspace(AppSettings(), epub)
+    assert "primary_provider.api_key" in str(caught.value)
+    assert "sk-book-secret" not in str(caught.value)
+
+
 def test_a_book_config_takes_bare_skip_keywords(tmp_path: Path) -> None:
     epub = _book(tmp_path, "skip_rules:\n  - prologue\n")
     settings = with_book_workspace(AppSettings(), epub)

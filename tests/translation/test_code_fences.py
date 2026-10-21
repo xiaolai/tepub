@@ -113,6 +113,26 @@ def test_a_fenced_example_is_content_and_is_kept() -> None:
     assert strip_model_artifacts(reply, markup=False) == reply
 
 
+def test_a_fenced_example_the_source_itself_shows_is_kept() -> None:
+    """A book about markup prints the example as text; a translation repeating
+    it in a fence is reproducing the source, not echoing the reply.
+
+    Escaping alone cannot tell this apart from the appended copy, so the source
+    decides: its own visible tags or fence account for the tail.
+    """
+    source = "Hello world\n\n<p>Hello world</p>"
+    reply = "Hello world\n\n```html\n&lt;p&gt;Hello world&lt;/p&gt;\n```"
+    assert strip_model_artifacts(reply, markup=False, source=source) == reply
+
+
+def test_a_translated_example_is_not_truncated() -> None:
+    source = "Hello world\n\n<p>Hello world</p>"
+    reply = "Hola mundo\n\n```html\n&lt;p&gt;Hola mundo&lt;/p&gt;\n```"
+    result = _translate_segment(_segment(source), Replies(reply), "en", "es")
+    assert result.error is None
+    assert result.translation == reply
+
+
 def test_a_unit_with_inline_code_keeps_the_html_route() -> None:
     """Marker protection collapsed whitespace inside <code>, so such units go
     the HTML route, where polish leaves code byte for byte."""

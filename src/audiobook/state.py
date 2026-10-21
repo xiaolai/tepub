@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+import json
 import threading
-import time
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +24,131 @@ def _get_lock(path: Path) -> threading.Lock:
         if path_str not in _state_file_locks:
             _state_file_locks[path_str] = threading.Lock()
         return _state_file_locks[path_str]
+
+
+def _journal_path(path: Path) -> Path:
+    """Changes recorded since the last whole-document write."""
+    return path.with_name(f"{path.name}.journal")
+
+
+def _journal_patches(path: Path) -> list[dict]:
+    journal = _journal_path(path)
+    if not journal.exists():
+        return []
+    # Bytes, not text: a write torn inside a multi-byte character is torn too,
+    # and read_text would raise on it rather than let the last line be ignored.
+    # Split on the writer's newline only: bytes.splitlines would also split at
+    # 0x85, which is an ordinary continuation byte in UTF-8 text.
+    lines = journal.read_bytes().split(b"\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    patches: list[dict] = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            patches.append(json.loads(line))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # A crash can tear the line being written; every earlier one is
+            # complete. A torn line anywhere else is corruption, not recovery.
+            if index == len(lines) - 1:
+                break
+            raise
+    return patches
+
+
+def _apply_journal(state: AudioStateDocument, path: Path) -> AudioStateDocument:
+    """Replay changes appended since the last whole-document write.
+
+    Linear in the journal, each record read and applied once. Idempotent:
+    every record assigns the fields it carries, so replaying it twice over
+    the same base document gives the same state.
+    """
+    for patch in _journal_patches(path):
+        for segment_id, payload in (patch.get("segments") or {}).items():
+            state.segments[segment_id] = AudioSegmentState.model_validate(payload)
+        if "consecutive_failures" in patch:
+            state.consecutive_failures = patch["consecutive_failures"]
+        if "cooldown_until" in patch:
+            value = patch["cooldown_until"]
+            state.cooldown_until = datetime.fromisoformat(value) if value else None
+    return state
+
+
+def _last_record_bounds(handle, size: int) -> tuple[int, int]:
+    """Byte range of the journal's last non-empty line, without its newline."""
+    end = size
+    while end > 0:
+        handle.seek(end - 1)
+        if handle.read(1) not in (b"\n", b"\r"):
+            break
+        end -= 1
+    start = end
+    while start > 0:
+        chunk_start = max(0, start - 8192)
+        handle.seek(chunk_start)
+        index = handle.read(start - chunk_start).rfind(b"\n")
+        if index != -1:
+            return chunk_start + index + 1, end
+        start = chunk_start
+    return 0, end
+
+
+def _complete_journal_tail(journal: Path) -> None:
+    """Make the journal's tail whole before a new record is appended.
+
+    A crash can leave the last record half-written, and replay ignores it only
+    because it is last. Appending after a missing newline fused the new record
+    to the torn one, so the result was no longer last and every later replay
+    raised instead of ignoring it. A record that is whole but lost its newline
+    is kept. A whitespace-only line is not a record, so it is dropped too:
+    truncating only it left a torn record in front of the appended one, which
+    made that record non-final and raised on the next load. Only the tail is
+    read, so appending stays linear.
+    """
+    if not journal.exists():
+        return
+    with journal.open("r+b") as handle:
+        while True:
+            size = handle.seek(0, 2)
+            start, end = _last_record_bounds(handle, size)
+            if start == end:
+                return
+            handle.seek(end)
+            tail = handle.read(size - end)
+            handle.seek(start)
+            try:
+                json.loads(handle.read(end - start))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # A torn record, or a whitespace-only line after one. Drop it
+                # and look at what precedes it; that line may be torn as well.
+                handle.truncate(start)
+                continue
+            # Records are split on LF during replay. A bare CR ends no record,
+            # so the next one would fuse to this line and both would be lost.
+            if b"\n" not in tail:
+                handle.seek(size)
+                handle.write(b"\n")
+            return
+
+
+def _append_journal(path: Path, patch: dict) -> None:
+    journal = _journal_path(path)
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    _complete_journal_tail(journal)
+    with journal.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(patch, ensure_ascii=False) + "\n")
+        handle.flush()
+
+
+def _write_state(state: AudioStateDocument, path: Path) -> None:
+    """Write the whole document and drop the journal it now contains.
+
+    Callers that already hold ``_get_lock`` use this directly; ``save_state``
+    wraps it for the rest.
+    """
+    save_generic_state(state, path)
+    _journal_path(path).unlink(missing_ok=True)
 
 
 def _default_state(
@@ -54,41 +178,31 @@ def _default_state(
 
 
 def load_state(path: Path) -> AudioStateDocument:
-    return load_generic_state(path, AudioStateDocument)
+    return _apply_journal(load_generic_state(path, AudioStateDocument), path)
 
 
 def save_state(state: AudioStateDocument, path: Path) -> None:
     lock = _get_lock(path)
     with lock:
-        save_generic_state(state, path)
+        _write_state(state, path)
 
 
 class AudioStateWriter:
-    """The audio state held in memory for a run, written in batches.
+    """The audio state held in memory for a run, persisted as a journal.
 
     Recording a result used to read and rewrite the whole document, and a
     success then rewrote it again to clear the failure counter. The document
     grows with every segment, so a long book did O(segments) JSON work per
-    result on the main thread. Changes are flushed every ``flush_every``
-    results or ``flush_interval`` seconds, and always when the block exits —
-    success, failure or interrupt alike.
+    result on the main thread. Each change is now one appended line, and the
+    document is written whole once, when the block exits — success, failure or
+    interrupt alike. Fixed-size whole-document checkpoints were still
+    quadratic: every batch serialised everything recorded so far.
     """
 
-    def __init__(
-        self,
-        path: Path,
-        *,
-        flush_every: int = 25,
-        flush_interval: float = 5.0,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.doc = load_state(path)
-        self._flush_every = flush_every
-        self._flush_interval = flush_interval
-        self._clock = clock
-        self._dirty = 0
-        self._last_flush = clock()
+        self._changed = False
 
     def __enter__(self) -> AudioStateWriter:
         return self
@@ -108,7 +222,7 @@ class AudioStateWriter:
         payload["updated_at"] = datetime.now(timezone.utc)
         updated = AudioSegmentState.model_validate(payload)
         self.doc.segments[segment_id] = updated
-        self._changed()
+        self._record({"segments": {segment_id: updated.model_dump(mode="json")}})
         return updated
 
     @property
@@ -119,27 +233,24 @@ class AudioStateWriter:
     def consecutive_failures(self, count: int) -> None:
         if count != self.doc.consecutive_failures:
             self.doc.consecutive_failures = count
-            self._changed()
+            self._record({"consecutive_failures": count})
 
     def set_cooldown(self, until: datetime | None) -> None:
         self.doc.cooldown_until = until
-        # A cooldown is long; make it visible on disk straight away.
-        self._changed()
+        self._record({"cooldown_until": until.isoformat() if until else None})
+        # A cooldown is long; write it whole now rather than leave it in the
+        # journal alone.
         self.flush()
 
     def flush(self) -> None:
-        if self._dirty:
+        """Write the journal's changes whole, then drop the journal."""
+        if self._changed:
             save_state(self.doc, self.path)
-            self._dirty = 0
-        self._last_flush = self._clock()
+            self._changed = False
 
-    def _changed(self) -> None:
-        self._dirty += 1
-        if (
-            self._dirty >= self._flush_every
-            or self._clock() - self._last_flush >= self._flush_interval
-        ):
-            self.flush()
+    def _record(self, patch: dict) -> None:
+        _append_journal(self.path, patch)
+        self._changed = True
 
 
 #: Session settings that change the rendered audio. A change to any of them makes
@@ -253,7 +364,7 @@ def apply_text_digests(state_path: Path, digests: dict[str, str]) -> list[str]:
     """
     lock = _get_lock(state_path)
     with lock:
-        state = load_generic_state(state_path, AudioStateDocument)
+        state = _apply_journal(load_generic_state(state_path, AudioStateDocument), state_path)
         changed = False
         reset_ids: list[str] = []
         for seg_id, digest in digests.items():
@@ -269,7 +380,7 @@ def apply_text_digests(state_path: Path, digests: dict[str, str]) -> list[str]:
                 reset_ids.append(seg_id)
                 changed = True
         if changed:
-            save_generic_state(state, state_path)
+            _write_state(state, state_path)
         return reset_ids
 
 
@@ -280,14 +391,14 @@ def update_segment_state(
 ) -> AudioSegmentState:
     lock = _get_lock(state_path)
     with lock:
-        state = load_generic_state(state_path, AudioStateDocument)
+        state = _apply_journal(load_generic_state(state_path, AudioStateDocument), state_path)
         segment = state.segments.get(segment_id)
         if segment is None:
             segment = AudioSegmentState(segment_id=segment_id)
         updated = updater(segment)
         state.segments[segment_id] = updated
         state.segments[segment_id].updated_at = datetime.now(timezone.utc)
-        save_generic_state(state, state_path)
+        _write_state(state, state_path)
         return updated
 
 
@@ -316,23 +427,23 @@ def iter_segments_by_status(state: AudioStateDocument, status: AudioSegmentStatu
 def set_consecutive_failures(state_path: Path, count: int) -> None:
     lock = _get_lock(state_path)
     with lock:
-        state = load_generic_state(state_path, AudioStateDocument)
+        state = _apply_journal(load_generic_state(state_path, AudioStateDocument), state_path)
         state.consecutive_failures = count
-        save_generic_state(state, state_path)
+        _write_state(state, state_path)
 
 
 def set_cooldown(state_path: Path, until: datetime | None) -> None:
     lock = _get_lock(state_path)
     with lock:
-        state = load_generic_state(state_path, AudioStateDocument)
+        state = _apply_journal(load_generic_state(state_path, AudioStateDocument), state_path)
         state.cooldown_until = until
-        save_generic_state(state, state_path)
+        _write_state(state, state_path)
 
 
 def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None) -> list[str]:
     lock = _get_lock(state_path)
     with lock:
-        state = load_generic_state(state_path, AudioStateDocument)
+        state = _apply_journal(load_generic_state(state_path, AudioStateDocument), state_path)
         changed = False
         reset_ids: list[str] = []
         target_ids = set(segment_ids) if segment_ids else None
@@ -348,5 +459,5 @@ def reset_error_segments(state_path: Path, segment_ids: list[str] | None = None)
                 changed = True
         if changed:
             state.consecutive_failures = 0
-            save_generic_state(state, state_path)
+            _write_state(state, state_path)
         return reset_ids

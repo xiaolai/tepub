@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.tree import Tree
 
 from config import AppSettings
-from config.loader import ConfigFileError, _parse_yaml_file
+from config.loader import ConfigFileError, _parse_yaml_file, validation_error_detail
 from config.provenance import shown_settings
 from config.workspace import _with_book_config, build_workspace_name, derive_book_workspace
 from console_singleton import get_console
@@ -570,6 +570,6 @@ def _settings_with_book(ctx: click.Context, input_epub: Path) -> AppSettings:
         return _with_book_config(book_base)
     except ValidationError as exc:
         console.print(f"[red]The book's config {escape(str(book_config))} is invalid:[/red]")
-        console.print(escape(str(exc)), markup=False)
+        console.print(escape(validation_error_detail(exc)), markup=False)
         console.print("[dim]tepub config validate BOOK shows each problem.[/dim]")
         raise SystemExit(1) from exc

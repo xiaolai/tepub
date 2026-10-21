@@ -7,6 +7,7 @@ those threads at exit. The audiobook command also exited 0 when interrupted.
 
 from __future__ import annotations
 
+import os
 import select
 import signal
 import subprocess
@@ -18,6 +19,39 @@ from state.models import SegmentStatus
 from state.store import load_state
 
 DRIVER = Path(__file__).with_name("interrupt_driver.py")
+READY_TIMEOUT = 20
+
+
+def _read_ready(proc: subprocess.Popen[str], errors: Path) -> str:
+    """The child's next line, waiting at most READY_TIMEOUT seconds.
+
+    select says only that a byte is waiting. A child that wrote half a line
+    and stalled then left readline blocking with no deadline at all, so the
+    timeout after it was never reached.
+    """
+    fd = proc.stdout.fileno()
+    deadline = time.monotonic() + READY_TIMEOUT
+    received = b""
+    while b"\n" not in received:
+        remaining = deadline - time.monotonic()
+        readable, _, _ = select.select([fd], [], [], max(remaining, 0))
+        if not readable:
+            break
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        received += chunk
+    if b"\n" in received:
+        return received.split(b"\n", 1)[0].decode(
+            proc.stdout.encoding or "utf-8", errors="replace"
+        ).strip()
+    proc.kill()
+    proc.wait()
+    stacks = errors.read_text(encoding="utf-8", errors="replace")
+    raise AssertionError(
+        f"no READY line {READY_TIMEOUT} s after start; got {received!r}; stderr:\n"
+        f"{stacks[-6000:]}"
+    )
 
 
 def test_ctrl_c_exits_promptly_with_130_and_saves(tmp_path: Path) -> None:
@@ -30,15 +64,7 @@ def test_ctrl_c_exits_promptly_with_130_and_saves(tmp_path: Path) -> None:
         text=True,
     )
     try:
-        # A blocking readline had no timeout: a child stalled before READY
-        # hung the suite instead of failing here.
-        ready, _, _ = select.select([proc.stdout], [], [], 20)
-        if not ready:
-            proc.kill()
-            proc.wait()
-            stacks = errors.read_text(encoding="utf-8", errors="replace")
-            raise AssertionError(f"no READY 20 s after start; stderr:\n{stacks[-6000:]}")
-        assert proc.stdout.readline().strip() == "READY"
+        assert _read_ready(proc, errors) == "READY"
         sent = time.monotonic()
         proc.send_signal(signal.SIGINT)
         try:

@@ -182,9 +182,15 @@ def _attach_leading_text(element: etree._Element, text: str) -> None:
 
 
 def _set_text_only(element: etree._Element, text: str) -> None:
+    # A text run sits between elements. Its surrounding whitespace is what
+    # keeps a word from being glued to an adjacent inline drawing; dropping it
+    # produced "textformula".
+    original = element.text or ""
+    leading = original[: len(original) - len(original.lstrip())]
+    trailing = original[len(original.rstrip()) :]
     _clear_children(element)
     element.text = None
-    _attach_leading_text(element, text)
+    _attach_leading_text(element, f"{leading}{text}{trailing}")
     _blocks_where_required(element)
 
 
@@ -252,6 +258,11 @@ def _strip_ids(element: etree._Element) -> None:
             _unmark_page_break(node)
         node.attrib.pop("id", None)
         node.attrib.pop(f"{{{XML_NS}}}id", None)
+    # The unit's own element can be the marker, such as a <span> holding the
+    # printed page number; the copy keeps the text but must not announce the
+    # page a second time, so the root is unmarked too (it cannot be removed).
+    if _is_page_break(element):
+        _unmark_page_break(element)
 
 
 def _remove_keeping_tail(node: etree._Element) -> None:

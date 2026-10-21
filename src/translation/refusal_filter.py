@@ -49,27 +49,32 @@ _REFUSAL_MARKERS: tuple[str, ...] = (
     "無法完成",
 )
 
-# A refusal declines the task, so it names the task. Bare "help" and "content"
-# matched ordinary prose ("I cannot help smiling"), so only explicit phrasing
-# that pairs the refusal with the task counts.
-_TASK_MARKERS: tuple[str, ...] = (
-    "translat",
-    "help with",
-    "assist",
-    "comply",
-    "request",
-    "翻译",
-    "翻譯",
-    "协助",
-    "協助",
-    "帮助",
-    "幫助",
-    "请求",
-    "請求",
-    "内容",
-    "內容",
-    "处理",
-    "處理",
+# A refusal declines the task, so it names the task as the object of its own
+# refusal. A task word elsewhere in the sentence is ordinary prose: "I cannot
+# help smiling at that translation" is a reader enjoying a translation, not a
+# model declining one. The translating act therefore has to follow the refusal
+# predicate itself ("cannot translate", "unable to translate"), or be the
+# object of an explicit construction ("cannot provide a translation", "help
+# with the translation"). A bare "translation" or "translat" match used to
+# flag any sentence that mentioned one.
+_DECLINES = r"(?:cannot|can't|cant|can not|won't|will not|unable|not able)"
+_NAMES_THE_TASK = re.compile(
+    rf"{_DECLINES}\s+(?:to\s+)?translate\b"
+    rf"|{_DECLINES}\s+(?:to\s+)?(?:provide|give|offer|produce|create)\s+"
+    rf"(?:a|the|this|that|any)\s+translation\b"
+    # "that", "this" and "it" name the task only when they stand alone: in
+    # "I cannot help with that heavy suitcase" the pronoun is a determiner
+    # introducing an ordinary object, not the thing being declined.
+    r"|(?:help|assist)(?: you)? with (?:that|this|it)\b(?=\s*(?:[.!?,;:…\"')\]]|$))"
+    r"|(?:help|assist)(?: you)? with (?:the|your|a|that|this) "
+    r"(?:translation|request|task|text|passage|content)\b"
+    r"|comply with (?:that|this|it|the request|your request)\b"
+    r"|(?:complete|fulfil|fulfill|process|handle) (?:this|that|the|your) "
+    r"(?:request|translation)\b"
+    # Chinese: likewise, the translating act is the object of the refusal.
+    r"|(?:无法|無法|不能|不会|不會|拒绝|拒絕)\s*(?:翻译|翻譯)"
+    r"|(?:协助|協助|帮助|幫助)(?:处理|處理)"
+    r"|(?:完成|处理|處理)(?:这个|這个|该|該|这|這|此)(?:请求|請求|内容|內容)"
 )
 
 # Openers that announce a model, which no ordinary sentence in a book does.
@@ -100,7 +105,7 @@ def looks_like_refusal(text: str | None, *, max_length: int = 400) -> bool:
     if _SELF_IDENTIFYING.match(prefix_window):
         return True
 
-    names_the_task = any(marker in prefix_window for marker in _TASK_MARKERS)
+    names_the_task = _NAMES_THE_TASK.search(prefix_window) is not None
 
     if prefix_window.startswith(_DIRECT_REFUSALS):
         return names_the_task

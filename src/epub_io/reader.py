@@ -10,7 +10,7 @@ from lxml import etree
 from config import AppSettings
 from logging_utils.logger import get_logger
 
-from .container import ManifestItem, read_member_bounded, read_package
+from .container import ManifestItem, ReadBudget, read_member_bounded, read_package
 from .container import SpineDocument as SpineItem
 from .xhtml import NotWellFormedError, XhtmlDocument, parse_xhtml
 
@@ -75,6 +75,9 @@ class EpubReader:
             )
 
         self.package = read_package(epub_path)
+        # Documents are parsed and kept; the budget bounds what all of them may
+        # expand to together, not just one at a time.
+        self._read_budget = ReadBudget()
         self._documents: dict[Path, HtmlDocument] | None = None
         # Per-document results that consumers compute once and reuse, such as
         # located translation units.
@@ -93,7 +96,7 @@ class EpubReader:
                 # zip path is used directly: spine hrefs are already decoded, so
                 # resolving them as URI hrefs would percent-decode a second time.
                 item = self.package.manifest[spine_item.idref]
-                raw_html = read_member_bounded(archive, item.path)
+                raw_html = read_member_bounded(archive, item.path, budget=self._read_budget)
                 try:
                     xhtml = parse_xhtml(raw_html)
                 except NotWellFormedError as exc:
@@ -138,6 +141,8 @@ class EpubReader:
         return next((item for item in self.items() if item.path == manifest_item.path), None)
 
     def read_bytes(self, item: BookItem) -> bytes:
+        # The book's total is not charged here: resources are written out as
+        # they are read, while documents are parsed and kept (see iter_documents).
         with zipfile.ZipFile(self.epub_path) as archive:
             return read_member_bounded(archive, item.path)
 

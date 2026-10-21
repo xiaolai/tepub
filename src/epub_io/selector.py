@@ -113,8 +113,9 @@ def _collect_toc_candidates(
                     candidates[href_path] = SkipCandidate(
                         file_path=href_path,
                         spine_index=spine_item.index,
-                        reason=keyword,
+                        reason=reasons.get(keyword, keyword),
                         source="toc",
+                        keyword=keyword,
                     )
             continue
         decided.add(href_path)
@@ -218,6 +219,9 @@ def _apply_skip_after_logic(
     if not settings.skip_after_back_matter:
         return candidates
 
+    # Back-matter triggers are plain keywords, but a skip rule may configure a
+    # reason for the same keyword; a match through either path reports it.
+    reasons = {rule.keyword: rule.reason for rule in settings.skip_rules}
     total_entries = len(toc_entries)
     threshold_index = int(total_entries * settings.back_matter_threshold)
     trigger_spine_index = None
@@ -261,7 +265,7 @@ def _apply_skip_after_logic(
                     SkipCandidate(
                         file_path=path,
                         spine_index=spine_lookup[path].index,
-                        reason=keyword,
+                        reason=reasons.get(keyword, keyword),
                         source="content",
                         keyword=keyword,
                     ),

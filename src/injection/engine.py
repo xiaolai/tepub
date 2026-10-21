@@ -91,7 +91,9 @@ def _apply_translations_to_document(
         # the heading it translated. It is not part of the book, and in plain
         # text it is visible.
         translation = strip_model_artifacts(
-            translation, markup=segment.extract_mode != ExtractMode.TEXT
+            translation,
+            markup=segment.extract_mode != ExtractMode.TEXT,
+            source=segment.source_content,
         )
         if mode == "translated_only":
             source_title = (

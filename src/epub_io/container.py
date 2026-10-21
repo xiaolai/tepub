@@ -46,23 +46,66 @@ MAX_CONTENT_MEMBER_BYTES = 128 * 1024 * 1024
 MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 
+#: Decompressed bytes one book may hand out in total. A per-member limit bounds
+#: one document, not a book: thousands of members just under it still exhaust
+#: memory once the reader keeps every document it parses.
+MAX_READ_TOTAL_BYTES = 256 * 1024 * 1024
+
+
+@dataclass
+class ReadBudget:
+    """Decompressed bytes read from one book, counted across members.
+
+    ``limit`` is a default factory so a test can lower it without building a
+    bomb-sized archive.
+    """
+
+    limit: int = field(default_factory=lambda: MAX_READ_TOTAL_BYTES)
+    spent: int = 0
+
+    def check(self, name: str, declared: int) -> None:
+        """Refuse a member before it is allocated if it would overrun the total."""
+        if self.spent + declared > self.limit:
+            raise EpubStructureError(
+                f"{name} declares {declared:,} bytes, over the "
+                f"{self.limit:,}-byte total this book may expand to"
+            )
+
+    def charge(self, name: str, count: int) -> None:
+        """Count what a member actually expanded to, whatever its header said."""
+        self.spent += count
+        if self.spent > self.limit:
+            raise EpubStructureError(
+                f"{name} took the book past the {self.limit:,}-byte total it may "
+                "expand to"
+            )
+
 
 def read_member_bounded(
     archive: zipfile.ZipFile,
     name: str,
     *,
     limit: int = MAX_CONTENT_MEMBER_BYTES,
+    budget: ReadBudget | None = None,
 ) -> bytes:
-    """Read one archive member, refusing it before it can exhaust memory."""
+    """Read one archive member, refusing it before it can exhaust memory.
+
+    ``budget``, when given, also bounds the sum of every member read from the
+    book; a member limit alone lets a bomb spread itself across many members.
+    """
     info = archive.getinfo(name)
     if info.file_size > limit:
         raise EpubStructureError(
             f"{name} declares {info.file_size:,} bytes, over the {limit:,}-byte limit"
         )
+    if budget is not None:
+        budget.check(name, info.file_size)
     with archive.open(info) as stream:
         payload = stream.read(limit + 1)
     if len(payload) > limit:
         raise EpubStructureError(f"{name} expanded past the {limit:,}-byte limit")
+    if budget is not None:
+        budget.charge(name, len(payload))
     return payload
 
 
@@ -234,6 +277,7 @@ def _check_entry_names(entries: list[zipfile.ZipInfo]) -> None:
 
 
 def read_package(epub_path: Path) -> Package:
+    budget = ReadBudget()
     try:
         archive_file = zipfile.ZipFile(epub_path)
     except zipfile.BadZipFile as exc:
@@ -247,7 +291,10 @@ def read_package(epub_path: Path) -> Package:
         try:
             container = _parse_member(
                 read_member_bounded(
-                    archive, "META-INF/container.xml", limit=MAX_PACKAGE_MEMBER_BYTES
+                    archive,
+                    "META-INF/container.xml",
+                    limit=MAX_PACKAGE_MEMBER_BYTES,
+                    budget=budget,
                 ),
                 "META-INF/container.xml",
             )
@@ -259,7 +306,9 @@ def read_package(epub_path: Path) -> Package:
         opf_path = rootfile.get("full-path")
         try:
             opf = _parse_member(
-                read_member_bounded(archive, opf_path, limit=MAX_PACKAGE_MEMBER_BYTES),
+                read_member_bounded(
+                    archive, opf_path, limit=MAX_PACKAGE_MEMBER_BYTES, budget=budget
+                ),
                 opf_path,
             )
         except KeyError as exc:
@@ -290,7 +339,7 @@ def read_package(epub_path: Path) -> Package:
         metadata=_metadata(opf),
     )
     with zipfile.ZipFile(epub_path) as archive:
-        package.toc = _read_toc(package, archive)
+        package.toc = _read_toc(package, archive, budget)
     return package
 
 
@@ -391,7 +440,9 @@ def _ncx_entries(package: Package, ncx_path: str, parent: etree._Element) -> lis
     return entries
 
 
-def _read_toc(package: Package, archive: zipfile.ZipFile) -> list[TocEntry]:
+def _read_toc(
+    package: Package, archive: zipfile.ZipFile, budget: ReadBudget | None = None
+) -> list[TocEntry]:
     """The book's table of contents: the EPUB 3 nav, else the NCX, else nothing.
 
     A nav without a toc section (landmarks only) is not an error; ebooklib
@@ -400,7 +451,9 @@ def _read_toc(package: Package, archive: zipfile.ZipFile) -> list[TocEntry]:
     nav = package.nav_item()
     if nav is not None:
         root = _parse_member(
-            read_member_bounded(archive, nav.path, limit=MAX_PACKAGE_MEMBER_BYTES),
+            read_member_bounded(
+                archive, nav.path, limit=MAX_PACKAGE_MEMBER_BYTES, budget=budget
+            ),
             nav.path,
         )
         for element in root.iter(f"{{{XHTML_NS}}}nav"):
@@ -411,7 +464,9 @@ def _read_toc(package: Package, archive: zipfile.ZipFile) -> list[TocEntry]:
     ncx = package.ncx_item()
     if ncx is not None:
         root = _parse_member(
-            read_member_bounded(archive, ncx.path, limit=MAX_PACKAGE_MEMBER_BYTES),
+            read_member_bounded(
+                archive, ncx.path, limit=MAX_PACKAGE_MEMBER_BYTES, budget=budget
+            ),
             ncx.path,
         )
         nav_map = root.find(f"{{{NCX_NS}}}navMap")

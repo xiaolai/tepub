@@ -138,6 +138,35 @@ def test_a_translated_copy_does_not_repeat_page_markers(tmp_path: Path) -> None:
     assert "vi" in "".join(marked[0].itertext())
 
 
+def test_a_translated_copy_of_a_page_marker_root_stops_announcing_the_page(
+    tmp_path: Path,
+) -> None:
+    """The unit itself can be the marker, as a <div> holding the page number.
+    Its copy kept role="doc-pagebreak" and announced the page a second time."""
+    from tests.epub_builder import build_epub
+
+    book = build_epub(
+        tmp_path / "b.epub",
+        [("c.xhtml", "C", '<div role="doc-pagebreak" id="page_1">Page one</div><p>Body.</p>')],
+    )
+    settings = _extract(book, tmp_path)
+    _translate_everything(settings)
+    out = tmp_path / "out.epub"
+    run_injection(settings, book, out, mode="bilingual")
+
+    tree = _tree(out, "c.xhtml")
+    breaks = [n for n in tree.iter() if isinstance(n.tag, str) and n.get("role") == "doc-pagebreak"]
+    # Only the original announces the page.
+    assert [n.get("id") for n in breaks] == ["page_1"]
+    copies = [
+        n
+        for n in tree.iter()
+        if isinstance(n.tag, str) and "tepub-translation" in (n.get("class") or "")
+    ]
+    assert any("Page one" in "".join(n.itertext()) for n in copies)
+    assert all(n.get("role") != "doc-pagebreak" for n in copies)
+
+
 def test_a_blockquote_filled_with_text_holds_it_in_a_paragraph(tmp_path: Path) -> None:
     """<blockquote><font>…</font></blockquote>: translated, the <font> went and
     the text stood loose in the blockquote, invalid in EPUB 2."""

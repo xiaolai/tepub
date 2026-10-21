@@ -25,9 +25,15 @@ from audiobook.controller import (
     _preview,
     _synthesize_segment,
 )
-from audiobook.models import AudioSegmentStatus
+from audiobook.models import AudioSegmentStatus, AudioSessionConfig, AudioStateDocument
 from audiobook.renderer import CouldntEncodeError, SegmentRenderer
-from audiobook.state import AudioStateWriter, load_state, mark_status, save_state
+from audiobook.state import (
+    AudioStateWriter,
+    _append_journal,
+    load_state,
+    mark_status,
+    save_state,
+)
 from audiobook.tts import TTSEngine
 from config import AppSettings
 from exceptions import WorkspaceBusyError
@@ -59,7 +65,9 @@ class FakeRenderer:
             and segment_id not in FakeRenderer._barrier_entered
         ):
             FakeRenderer._barrier_entered.add(segment_id)
-            assert FakeRenderer.barrier.wait(10)
+            # Barrier.wait() returns the arrival index, and the last arriver
+            # gets 0; asserting truthiness rejected that valid result.
+            FakeRenderer.barrier.wait(10)
         gate = FakeRenderer.block.get(segment_id)
         if gate is not None:
             assert gate.wait(10)
@@ -603,3 +611,47 @@ def test_results_are_persisted_in_batches(book, monkeypatch) -> None:
 
     # Four results are not four rewrites of the growing document.
     assert len(writes) <= 3
+
+
+def _journal_state(tmp_path: Path) -> Path:
+    path = tmp_path / "audio_state.json"
+    save_state(
+        AudioStateDocument(
+            session=AudioSessionConfig(voice="v", output_dir=tmp_path), segments={}
+        ),
+        path,
+    )
+    return path
+
+
+def test_a_record_ending_in_a_bare_cr_does_not_swallow_the_next(tmp_path: Path) -> None:
+    """Replay splits records on LF only, so a bare CR did not end one: the
+    appended record fused to it and both updates were lost."""
+    path = _journal_state(tmp_path)
+    path.with_name("audio_state.json.journal").write_bytes(
+        b'{"cooldown_until": "2030-01-01T00:00:00+00:00"}\r'
+    )
+
+    _append_journal(path, {"consecutive_failures": 2})
+
+    state = load_state(path)
+    assert state.consecutive_failures == 2
+    assert state.cooldown_until is not None  # the first record survived too
+
+
+def test_a_torn_record_before_a_blank_line_is_removed_before_appending(
+    tmp_path: Path,
+) -> None:
+    """The whitespace-only line was taken for the last record, so only it was
+    dropped: the torn record before it was no longer last after the append and
+    the next load raised JSONDecodeError."""
+    path = _journal_state(tmp_path)
+    path.with_name("audio_state.json.journal").write_bytes(
+        b'{"cooldown_until": "2030-01-01T00:00:00+00:00"}\n{"torn":\n   '
+    )
+
+    _append_journal(path, {"consecutive_failures": 2})
+
+    state = load_state(path)
+    assert state.consecutive_failures == 2
+    assert state.cooldown_until is not None  # the record before the tear survived

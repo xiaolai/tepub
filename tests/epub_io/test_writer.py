@@ -210,3 +210,52 @@ def test_single_quoted_language_attributes_do_not_become_duplicates() -> None:
     assert relabelled.count(b"lang=") == 2
     assert b"'en'" not in relabelled
     assert b'lang="zh-CN"' in relabelled and b'xml:lang="zh-CN"' in relabelled
+
+
+def test_whitespace_around_the_equals_does_not_leave_a_duplicate_language() -> None:
+    """XML allows ``lang = "en"``, with spaces or newlines around the sign."""
+    relabelled = _relabel_document(
+        b'<html lang = "en" xml:lang\n=\n\'en\'><body><p>x</p></body></html>', "zh-CN"
+    )
+    assert relabelled.count(b"lang=") == 2
+    assert b'"en"' not in relabelled and b"'en'" not in relabelled
+    assert relabelled.count(b'lang="zh-CN"') == 2
+
+
+def test_a_greater_than_inside_another_root_attribute_is_not_a_tag_end() -> None:
+    """A quoted ">" is valid in an attribute value. A tag regex that stops at
+    the first ">" cuts the root tag short, leaving a malformed document."""
+    source = (
+        '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" '
+        '"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">'
+        '<html lang="en" data-note="a > b"><body><p>x</p></body></html>'
+    )
+
+    relabelled = _relabel_document(source.encode(), "zh-CN")
+    text = relabelled.decode()
+
+    assert text.startswith(
+        '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" '
+        '"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"><html '
+    )
+    assert text.count("lang=") == 2
+    assert 'data-note="a > b"' in text
+    assert 'lang="zh-CN"' in text and 'xml:lang="zh-CN"' in text
+    # Duplicate or truncated attributes would make this parse fail.
+    assert etree.fromstring(relabelled).get("lang") == "zh-CN"
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+def test_a_bom_less_utf16_document_is_read_in_its_own_encoding(encoding: str) -> None:
+    """A BOM-less UTF-16 document declares UTF-16, but those declaration bytes
+    do not look like ASCII, so decoding it as UTF-8 crashed."""
+    source = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<html lang="en"><body><p>x</p></body></html>'
+    ).encode(encoding)
+
+    relabelled = _relabel_document(source, "zh-CN")
+
+    text = relabelled.decode(encoding)
+    assert text.count("lang=") == 2
+    assert 'lang="zh-CN"' in text and 'xml:lang="zh-CN"' in text

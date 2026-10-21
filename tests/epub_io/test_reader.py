@@ -51,3 +51,21 @@ def test_epub_reader_rejects_a_file_that_is_not_a_zip(tmp_path):
 
     with pytest.raises(EpubStructureError, match="not an EPUB"):
         EpubReader(broken, settings)
+
+
+def test_documents_that_together_expand_too_far_are_refused(tmp_path, monkeypatch) -> None:
+    """A per-member limit does not bound a book: many members just under it
+    still fill memory once every document is parsed and kept."""
+    from epub_io import container
+
+    chapters = [
+        (f"c{i}.xhtml", f"Chapter {i}", f"<p>{'word ' * 1000}</p>") for i in range(10)
+    ]
+    book = build_epub(tmp_path / "big.epub", chapters)
+    # Low enough that the book trips it, high enough that the package members
+    # read while opening the book do not.
+    monkeypatch.setattr(container, "MAX_READ_TOTAL_BYTES", 20_000)
+    reader = EpubReader(book, AppSettings(work_dir=tmp_path))
+
+    with pytest.raises(EpubStructureError, match="expand to"):
+        list(reader.iter_documents())

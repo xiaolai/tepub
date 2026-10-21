@@ -23,6 +23,7 @@ from .container import (
     MAX_PACKAGE_MEMBER_BYTES,
     OPF_NS,
     Package,
+    ReadBudget,
     read_member_bounded,
     read_package,
     resolve,
@@ -60,6 +61,9 @@ def write_updated_epub(
     }
 
     with zipfile.ZipFile(input_epub) as archive:
+        # Documents read here are kept in ``replacements``; the budget bounds
+        # what the whole book may expand to in memory.
+        budget = ReadBudget()
         if toc_updates and css_mode == "translated_only":
             by_entry = {
                 package.zip_path(path.as_posix()): titles
@@ -67,7 +71,7 @@ def write_updated_epub(
             }
             for toc in _toc_documents(package):
                 source = replacements.get(toc) or read_member_bounded(
-                    archive, toc, limit=MAX_PACKAGE_MEMBER_BYTES
+                    archive, toc, limit=MAX_PACKAGE_MEMBER_BYTES, budget=budget
                 )
                 replacements[toc] = _retitle(toc, source, by_entry)
 
@@ -78,6 +82,7 @@ def write_updated_epub(
             css_mode=css_mode,
             source_language=source_language,
             target_language=target_language,
+            budget=budget,
         )
 
     write_copy(input_epub, output_epub, replacements)
@@ -161,6 +166,7 @@ def _declare_languages(
     css_mode: str,
     source_language: str | None,
     target_language: str | None,
+    budget: ReadBudget | None = None,
 ) -> dict[str, bytes]:
     """Declare the language(s) the edition is actually written in.
 
@@ -178,7 +184,7 @@ def _declare_languages(
     codes = list(dict.fromkeys(codes))
 
     opf = replacements.get(package.opf_path) or read_member_bounded(
-        archive, package.opf_path, limit=MAX_PACKAGE_MEMBER_BYTES
+        archive, package.opf_path, limit=MAX_PACKAGE_MEMBER_BYTES, budget=budget
     )
     replacements[package.opf_path] = _relabel_package(opf, codes)
 
@@ -189,7 +195,9 @@ def _declare_languages(
             # The manifest has the resolved zip path; spine hrefs are decoded,
             # and running them through zip_path would decode again.
             entry = package.manifest[document.idref].path
-            content = replacements.get(entry) or read_member_bounded(archive, entry)
+            content = replacements.get(entry) or read_member_bounded(
+                archive, entry, budget=budget
+            )
             replacements[entry] = _relabel_document(content, target_language)
     return replacements
 
@@ -219,26 +227,73 @@ def _document_encoding(source: bytes) -> str:
         return "utf-16-le"
     if source.startswith(codecs.BOM_UTF16_BE):
         return "utf-16-be"
+    # A BOM-less UTF-16 document opens with an XML declaration whose ASCII
+    # characters alternate with NUL bytes, so the byte regex below cannot see
+    # it; without this, decoding crashed before any declaration was read.
+    if source.startswith(b"<\x00?\x00x\x00m\x00"):
+        return "utf-16-le"
+    if source.startswith(b"\x00<\x00?\x00x\x00m"):
+        return "utf-16-be"
     match = re.match(rb"\s*<\?xml[^>]*\bencoding=[\"']([^\"']+)[\"']", source)
     if match is not None:
         return match.group(1).decode("ascii")
     return "utf-8"
 
 
+_ATTRIBUTE = re.compile(
+    r"""([^\s=/>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?"""
+)
+
+
+def _root_tag_span(text: str) -> tuple[int, int] | None:
+    """The span of the opening <html> tag, or None if the document has none.
+
+    A regex ending at the first ">" would stop inside an attribute value such
+    as ``data-note="a > b"``, so the tag is scanned with quotes tracked.
+    """
+    match = re.search(r"<html\b", text)
+    if match is None:
+        return None
+    quote: str | None = None
+    for index in range(match.end(), len(text)):
+        character = text[index]
+        if quote is not None:
+            if character == quote:
+                quote = None
+        elif character in "\"'":
+            quote = character
+        elif character == ">":
+            return match.start(), index + 1
+    return None
+
+
 def _relabel_document(source: bytes, language: str) -> bytes:
     """Set lang and xml:lang on the root element, keeping the DOCTYPE.
 
     Parsing and re-serialising would drop the document type declaration, which
-    XHTML 1.1 content (EPUB 2) still carries.
+    XHTML 1.1 content (EPUB 2) still carries. Only the root tag is rewritten,
+    and its attributes are parsed rather than regex-matched so that a ">"
+    inside a quoted value cannot cut the tag short.
     """
     encoding = _document_encoding(source)
     text = source.decode(encoding)
-    match = re.search(r"<html\b[^>]*>", text)
-    if match is None:
+    span = _root_tag_span(text)
+    if span is None:
         return source
-    # Both quote styles: an attribute left behind would now be a duplicate.
-    opening = re.sub(
-        r"""\s(?:xml:)?lang=(?:"[^"]*"|'[^']*')""", "", match.group(0)
-    )
-    opening = opening[:-1] + f' lang="{language}" xml:lang="{language}">'
-    return (text[: match.start()] + opening + text[match.end() :]).encode(encoding)
+    start, end = span
+    # Both quote styles and XML's optional whitespace around "=": an attribute
+    # left behind would now be a duplicate, which no parser accepts.
+    if text[start:end].endswith("/>"):
+        inner = text[start + len("<html") : end - 2]
+        closing = "/>"
+    else:
+        inner = text[start + len("<html") : end - 1]
+        closing = ">"
+    attributes = [
+        attribute.group(0)
+        for attribute in _ATTRIBUTE.finditer(inner)
+        if attribute.group(1) not in {"lang", "xml:lang"}
+    ]
+    attributes.extend((f'lang="{language}"', f'xml:lang="{language}"'))
+    opening = f"<html {' '.join(attributes)}{closing}"
+    return (text[:start] + opening + text[end:]).encode(encoding)

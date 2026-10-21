@@ -10,7 +10,12 @@ from lxml import etree
 from lxml import html as lxml_html
 
 from config import AppSettings
-from epub_io.container import TocEntry, read_member_bounded, secure_xml_parser
+from epub_io.container import (
+    ReadBudget,
+    TocEntry,
+    read_member_bounded,
+    secure_xml_parser,
+)
 from epub_io.path_utils import safe_relative_member
 from epub_io.reader import EpubReader
 from epub_io.titles import title_key
@@ -118,6 +123,9 @@ def _copy_static_resources(
 ) -> None:
     # One open for the whole walk: read_bytes reopened the archive per resource,
     # and a resource-heavy book made that quadratic in the zip's entry count.
+    # One budget for the walk: a per-member limit alone lets a bomb spread
+    # itself across many members.
+    budget = ReadBudget()
     with zipfile.ZipFile(reader.epub_path) as archive:
         for item in reader.items():
             # Spine documents were written by the document loop, translated and
@@ -130,7 +138,7 @@ def _copy_static_resources(
             member = safe_relative_member(item.path, reader.epub_path)
             dest = content_dir / Path(*member.parts)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            data = read_member_bounded(archive, item.path)
+            data = read_member_bounded(archive, item.path, budget=budget)
             if item.is_document:
                 # A linked document outside the spine (footnotes, endnotes) is
                 # not translated, but it is rendered, so it needs the same
@@ -267,11 +275,35 @@ def export_web(
                 documents=documents,
             ),
         )
-        if output_root.exists():
-            shutil.rmtree(output_root)
-        staging.rename(output_root)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+    # Swap the finished site in without a window in which neither edition
+    # exists. Deleting the previous export before the rename lost both the old
+    # site and the new one when the rename itself failed, so the previous
+    # export is only moved aside, and is moved back if the swap fails; the
+    # completed staging tree is left in place for the next run to reuse or
+    # replace instead of being discarded.
+    backup = output_root.with_name(output_root.name + ".old")
+    if backup.exists():
+        if output_root.exists():
+            shutil.rmtree(backup)
+        else:
+            # Only a crash or a failed restore leaves a backup without a live
+            # export beside it; it is then the only copy of the previous site,
+            # so put it back rather than deleting it.
+            backup.rename(output_root)
+    had_previous = output_root.exists()
+    if had_previous:
+        output_root.rename(backup)
+    try:
+        staging.rename(output_root)
+    except BaseException:
+        if had_previous:
+            backup.rename(output_root)
+        raise
+    if had_previous:
+        shutil.rmtree(backup, ignore_errors=True)
 
     return WebExport(output_root, injection.failed)

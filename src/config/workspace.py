@@ -34,6 +34,7 @@ def _with_book_config(settings: AppSettings) -> AppSettings:
         ConfigFileError,
         _parse_yaml_file,
         _prepare_provider_credentials,
+        validation_error_detail,
         yaml,
     )
     from config.provenance import BOOK, ConfigLayer
@@ -65,7 +66,11 @@ def _with_book_config(settings: AppSettings) -> AppSettings:
         try:
             updated = settings.model_copy(update=book_payload)
         except pydantic.ValidationError as exc:
-            raise ConfigFileError(f"{book_config} has invalid settings:\n{exc}") from exc
+            # Formatted without the input values: the raw error repeats the
+            # provider block, api_key included, wherever it reaches the user.
+            raise ConfigFileError(
+                f"{book_config} has invalid settings:\n{validation_error_detail(exc)}"
+            ) from exc
         if "skip_rules" in book_payload:
             # A book's rules add to the ones it inherits, as its config.yaml
             # says; they used to replace them, so adding "prologue" dropped
