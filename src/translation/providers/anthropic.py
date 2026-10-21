@@ -59,14 +59,27 @@ class AnthropicProvider(BaseProvider):
         if not response.content:
             raise ProviderError("Anthropic response missing content")
 
-        # A truncated response used to be stored as a complete translation, losing
-        # the tail of any segment longer than the limit with no indication.
-        if getattr(response, "stop_reason", None) == "max_tokens":
+        # A response that did not finish used to be stored as a complete
+        # translation, losing text with no indication.
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "max_tokens":
             raise ProviderError(
                 f"Translation for segment {segment.segment_id} was truncated at "
                 f"{self.config.max_tokens} tokens. Raise `max_tokens` for this "
                 f"provider in config.yaml."
             )
+        if stop_reason in {"refusal", "model_context_window_exceeded", "pause_turn"}:
+            raise ProviderError(
+                f"Translation for segment {segment.segment_id} did not finish "
+                f"(stop_reason={stop_reason}); the reply is incomplete."
+            )
 
-        text = response.content[0].text
+        # Every text block, in order: reading content[0] alone silently dropped
+        # the rest of a reply the API split into several blocks.
+        text = "".join(
+            block.text
+            for block in response.content
+            if getattr(block, "type", "text") == "text"
+            and isinstance(getattr(block, "text", None), str)
+        )
         return ensure_translation_available(text)

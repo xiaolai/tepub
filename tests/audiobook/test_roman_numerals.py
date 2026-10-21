@@ -2,8 +2,26 @@
 
 from pathlib import Path
 
+import pytest
+
 from audiobook.preprocess import segment_to_text
 from state.models import ExtractMode, Segment, SegmentMetadata
+
+
+@pytest.mark.parametrize("element_type", ["h1", "h2", "h3", "h4", "h5", "h6"])
+def test_a_heading_converts_when_it_is_not_first_in_the_file(element_type):
+    """Every heading fixture used order_in_file=1, so the suite passed with
+    heading recognition removed."""
+    segment = Segment(
+        segment_id=f"heading-{element_type}",
+        file_path=Path("chapter.xhtml"),
+        xpath=f"/html/body/{element_type}",
+        extract_mode=ExtractMode.TEXT,
+        source_content="II",
+        metadata=SegmentMetadata(element_type=element_type, spine_index=1, order_in_file=7),
+    )
+
+    assert segment_to_text(segment, reader=None) == "Two"
 
 
 def test_standalone_roman_i_in_h1_heading():

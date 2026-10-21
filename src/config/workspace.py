@@ -85,8 +85,15 @@ def _with_book_config(settings: AppSettings) -> AppSettings:
             # it. The book's config sits above the environment, so a key or
             # address the book sets itself is kept: re-applying the variable
             # over it replaced the book's explicit base_url.
-            book_fields = updated.primary_provider.model_fields_set
-            updated = _prepare_provider_credentials(updated, keep=frozenset(book_fields))
+            #
+            # Taken from the file's raw block: after rebuilding the settings,
+            # every provider field is filled in and looks explicitly set, so a
+            # book that also sets skip_rules lost the environment defaults.
+            raw_provider = book_payload["primary_provider"]
+            keep: frozenset[str] = (
+                frozenset(raw_provider) if isinstance(raw_provider, dict) else frozenset()
+            )
+            updated = _prepare_provider_credentials(updated, keep=keep)
     # The prompt builder holds global state. Configured only when a book set a
     # prompt, the next book in the same process kept that prompt.
     configure_prompt(updated.prompt_preamble)
@@ -104,16 +111,37 @@ def with_book_workspace(settings: AppSettings, input_epub: Path) -> AppSettings:
     )
 
 
+def configured_artifact_paths(settings: AppSettings, workspace: Path) -> tuple[Path, Path]:
+    """The segments and state files a workspace uses, its own config.yaml applied.
+
+    Detection used fixed names, so a workspace whose own config renames its
+    artifacts was not recognised and another, empty one was created beside it.
+    """
+    from config.loader import ConfigFileError
+
+    candidate = settings.model_copy(
+        update={"work_root": workspace.parent, "work_dir": workspace}
+    )
+    try:
+        applied = _with_book_config(candidate)
+    except ConfigFileError:
+        # A broken config is reported when the workspace is used; it must not
+        # also hide the artifacts that identify it.
+        applied = candidate
+    return applied.segments_file, applied.state_file
+
+
 def with_override_root(settings: AppSettings, base_path: Path, input_epub: Path) -> AppSettings:
     """Override work directory with explicit path."""
     base_path = base_path.expanduser()
     if not base_path.is_absolute():
         base_path = Path.cwd() / base_path
 
-    # If path looks like a working directory, use it directly
-    segments_exists = (base_path / "segments.json").exists()
-    state_exists = (base_path / "state.json").exists()
-    if segments_exists or state_exists:
+    # If path looks like a working directory, use it directly. The artifact
+    # names are the configured ones, so a renamed segments or state file still
+    # identifies the workspace instead of producing a nested empty one.
+    segments_file, state_file = configured_artifact_paths(settings, base_path)
+    if segments_file.exists() or state_file.exists():
         return _with_book_config(
             settings.model_copy(update={"work_root": base_path.parent, "work_dir": base_path})
         )

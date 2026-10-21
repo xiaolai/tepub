@@ -47,6 +47,16 @@ def test_a_different_book_is_refused(tmp_path: Path, extracted) -> None:
         assert_same_book(segments, other)
 
 
+def test_a_replaced_book_at_the_same_path_is_refused(extracted) -> None:
+    """A shortcut that accepted an equal path would accept a book overwritten
+    in place, which is no longer the book the translations were made from."""
+    book, segments = extracted
+    build_epub(book, [("ch1.xhtml", "One", "<p>Replaced.</p>")])
+
+    with pytest.raises(ArtifactMismatchError):
+        assert_same_book(segments, book)
+
+
 def test_an_older_workspace_without_a_digest_still_compares_paths(
     tmp_path: Path, extracted
 ) -> None:

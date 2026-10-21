@@ -87,18 +87,15 @@ def resolve_bookless_workspace(settings: AppSettings) -> AppSettings:
     listed rather than guessed. The chosen workspace's config.yaml applies, as
     it does when the book is given.
     """
-    from config.workspace import _with_book_config
+    from config.workspace import _with_book_config, configured_artifact_paths
 
     root = settings.work_dir
-    # The artifact names as configured, relative to a workspace; fixed names
-    # missed renamed artifacts and took an artifact subfolder for a workspace.
-    names = [
-        path.relative_to(root) if path.is_relative_to(root) else Path(path.name)
-        for path in (settings.segments_file, settings.state_file)
-    ]
 
     def is_workspace(folder: Path) -> bool:
-        return any((folder / name).exists() for name in names)
+        # With the candidate's own config applied: a workspace may rename its
+        # artifact files, and the inherited names missed it.
+        segments_file, state_file = configured_artifact_paths(settings, folder)
+        return segments_file.exists() or state_file.exists()
 
     if is_workspace(root):
         return _with_book_config(settings)
@@ -248,13 +245,16 @@ def with_provider(settings: AppSettings, provider: str | None, model: str | None
     current = settings.primary_provider
     if provider is None or provider.lower() == current.name:
         config = current.model_copy(update={"model": model or current.model})
-    elif model is None:
+        # Keeping the provider keeps its resolved key and address. Reapplying
+        # the environment here replaced a book's explicit api_key or base_url,
+        # possibly switching account or server just because --model was given.
+        return settings.model_copy(update={"primary_provider": config})
+    if model is None:
         raise click.UsageError(
             f"--provider {provider} needs --model as well; the configured model "
             f"{current.model!r} belongs to {current.name}."
         )
-    else:
-        config = ProviderConfig(name=provider, model=model)
+    config = ProviderConfig(name=provider, model=model)
     # The environment's keys and server, such as OLLAMA_BASE_URL, were applied
     # to the configured provider only, so another one chosen here lost them.
     return _prepare_provider_credentials(settings.model_copy(update={"primary_provider": config}))

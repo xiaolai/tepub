@@ -32,7 +32,7 @@ def _make_segment(idx: int) -> Segment:
 def test_print_extraction_summary_outputs_tables(monkeypatch, tmp_path):
     settings = AppSettings(work_root=tmp_path, work_dir=tmp_path)
 
-    segments = [_make_segment(i) for i in range(3)]
+    segments = [_make_segment(i) for i in range(4)]
     document = SegmentsDocument(
         epub_path=tmp_path / "book.epub",
         generated_at="2025-09-26T00:00:00Z",
@@ -47,13 +47,19 @@ def test_print_extraction_summary_outputs_tables(monkeypatch, tmp_path):
     )
     save_segments(document, settings.segments_file)
 
+    statuses = {
+        0: SegmentStatus.COMPLETED,
+        1: SegmentStatus.PENDING,
+        2: SegmentStatus.PENDING,
+        3: SegmentStatus.PENDING,
+    }
     state = StateDocument(
         segments={
             segment.segment_id: TranslationRecord(
                 segment_id=segment.segment_id,
-                status=SegmentStatus.PENDING,
+                status=statuses[index],
             )
-            for segment in segments
+            for index, segment in enumerate(segments)
         }
     )
     save_state(state, settings.state_file)
@@ -66,4 +72,7 @@ def test_print_extraction_summary_outputs_tables(monkeypatch, tmp_path):
     output = test_console.export_text()
     assert "Extraction Summary" in output
     assert "Text/front.xhtml" in output
-    assert "Pending segments" in output
+    # Three pending units, but only the requested number of samples.
+    assert "Pending segments: 3 (showing up to 2)" in output
+    assert "seg-1" in output and "seg-2" in output
+    assert "seg-3" not in output

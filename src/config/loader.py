@@ -19,8 +19,12 @@ except Exception:  # pragma: no cover - optional dependency
 
 def _parse_env_file(path: Path) -> dict[str, str]:
     """Parse .env file into dictionary."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigFileError(f"Cannot read {path}: {exc}") from exc
     data: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -50,18 +54,23 @@ DOTENV_EXPORTABLE = frozenset(
 _ENV_VAR_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
-def _apply_env_file(path: Path) -> dict[str, Any]:
+def _apply_env_file(path: Path, written: set[str] | None = None) -> dict[str, Any]:
     """Read a .env file: export provider variables, return the settings it sets.
 
     API keys used to be merged into the settings payload, where they are not
     fields and were dropped, while the providers read them from the process
     environment. A variable already exported in the shell is left as it is.
-    Any other variable-shaped entry is ignored with a warning.
+    `written` names the variables earlier configuration files set during this
+    load: those a later file may replace, the shell's never. Any other
+    variable-shaped entry is ignored with a warning.
     """
     payload: dict[str, Any] = {}
     for key, value in _parse_env_file(path).items():
         if key in DOTENV_EXPORTABLE:
-            os.environ.setdefault(key, value)
+            if key not in os.environ or (written is not None and key in written):
+                os.environ[key] = value
+                if written is not None:
+                    written.add(key)
         elif _ENV_VAR_NAME.fullmatch(key):
             logger.warning(
                 "Ignoring %s in %s: a .env file may only set %s",
@@ -89,7 +98,10 @@ def _parse_yaml_file(path: Path) -> dict[str, Any]:
     """
     if not path.exists():
         return {}
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigFileError(f"Cannot read {path}: {exc}") from exc
     if yaml:
         if yaml.compose(text, Loader=yaml.SafeLoader) is None:
             return {}
@@ -185,9 +197,14 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     Returns:
         AppSettings instance with merged configuration
     """
+    written: set[str] = set()
+
+    def env_file(path: Path) -> dict[str, Any]:
+        return _apply_env_file(path, written)
+
     layers = [
         _read_layer("global", Path.home() / ".tepub" / "config.yaml", _parse_yaml_file),
-        _read_layer(".env", Path(".env"), _apply_env_file),
+        _read_layer(".env", Path(".env"), env_file),
         _read_layer("./config.yaml", Path("config.yaml"), _parse_yaml_file),
     ]
     payload: dict[str, Any] = {}
@@ -204,7 +221,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         config_path = expand_user(config_path)
         is_yaml = config_path.suffix.lower() in {".yaml", ".yml"}
         layer = _read_layer(
-            "--config", config_path, _parse_yaml_file if is_yaml else _apply_env_file, always=True
+            "--config", config_path, _parse_yaml_file if is_yaml else env_file, always=True
         )
         layers.append(layer)
         payload.update(layer.payload)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from config.models import AppSettings
@@ -10,11 +11,11 @@ def _yaml_scalar(value: str) -> str:
 
     EPUB-derived paths and titles were interpolated raw, so a filename
     containing ": ", a leading "-", "#", or a quote produced a per-book config
-    that failed to parse or silently parsed as something else.
+    that failed to parse or silently parsed as something else. A JSON string is
+    a valid double-quoted YAML scalar, and its escapes preserve newlines and
+    YAML's line separators instead of rewriting them as spaces.
     """
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    escaped = escaped.replace("\n", " ").replace("\r", " ")
-    return f'"{escaped}"'
+    return json.dumps(str(value), ensure_ascii=True)
 
 
 def _yaml_comment(value: str) -> str:
@@ -45,6 +46,9 @@ def create_book_config_template(
 
     # Extract metadata with defaults
     meta = metadata or {}
+    # The name is interpolated into the header comment. A newline in it would
+    # end the comment and let the rest of the filename become live YAML.
+    epub_name = _yaml_comment(epub_name)
     # Collapsed to a single line: these are interpolated into a `prompt_preamble: |`
     # block scalar, where an embedded newline breaks the block's indentation and
     # the rest of the prompt is reparsed as top-level YAML.
@@ -53,23 +57,13 @@ def create_book_config_template(
     publisher = _yaml_comment(meta.get("publisher") or "Unknown")
     year_of_publication = _yaml_comment(meta.get("year") or "Unknown")
 
-    # Generate US English voice list
-    voice_lines = []
-    try:
-        from audiobook.voices import list_voices_for_provider
-
-        us_voices = list_voices_for_provider("edge", "en-US")
-        us_voices = sorted(us_voices, key=lambda v: v.get("ShortName", ""))
-        for voice in us_voices:
-            name = voice.get("ShortName", "")
-            gender = voice.get("Gender", "")
-            voice_lines.append(f"# audiobook_voice: {name:<30}  # {gender}")
-    except Exception:
-        # Fallback if voice listing fails
-        voice_lines = [
-            "# audiobook_voice: en-US-GuyNeural            # Male",
-            "# audiobook_voice: en-US-JennyNeural          # Female",
-        ]
+    # Bundled examples: listing the live Edge voices fetched Microsoft's list
+    # synchronously, and an unreachable endpoint stalled every extraction for
+    # minutes just to fill comments.
+    voice_lines = [
+        "# audiobook_voice: en-US-GuyNeural            # Male",
+        "# audiobook_voice: en-US-JennyNeural          # Female",
+    ]
 
     voices_section = "\n".join(voice_lines)
 
@@ -322,7 +316,7 @@ prompt_preamble: |
 # - OpenAI tts-1-hd: ~$22.50
 
 # --- Advanced Edge TTS Voice Selection ---
-# Full list of US English voices available:
+# Example US English voices:
 {voices_section}
 
 # Cover image (relative to this directory or absolute path)

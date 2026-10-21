@@ -215,13 +215,15 @@ class TestTextDigests:
         assert record.status == AudioSegmentStatus.PENDING
         assert record.audio_path is None
 
-    def test_state_without_digest_loads_and_is_backfilled(self, tmp_path):
+    def test_state_without_digest_is_synthesised_again(self, tmp_path):
+        """Nothing proves old audio was made from the current text; backfilling
+        the current digest kept stale narration after an edit."""
         path = self._state(tmp_path, None)
         payload = path.read_text(encoding="utf-8").replace('"text_sha256": null,', "")
         path.write_text(payload, encoding="utf-8")
         assert "text_sha256" not in path.read_text(encoding="utf-8")
 
-        assert apply_text_digests(path, {"s1": "aaa"}) == []
+        assert apply_text_digests(path, {"s1": "aaa"}) == ["s1"]
         record = load_state(path).segments["s1"]
-        assert record.status == AudioSegmentStatus.COMPLETED
-        assert record.text_sha256 == "aaa"
+        assert record.status == AudioSegmentStatus.PENDING
+        assert record.text_sha256 is None

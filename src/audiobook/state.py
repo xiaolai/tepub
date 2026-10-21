@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,6 +61,85 @@ def save_state(state: AudioStateDocument, path: Path) -> None:
     lock = _get_lock(path)
     with lock:
         save_generic_state(state, path)
+
+
+class AudioStateWriter:
+    """The audio state held in memory for a run, written in batches.
+
+    Recording a result used to read and rewrite the whole document, and a
+    success then rewrote it again to clear the failure counter. The document
+    grows with every segment, so a long book did O(segments) JSON work per
+    result on the main thread. Changes are flushed every ``flush_every``
+    results or ``flush_interval`` seconds, and always when the block exits —
+    success, failure or interrupt alike.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        flush_every: int = 25,
+        flush_interval: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.path = path
+        self.doc = load_state(path)
+        self._flush_every = flush_every
+        self._flush_interval = flush_interval
+        self._clock = clock
+        self._dirty = 0
+        self._last_flush = clock()
+
+    def __enter__(self) -> AudioStateWriter:
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.flush()
+
+    def mark(
+        self, segment_id: str, status: AudioSegmentStatus, **fields
+    ) -> AudioSegmentState:
+        record = self.doc.segments.get(segment_id)
+        if record is None:
+            record = AudioSegmentState(segment_id=segment_id)
+        payload = record.model_dump()
+        payload.update(fields)
+        payload["status"] = status
+        payload["updated_at"] = datetime.now(timezone.utc)
+        updated = AudioSegmentState.model_validate(payload)
+        self.doc.segments[segment_id] = updated
+        self._changed()
+        return updated
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self.doc.consecutive_failures
+
+    @consecutive_failures.setter
+    def consecutive_failures(self, count: int) -> None:
+        if count != self.doc.consecutive_failures:
+            self.doc.consecutive_failures = count
+            self._changed()
+
+    def set_cooldown(self, until: datetime | None) -> None:
+        self.doc.cooldown_until = until
+        # A cooldown is long; make it visible on disk straight away.
+        self._changed()
+        self.flush()
+
+    def flush(self) -> None:
+        if self._dirty:
+            save_state(self.doc, self.path)
+            self._dirty = 0
+        self._last_flush = self._clock()
+
+    def _changed(self) -> None:
+        self._dirty += 1
+        if (
+            self._dirty >= self._flush_every
+            or self._clock() - self._last_flush >= self._flush_interval
+        ):
+            self.flush()
 
 
 #: Session settings that change the rendered audio. A change to any of them makes
@@ -166,9 +247,9 @@ def apply_text_digests(state_path: Path, digests: dict[str, str]) -> list[str]:
 
     A completed segment whose recorded digest differs from ``digests`` is reset
     to pending, so its audio is synthesised again. One with no recorded digest
-    predates the field: there is no evidence its text changed, and treating it
-    as stale would re-synthesise (and, on a cloud provider, pay for) every
-    finished audiobook once, so the current digest is recorded instead.
+    predates the field: nothing proves its audio was made from the current
+    text, and backfilling the current digest kept stale narration after an
+    edit, marked as current. It is re-synthesised once and stamped from then on.
     """
     lock = _get_lock(state_path)
     with lock:
@@ -179,10 +260,7 @@ def apply_text_digests(state_path: Path, digests: dict[str, str]) -> list[str]:
             segment = state.segments.get(seg_id)
             if segment is None or segment.status != AudioSegmentStatus.COMPLETED:
                 continue
-            if segment.text_sha256 is None:
-                segment.text_sha256 = digest
-                changed = True
-            elif segment.text_sha256 != digest:
+            if segment.text_sha256 != digest:
                 segment.status = AudioSegmentStatus.PENDING
                 segment.audio_path = None
                 segment.duration_seconds = None
@@ -233,19 +311,6 @@ def iter_segments_by_status(state: AudioStateDocument, status: AudioSegmentStatu
     for seg in state.segments.values():
         if seg.status == status:
             yield seg
-
-
-def get_or_create_segment(state_path: Path, segment_id: str) -> AudioSegmentState:
-    lock = _get_lock(state_path)
-    with lock:
-        state = load_generic_state(state_path, AudioStateDocument)
-        existing = state.segments.get(segment_id)
-        if existing:
-            return existing
-        new_seg = AudioSegmentState(segment_id=segment_id)
-        state.segments[segment_id] = new_seg
-        save_generic_state(state, state_path)
-        return new_seg
 
 
 def set_consecutive_failures(state_path: Path, count: int) -> None:

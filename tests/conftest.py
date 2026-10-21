@@ -25,16 +25,21 @@ PROVIDER_ENV_VARS = (
 
 
 def _find_punkt_data() -> Path | None:
-    """Locate NLTK data holding the English Punkt tables, without downloading.
+    """Locate NLTK data holding both English Punkt resources, without downloading.
 
-    The sentence splitter needs ``tokenizers/punkt_tab/english``. A test must
-    never fetch it from the network, so the data is found where a developer or
-    CI already put it, and NLTK_DATA is pinned to that place before HOME moves.
+    The sentence splitter loads ``tokenizers/punkt/<lang>.pickle`` and NLTK 3.9
+    resolves it through ``tokenizers/punkt_tab/english``. Requiring only the
+    latter enabled these tests with the former missing, and ensure_punkt() then
+    tried to download it mid-run. A test must never fetch data from the
+    network, so the data is found where a developer or CI already put it, and
+    NLTK_DATA is pinned to that place before HOME moves.
     """
     candidates = [Path(p) for p in os.environ.get("NLTK_DATA", "").split(os.pathsep) if p]
     candidates.append(REAL_HOME / "nltk_data")
     for base in candidates:
-        if (base / "tokenizers" / "punkt_tab" / "english").is_dir():
+        if (base / "tokenizers" / "punkt" / "english.pickle").exists() and (
+            base / "tokenizers" / "punkt_tab" / "english"
+        ).is_dir():
             return base
     return None
 
@@ -46,7 +51,8 @@ if PUNKT_DATA is not None:
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
-        "markers", "needs_punkt: requires NLTK's punkt_tab data, which tests never download"
+        "markers",
+        "needs_punkt: requires NLTK's punkt and punkt_tab data, which tests never download",
     )
     config.addinivalue_line(
         "markers", "live: calls a real model server named by TEPUB_LIVE_BASE_URL; opt-in only"
@@ -60,7 +66,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if PUNKT_DATA is not None:
         return
     skip = pytest.mark.skip(
-        reason="NLTK punkt_tab data not found; run: python -m nltk.downloader punkt_tab"
+        reason="NLTK punkt data not found; run: python -m nltk.downloader punkt punkt_tab"
     )
     for item in items:
         if "needs_punkt" in item.keywords:
@@ -78,12 +84,26 @@ def isolated_machine(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.T
     home = tmp_path_factory.mktemp("home")
     work = tmp_path_factory.mktemp("cwd")
     monkeypatch.setenv("HOME", str(home))
+    # Path.home() reads USERPROFILE on Windows, so HOME alone left it pointing
+    # at the real profile and configuration tests could write user settings.
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.chdir(work)
     for name in PROVIDER_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     for name in [key for key in os.environ if key.startswith("TEPUB_")]:
         monkeypatch.delenv(name, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_nltk_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing NLTK resource skips its tests; nothing is fetched mid-run."""
+    import nltk
+
+    def refuse(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("a test tried to download NLTK data")
+
+    monkeypatch.setattr(nltk, "download", refuse)
 
 
 @pytest.fixture(autouse=True)

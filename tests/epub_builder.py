@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path, PurePosixPath
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, quoteattr
 
 CONTAINER = """<?xml version="1.0" encoding="utf-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -29,19 +29,20 @@ MEDIA_TYPES = {
 
 def xhtml(title: str, body: str, *, version: int = 3, lang: str = "en", css: str | None = None) -> str:
     """Wrap body markup in a complete XHTML content document."""
-    link = f'<link rel="stylesheet" type="text/css" href="{escape(css)}"/>' if css else ""
+    link = f'<link rel="stylesheet" type="text/css" href={quoteattr(css)}/>' if css else ""
     if version == 2:
         head = (
             '<?xml version="1.0" encoding="utf-8"?>\n'
             '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" '
             '"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n'
-            f'<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{lang}">\n'
+            f'<html xmlns="http://www.w3.org/1999/xhtml" xml:lang={quoteattr(lang)}>\n'
         )
     else:
         head = (
             '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
             '<html xmlns="http://www.w3.org/1999/xhtml" '
-            f'xmlns:epub="http://www.idpf.org/2007/ops" lang="{lang}" xml:lang="{lang}">\n'
+            f'xmlns:epub="http://www.idpf.org/2007/ops" lang={quoteattr(lang)} '
+            f'xml:lang={quoteattr(lang)}>\n'
         )
     return f"{head}<head><title>{escape(title)}</title>{link}</head>\n<body>\n{body}\n</body>\n</html>\n"
 
@@ -91,14 +92,15 @@ def build_epub(
         manifest.append('<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
     for index, name in enumerate(sorted(resources), start=1):
         suffix = PurePosixPath(name).suffix
-        manifest.append(f'<item id="r{index}" href="{escape(name)}" media-type="{MEDIA_TYPES[suffix]}"/>')
+        manifest.append(f'<item id="r{index}" href={quoteattr(name)} media-type="{MEDIA_TYPES[suffix]}"/>')
 
     spine: list[str] = ['<itemref idref="nav"/>'] if nav_in_spine and version == 3 else []
     toc_entries: list[tuple[str, str]] = []
     for index, (name, chapter_title, _body) in enumerate(chapters, start=1):
-        props = f' properties="{properties[name]}"' if name in properties else ""
+        props = f" properties={quoteattr(properties[name])}" if name in properties else ""
         manifest.append(
-            f'<item id="c{index}" href="{escape(name)}" media-type="application/xhtml+xml"{props}/>'
+            f'<item id="c{index}" href={quoteattr(name)} '
+            f'media-type="application/xhtml+xml"{props}/>'
         )
         spine.append(f'<itemref idref="c{index}"/>')
         if chapter_title:  # an empty title keeps a chapter out of the TOC
@@ -111,7 +113,11 @@ def build_epub(
             f'<dc:language>{lang}</dc:language>'
             '<meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>'
         )
-        spine_open = "<spine" + (f' page-progression-direction="{page_direction}"' if page_direction else "") + ">"
+        spine_open = "<spine" + (
+            f" page-progression-direction={quoteattr(page_direction)}"
+            if page_direction
+            else ""
+        ) + ">"
     else:
         metadata = (
             f'<dc:identifier id="uid" opf:scheme="uuid">{uid}</dc:identifier>'
@@ -134,7 +140,7 @@ def build_epub(
     files: dict[str, str | bytes] = {"content.opf": opf}
     if version == 3:
         items = "".join(
-            f'<li><a href="{escape(name)}">{escape(t)}</a></li>' for name, t in toc_entries
+            f'<li><a href={quoteattr(name)}>{escape(t)}</a></li>' for name, t in toc_entries
         )
         files["nav.xhtml"] = xhtml(
             "Contents", f'<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>{items}</ol></nav>', lang=lang
@@ -142,7 +148,7 @@ def build_epub(
     else:
         points = "".join(
             f'<navPoint id="n{i}" playOrder="{i}"><navLabel><text>{escape(t)}</text></navLabel>'
-            f'<content src="{escape(name)}"/></navPoint>'
+            f'<content src={quoteattr(name)}/></navPoint>'
             for i, (name, t) in enumerate(toc_entries, start=1)
         )
         files["toc.ncx"] = (

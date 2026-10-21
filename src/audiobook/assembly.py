@@ -322,7 +322,19 @@ def assemble_audiobook(
     with progress:
         combine_task = progress.add_task("chapter-mix", total=len(sorted_chapters))
         for chapter_number, (file_path, segments) in enumerate(sorted_chapters, start=1):
-            title = _chapter_title(file_path, toc_map, doc_titles, custom_chapters_map)
+            custom_title = custom_chapters_map.get(file_path)
+            if custom_title is None:
+                # The chapter's governing TOC document (often a nav or title
+                # page) may have no segments of its own, while the preview wrote
+                # chapters.yaml with the documents the chapter does include.
+                for segment in segments:
+                    custom_title = custom_chapters_map.get(segment.file_path.as_posix())
+                    if custom_title is not None:
+                        break
+            if custom_title is not None:
+                title = custom_title
+            else:
+                title = _chapter_title(file_path, toc_map, doc_titles)
             chapter_path = chapters_dir / f"{chapter_number:03d}-{_file_slug(title)}.m4a"
             # A TOC chapter can span several spine documents; order_in_file
             # alone interleaved their paragraphs.

@@ -116,7 +116,7 @@ def validate(
     yaml_data = _read_config_file(config_path)
     _warn_unknown_keys(yaml_data)
     errors_by_field = _settings_errors(yaml_data, base)
-    for message in _voice_errors(yaml_data):
+    for message in _voice_errors(yaml_data, base):
         errors_by_field.setdefault("audiobook_voice", []).append(message)
     valid_count, invalid_count = _print_field_tree(yaml_data, errors_by_field)
     success = not errors_by_field
@@ -194,15 +194,32 @@ def _settings_errors(yaml_data: dict, base: AppSettings | None) -> dict[str, lis
     return errors_by_field
 
 
-def _voice_errors(yaml_data: dict) -> list[str]:
-    """Whether audiobook_voice names a voice of its provider.
+def _voice_errors(yaml_data: dict, base: AppSettings | None) -> list[str]:
+    """Whether audiobook_voice names a voice of the provider in effect.
+
+    The voice and provider are taken from the merged settings: a book that sets
+    only `audiobook_voice: nova` inherits its provider, and checking it against
+    the file's default "edge" rejected a valid OpenAI voice.
 
     When the voices cannot be listed, that is a warning, not a failure.
     """
-    voice_value = yaml_data.get("audiobook_voice")
+    if "audiobook_voice" not in yaml_data and "audiobook_tts_provider" not in yaml_data:
+        return []
+    if "audiobook_voice" in yaml_data:
+        voice_value = yaml_data["audiobook_voice"]
+    elif base is not None:
+        voice_value = base.audiobook_voice
+    else:
+        voice_value = None
     if not voice_value:
         return []
-    provider = yaml_data.get("audiobook_tts_provider", "edge")
+    if "audiobook_tts_provider" in yaml_data:
+        provider = yaml_data["audiobook_tts_provider"]
+    elif base is not None:
+        provider = base.audiobook_tts_provider
+    else:
+        provider = "edge"
+    provider = str(provider or "edge").strip().lower()
     try:
         from audiobook.voices import list_voices_for_provider
 
@@ -411,8 +428,10 @@ def _regenerate_book_config(settings: AppSettings, input_epub: Path, config_path
         create_book_config_template(
             settings.work_dir, input_epub.name, metadata, segments_doc, input_epub
         )
-    except Exception:
+    except BaseException:
         # Restore the previous config rather than leaving the book unconfigured.
+        # BaseException, not Exception: Ctrl-C after the rename also bypassed
+        # this and left config.yaml absent.
         rollback_path.replace(config_path)
         raise
     rollback_path.unlink()

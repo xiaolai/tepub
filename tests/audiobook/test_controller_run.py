@@ -27,7 +27,7 @@ from audiobook.controller import (
 )
 from audiobook.models import AudioSegmentStatus
 from audiobook.renderer import CouldntEncodeError, SegmentRenderer
-from audiobook.state import load_state, mark_status, save_state
+from audiobook.state import AudioStateWriter, load_state, mark_status, save_state
 from audiobook.tts import TTSEngine
 from config import AppSettings
 from exceptions import WorkspaceBusyError
@@ -44,12 +44,22 @@ class FakeRenderer:
     fail: set[str] = set()
     block: dict[str, threading.Event] = {}
     raises: dict[str, Exception] = {}
+    # All workers must reach render_segment before any of them can finish; the
+    # executor may otherwise run three failures before the fourth task starts.
+    barrier: threading.Barrier | None = None
+    _barrier_entered: set[str] = set()
 
     def __init__(self, engine, sentence_pause_range, epub_reader=None) -> None:
         pass
 
     def render_segment(self, segment_id, sentences, output_dir, stop=None):
         FakeRenderer.calls.append(segment_id)
+        if (
+            FakeRenderer.barrier is not None
+            and segment_id not in FakeRenderer._barrier_entered
+        ):
+            FakeRenderer._barrier_entered.add(segment_id)
+            assert FakeRenderer.barrier.wait(10)
         gate = FakeRenderer.block.get(segment_id)
         if gate is not None:
             assert gate.wait(10)
@@ -69,6 +79,8 @@ def book(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     FakeRenderer.fail = set()
     FakeRenderer.block = {}
     FakeRenderer.raises = {}
+    FakeRenderer.barrier = None
+    FakeRenderer._barrier_entered = set()
     engines: list[dict] = []
     assembled: list[set[str]] = []
 
@@ -84,6 +96,11 @@ def book(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(controller, "SegmentRenderer", FakeRenderer)
     monkeypatch.setattr(controller, "assemble_audiobook", fake_assemble)
     monkeypatch.setattr(controller, "RETRY_DELAY_SECONDS", 0)
+    # Sentence boundaries do not matter to what these tests assert, and real
+    # splitting needs Punkt data a fresh (possibly offline) machine may lack.
+    monkeypatch.setattr(
+        controller, "split_sentences", lambda text, language=None: [text.strip()]
+    )
 
     epub = build_epub(
         tmp_path / "book.epub",
@@ -170,7 +187,9 @@ def test_edited_text_at_the_same_position_is_resynthesised(book) -> None:
     assert FakeRenderer.calls == [book.ids[0]]
 
 
-def test_audio_from_before_text_digests_is_kept_and_backfilled(book) -> None:
+def test_audio_from_before_text_digests_is_synthesised_again(book) -> None:
+    """Nothing proves old audio was made from the current text, so the current
+    digest is not stamped onto it; it is rendered once more instead."""
     book.runner().run()
     path = _state_path(book)
     digests = {seg_id: record.text_sha256 for seg_id, record in load_state(path).segments.items()}
@@ -183,7 +202,7 @@ def test_audio_from_before_text_digests_is_kept_and_backfilled(book) -> None:
 
     book.runner().run()
 
-    assert FakeRenderer.calls == []
+    assert sorted(FakeRenderer.calls) == sorted(book.ids)
     backfilled = load_state(path).segments
     assert {seg_id: record.text_sha256 for seg_id, record in backfilled.items()} == digests
 
@@ -283,10 +302,13 @@ def test_results_finishing_during_cooldown_are_saved_before_waiting(
     FakeRenderer.fail = set(book.ids[:3])
     cooldown_began = threading.Event()
     FakeRenderer.block = {book.ids[3]: cooldown_began}
-    real_set_cooldown = controller.set_cooldown
+    # Without this, the three failures can all be recorded before the fourth
+    # task's thread starts, so it is correctly cancelled and stays pending.
+    FakeRenderer.barrier = threading.Barrier(4)
+    real_set_cooldown = AudioStateWriter.set_cooldown
 
-    def set_cooldown(path, until):
-        real_set_cooldown(path, until)
+    def set_cooldown(self, until):
+        real_set_cooldown(self, until)
         if until is not None:
             cooldown_began.set()
 
@@ -295,7 +317,7 @@ def test_results_finishing_during_cooldown_are_saved_before_waiting(
     def wait_out(self, until, on_tick=None):
         seen_at_wait.append(load_state(self.state_path).segments[book.ids[3]].status)
 
-    monkeypatch.setattr(controller, "set_cooldown", set_cooldown)
+    monkeypatch.setattr(AudioStateWriter, "set_cooldown", set_cooldown)
     monkeypatch.setattr(AudiobookRunner, "_wait_out_cooldown", wait_out)
 
     with pytest.raises(AudiobookIncompleteError):
@@ -549,3 +571,35 @@ def test_an_edge_engine_refuses_prosody_it_would_fail_on(rate, volume) -> None:
 
     with pytest.raises(InvalidProsodyError):
         create_tts_engine("edge", "en-US-GuyNeural", rate=rate, volume=volume)
+
+
+def test_an_openai_engine_with_no_model_uses_the_default(monkeypatch) -> None:
+    """model=None overrode the engine's default and sent a null model."""
+    from audiobook import tts
+
+    class Client:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+    monkeypatch.setattr(tts, "OpenAI", Client)
+
+    engine = tts.create_tts_engine("openai", "nova", model=None, api_key="test-key")
+
+    assert engine.model == "tts-1"
+
+
+def test_results_are_persisted_in_batches(book, monkeypatch) -> None:
+    """Every result used to read and rewrite the whole state document twice."""
+    writes: list[int] = []
+    real = save_state
+
+    def counted(state, path):
+        writes.append(1)
+        real(state, path)
+
+    monkeypatch.setattr("audiobook.state.save_state", counted)
+
+    book.runner().run()
+
+    # Four results are not four rewrites of the growing document.
+    assert len(writes) <= 3

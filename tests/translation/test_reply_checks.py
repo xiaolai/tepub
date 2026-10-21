@@ -125,6 +125,59 @@ def test_a_complete_openai_reply_passes(monkeypatch) -> None:
     assert _provider("openai").translate(_segment(), "fr", "en") == "Fine."
 
 
+def test_openai_keeps_every_output_text_part(monkeypatch) -> None:
+    """Only the first part of a reply split across output items was kept."""
+    body = {
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "skip"}]},
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "First. "},
+                    {"type": "output_text", "text": "Second."},
+                ],
+            },
+        ],
+    }
+    monkeypatch.setattr(openai_module, "post_json", lambda *a, **k: body)
+    assert _provider("openai").translate(_segment(), "fr", "en") == "First. Second."
+
+
+def test_grok_keeps_every_content_part(monkeypatch) -> None:
+    body = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": [{"text": "First. "}, {"text": "Second."}]},
+            }
+        ]
+    }
+    monkeypatch.setattr(grok_module, "post_json", lambda *a, **k: body)
+    assert _provider("grok").translate(
+        _segment(), source_language="fr", target_language="en"
+    ) == "First. Second."
+
+
+def test_anthropic_keeps_every_text_block() -> None:
+    provider = _provider("anthropic")
+    provider._client = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=lambda **_kwargs: SimpleNamespace(
+                content=[
+                    SimpleNamespace(type="text", text="First. "),
+                    SimpleNamespace(type="thinking", thinking="skip"),
+                    SimpleNamespace(type="text", text="Second."),
+                ],
+                stop_reason="end_turn",
+            )
+        )
+    )
+    assert provider.translate(_segment(), source_language="fr", target_language="en") == (
+        "First. Second."
+    )
+
+
 def _html_segment() -> Segment:
     return Segment(
         segment_id="h1",

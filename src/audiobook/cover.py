@@ -81,6 +81,7 @@ def _prepare_cover(
     if explicit_cover:
         try:
             image = Image.open(explicit_cover)
+            image.load()
         except OSError as exc:
             # Returning None here dropped a cover the user asked for and wrote
             # the book without one.
@@ -95,6 +96,10 @@ def _prepare_cover(
             if not cover_item:
                 return None
             image = Image.open(BytesIO(reader.read_bytes(cover_item)))
+            # Image.open reads only the headers. An image with valid headers and
+            # truncated pixel data raised during conversion or saving, outside
+            # this guard, and aborted assembly.
+            image.load()
             original_format = image.format
         except Exception:
             # Detected art is a guess; a book whose images PIL cannot read
@@ -102,8 +107,11 @@ def _prepare_cover(
             return None
 
     with image:
-        # Only convert if necessary
-        if image.mode not in ("RGB", "RGBA"):
+        # Only convert if necessary. A palette image with transparency turns
+        # opaque when converted to RGB, exposing the colours behind it.
+        if image.mode == "P" and "transparency" in image.info:
+            image = image.convert("RGBA")
+        elif image.mode not in ("RGB", "RGBA"):
             image = image.convert("RGB")
 
         width, height = image.size

@@ -105,9 +105,13 @@ class ChapterInfo:
     def from_dict(data: dict) -> ChapterInfo:
         """Create from dictionary loaded from YAML."""
         title = data["title"]
+        # A null or blank title reached title assembly, where _slugify(None)
+        # raised AttributeError.
+        if title is None or (isinstance(title, str) and not title.strip()):
+            raise ValueError("Chapter title is missing or empty; put text in the title field")
         # YAML reads `title: 1984` as a number and `title: No` as a boolean;
         # either one used to fail later with an AttributeError on .strip().
-        if title is not None and not isinstance(title, str):
+        if not isinstance(title, str):
             raise ValueError(
                 f"Chapter title {title!r} is not text; put it in quotes, e.g. title: '{title}'"
             )
@@ -208,6 +212,15 @@ def extract_chapters_from_mp4(mp4_path: Path) -> tuple[list[ChapterInfo], dict]:
     return chapters, metadata
 
 
+def _comment(text: str) -> str:
+    """``text`` as a YAML comment, one marker per physical line.
+
+    Metadata was interpolated into a comment as-is; a newline in a title or
+    source filename ended the comment and left the rest as document content.
+    """
+    return "".join(f"# {line}\n" for line in text.splitlines() or [""])
+
+
 def write_chapters_yaml(
     chapters: list[ChapterInfo], metadata: dict, output_path: Path
 ) -> None:
@@ -228,12 +241,13 @@ def write_chapters_yaml(
 
     with open(output_path, "w", encoding="utf-8") as f:
         # Header comments are not part of the document body, so they are safe to
-        # write directly — YAML ignores them on read.
-        f.write("# Chapter information for audiobook\n")
-        f.write(f"# Source: {metadata.get('source', 'unknown')}\n")
-        f.write(f"# Generated: {metadata.get('generated_at', 'unknown')}\n")
+        # write directly — YAML ignores them on read. Every line is prefixed so
+        # metadata cannot end the comment.
+        f.write(_comment("Chapter information for audiobook"))
+        f.write(_comment(f"Source: {metadata.get('source', 'unknown')}"))
+        f.write(_comment(f"Generated: {metadata.get('generated_at', 'unknown')}"))
         if metadata.get("mode") == "preview":
-            f.write(f"# {metadata.get('note', '')}\n")
+            f.write(_comment(metadata.get("note", "")))
         f.write("\n")
 
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)

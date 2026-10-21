@@ -21,8 +21,9 @@ class ReplyRejectedError(ProviderError):
 
 
 # Statuses after which every remaining segment would fail the same way: a key the
-# provider rejects, or a model or endpoint that does not exist.
-FATAL_STATUSES = frozenset({401, 403, 404})
+# provider rejects, a model or endpoint that does not exist, or DeepL's 456,
+# whose character quota no wait in this run replenishes.
+FATAL_STATUSES = frozenset({401, 403, 404, 456})
 
 # Statuses that mean "try again later": rate limits, timeouts, overloaded or
 # failing servers (Anthropic reports overload as 529).
@@ -102,6 +103,7 @@ class BaseProvider(abc.ABC):
     def preflight(self) -> None:
         """Raise ProviderFatalError if the run cannot work at all; checked once
         before any segment is sent."""
+        return None
 
     @abc.abstractmethod
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:

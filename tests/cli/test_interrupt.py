@@ -7,6 +7,7 @@ those threads at exit. The audiobook command also exited 0 when interrupted.
 
 from __future__ import annotations
 
+import select
 import signal
 import subprocess
 import sys
@@ -29,6 +30,14 @@ def test_ctrl_c_exits_promptly_with_130_and_saves(tmp_path: Path) -> None:
         text=True,
     )
     try:
+        # A blocking readline had no timeout: a child stalled before READY
+        # hung the suite instead of failing here.
+        ready, _, _ = select.select([proc.stdout], [], [], 20)
+        if not ready:
+            proc.kill()
+            proc.wait()
+            stacks = errors.read_text(encoding="utf-8", errors="replace")
+            raise AssertionError(f"no READY 20 s after start; stderr:\n{stacks[-6000:]}")
         assert proc.stdout.readline().strip() == "READY"
         sent = time.monotonic()
         proc.send_signal(signal.SIGINT)

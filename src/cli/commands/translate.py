@@ -52,6 +52,18 @@ def translate(
         # A damaged state file is reported as such, not as a traceback from
         # the plan or the run that read it.
         safe_load_state(settings.state_file, StateDocument, "translation")
+        # Schema validity is not enough: a record completed from different
+        # source text used to be resumed and exported as this unit's
+        # translation. The extraction stamps and checks a digest for exactly
+        # this case; refuse rather than silently reuse it.
+        from cli.core import describe_pipeline_artifacts
+
+        reusable, reason = describe_pipeline_artifacts(settings, input_epub)
+        if not reusable:
+            raise click.ClickException(
+                f"cannot resume this workspace: {reason}. "
+                "Re-run `tepub extract` to rebuild it."
+            )
     settings = with_provider(settings, provider, model)
 
     settings, source_code, target_code = with_languages(settings, source_language, target_language)

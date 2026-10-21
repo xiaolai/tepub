@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from epub_io.path_utils import normalize_epub_href
+import pytest
+
+from exceptions import UnsafeArchiveMemberError
+from epub_io.path_utils import normalize_epub_href, safe_relative_member
 
 
 def test_normalize_empty_href():
@@ -91,6 +94,12 @@ def test_normalize_traversal_outside_root():
     assert result is None
 
 
+def test_normalize_traversal_to_the_root_parent():
+    """The normalized path is exactly "..", which the prefix test missed."""
+    result = normalize_epub_href(Path("text/chapter1.xhtml"), "../..")
+    assert result is None
+
+
 def test_normalize_traversal_outside_root_complex():
     """Test rejection of complex traversal attempts."""
     result = normalize_epub_href(
@@ -171,3 +180,15 @@ def test_normalize_anchor_fragment():
     result = normalize_epub_href(Path("text/chapter1.xhtml"), "chapter2.xhtml#section1")
     # Fragments should be preserved
     assert "chapter2.xhtml#section1" in result
+
+
+def test_a_drive_letter_anywhere_is_rejected(tmp_path: Path) -> None:
+    """On Windows, D: joined with safe/C:/x switches drives and escapes the root."""
+    with pytest.raises(UnsafeArchiveMemberError):
+        safe_relative_member("safe/C:/outside.txt", tmp_path / "book.epub")
+
+
+def test_an_ordinary_nested_path_is_accepted(tmp_path: Path) -> None:
+    assert safe_relative_member("safe/inside.txt", tmp_path / "book.epub") == PurePosixPath(
+        "safe/inside.txt"
+    )

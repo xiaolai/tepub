@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from config import AppSettings
+from epub_io.container import EpubStructureError
 from epub_io.reader import MAX_EPUB_SIZE, EpubReader
+from tests.epub_builder import build_epub
 
 
 def test_epub_reader_rejects_missing_file(tmp_path):
@@ -30,28 +34,20 @@ def test_epub_reader_rejects_oversized_file(tmp_path):
 
 
 def test_epub_reader_accepts_reasonable_size(tmp_path):
-    """Test that EpubReader accepts files within size limit."""
+    """A book within the size limit opens; the check must not reject it."""
     settings = AppSettings(work_dir=tmp_path)
-    small_epub = tmp_path / "small.epub"
+    book = build_epub(tmp_path / "small.epub", [("c.xhtml", "C", "<p>One.</p>")])
 
-    # Create a minimal valid ZIP file (EPUB is a ZIP)
-    # This will fail to load as an EPUB, but should pass size validation
-    with open(small_epub, "wb") as f:
-        # Minimal ZIP file structure
-        f.write(b"PK\x03\x04")  # Local file header signature
-        f.write(b"\x00" * 26)  # Rest of header (26 bytes)
-        # Central directory
-        f.write(b"PK\x01\x02")  # Central directory header
-        f.write(b"\x00" * 42)  # Rest of CD header
-        # End of central directory
-        f.write(b"PK\x05\x06")  # EOCD signature
-        f.write(b"\x00" * 18)  # Rest of EOCD
+    reader = EpubReader(book, settings)
 
-    # This will fail loading the book, but size validation should pass
-    # We're only testing size validation here
-    try:
-        EpubReader(small_epub, settings)
-    except Exception as e:
-        # Expected: will fail to load as valid EPUB
-        # But should not be a "file too large" error
-        assert "too large" not in str(e).lower()
+    assert [document.path for document in reader.documents()] == [Path("c.xhtml")]
+
+
+def test_epub_reader_rejects_a_file_that_is_not_a_zip(tmp_path):
+    """Malformed archives fail with the structure error, not a size error."""
+    settings = AppSettings(work_dir=tmp_path)
+    broken = tmp_path / "broken.epub"
+    broken.write_bytes(b"not a zip archive")
+
+    with pytest.raises(EpubStructureError, match="not an EPUB"):
+        EpubReader(broken, settings)

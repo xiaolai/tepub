@@ -96,6 +96,12 @@
     const target = normaliseHref(targetHref);
     if (!target) return;
     const [file, hash] = target.split("#");
+    // Only documents the exporter sanitised are navigable. A book link to an
+    // SVG or HTML resource used to be fetched and inserted with innerHTML,
+    // which makes event handlers in that resource live.
+    const known = Object.prototype.hasOwnProperty.call(documents, file) ||
+      chapters.some((ch) => normaliseHref(ch.href).split("#")[0] === file);
+    if (!known) return;
     await loadChapter(file, hash);
     const idx = chapters.findIndex((ch) => normaliseHref(ch.href).split("#")[0] === file);
     if (idx >= 0) {

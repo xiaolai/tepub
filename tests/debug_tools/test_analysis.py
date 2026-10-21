@@ -31,8 +31,10 @@ def test_analyze_library_summarises_results(monkeypatch, tmp_path) -> None:
     ]
 
     iterator = iter(responses)
+    calls: list[Path] = []
 
-    def _fake_analysis(_path, _settings):
+    def _fake_analysis(path, _settings):
+        calls.append(Path(path))
         try:
             return next(iterator)
         except StopIteration:
@@ -67,6 +69,8 @@ def test_analyze_library_summarises_results(monkeypatch, tmp_path) -> None:
     analysis.analyze_library(settings, library, limit=None, top_n=5, report_path=None)
 
     output = test_console.export_text()
-    assert "Skip Reasons" in output
-    assert "cover" in output
-    assert "Potential New" in output
+    assert "Processed 2 EPUBs | 1 with skips | 0 errors" in output
+    assert any("cover" in line and "1" in line for line in output.splitlines())
+    assert "foreword" in output and "preface" in output
+    # One analysis per book, in the order the folder lists them.
+    assert calls == [library / "book1.epub", library / "book2.epub"]

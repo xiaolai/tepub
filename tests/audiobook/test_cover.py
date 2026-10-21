@@ -48,3 +48,40 @@ def test_unreadable_explicit_cover_fails_instead_of_vanishing(tmp_path):
 
     with pytest.raises(CoverImageError):
         _prepare_cover(tmp_path / "output", reader=None, explicit_cover=src)
+
+
+def test_a_truncated_detected_cover_falls_back_to_none(tmp_path):
+    """Image.open reads only headers; truncating the pixel data raised later,
+    outside the guard, and aborted assembly."""
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    saved = BytesIO()
+    Image.new("RGB", (64, 64), color="navy").save(saved, format="PNG")
+    data = saved.getvalue()
+    truncated = data[: len(data) // 2]
+
+    item = SimpleNamespace(is_image=True, href=Path("images/cover.png"))
+    reader = SimpleNamespace(
+        package=SimpleNamespace(cover_item=lambda: None),
+        item_for=lambda _item: None,
+        iter_documents=lambda: iter(()),
+        items=lambda: [item],
+        read_bytes=lambda _item: truncated,
+    )
+
+    assert _prepare_cover(tmp_path / "output", reader) is None
+
+
+def test_a_transparent_palette_cover_keeps_its_transparency(tmp_path):
+    """Converted to RGB and saved as JPEG, transparent pixels showed their
+    palette colour."""
+    src = tmp_path / "palette.png"
+    image = Image.new("P", (8, 8))
+    image.putpalette([0, 0, 0, 255, 255, 255] + [0] * 762)
+    image.save(src, format="PNG", transparency=0)
+
+    result = _prepare_cover(tmp_path / "output", reader=None, explicit_cover=src)
+
+    assert result is not None and result.suffix == ".png"
+    assert Image.open(result).mode == "RGBA"

@@ -43,3 +43,10 @@ def test_without_a_model_every_entry_is_left_to_fill_in(tmp_path: Path) -> None:
     path.write_text(render_proposals(proposals, "zh"), encoding="utf-8")
     glossary = load_glossary(path)
     assert glossary.terms[0].source == 'a "quoted" term: x' and glossary.decided() == []
+
+
+def test_no_proposals_still_writes_a_loadable_glossary(tmp_path: Path) -> None:
+    """ "terms:" alone loads as null, which Glossary validation refuses."""
+    path = tmp_path / "glossary.yaml"
+    path.write_text(render_proposals([], "zh"), encoding="utf-8")
+    assert load_glossary(path).terms == ()

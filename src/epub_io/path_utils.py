@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import posixpath
+import re
 from pathlib import Path, PurePosixPath
+
+# A Windows drive-qualified component, wherever it appears in an archive name.
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 
 def normalize_epub_href(document_path: Path, raw_href: str) -> str | None:
@@ -67,10 +71,11 @@ def normalize_epub_href(document_path: Path, raw_href: str) -> str | None:
     normalized = PurePosixPath(posixpath.normpath(str(candidate)))
 
     # Reject paths that traverse outside EPUB root
-    if normalized.as_posix().startswith("../"):
+    relative = normalized.as_posix()
+    if relative == ".." or relative.startswith("../"):
         return None
 
-    return normalized.as_posix()
+    return relative
 
 
 def safe_relative_member(internal_path: str, source: Path) -> PurePosixPath:
@@ -89,8 +94,10 @@ def safe_relative_member(internal_path: str, source: Path) -> PurePosixPath:
 
     if member.is_absolute() or normalized.startswith("/"):
         raise UnsafeArchiveMemberError(internal_path, source)
-    # A Windows drive letter ("C:foo") is not absolute to PurePosixPath.
-    if len(normalized) >= 2 and normalized[1] == ":":
+    # A Windows drive letter is not absolute to PurePosixPath, and it may sit
+    # anywhere: on Windows, joining a D: destination with "safe/C:/outside.txt"
+    # switches drives and writes outside the output directory.
+    if any(_DRIVE_PREFIX.match(part) for part in member.parts):
         raise UnsafeArchiveMemberError(internal_path, source)
     if ".." in member.parts:
         raise UnsafeArchiveMemberError(internal_path, source)

@@ -11,11 +11,19 @@ def test_dynasty_epub_footnote_patterns(tmp_path: Path) -> None:
     body = (
         '<p id="p1">Mars, the Spiller of Blood, had planted his seed in a mortal womb.'
         '<a href="#ftn3" id="ftn3a"><sup>*1</sup></a></p>'
+        '<p id="ftn3">1.</p>'
         '<p id="p3">The Roman character.<a href="notes.xhtml#n1" id="n1a"><sup>1</sup></a>'
         ' Even more text.<a href="notes.xhtml#n2" id="n2a"><sup>2</sup></a> Final sentence.</p>'
         '<p id="p10">Chemical formula H<a href="#fn1"><sub>2</sub></a>O here.</p>'
+        '<p id="fn1">2.</p>'
     )
-    spoken = _spoken(tmp_path, body)
+    notes = (
+        '<p id="n1" epub:type="footnote">One.</p>'
+        '<p id="n2" epub:type="footnote">Two.</p>'
+    )
+
+    spoken = _spoken(tmp_path, body, notes)
+
     assert "Mars, the Spiller of Blood, had planted his seed in a mortal womb." in spoken
     assert "The Roman character. Even more text. Final sentence." in spoken
     assert "Chemical formula HO here." in spoken

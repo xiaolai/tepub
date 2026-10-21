@@ -19,8 +19,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from config import ProviderConfig
 from state.models import ExtractMode, Segment, SegmentMetadata
-from translation.providers import ProviderError, ProviderFatalError, http
+from translation.providers import (
+    ProviderError,
+    ProviderFatalError,
+    create_provider,
+    http,
+)
 from translation.providers.base import classify_exception, error_for_status
 
 
@@ -33,6 +39,33 @@ class Response:
 
     def json(self):
         return self._body
+
+
+class StatusError(Exception):
+    """An SDK exception carrying an HTTP status the way the SDKs report it."""
+
+    def __init__(self, status: int):
+        super().__init__("boom")
+        self.status_code = status
+        self.code = status
+
+
+def _raising(exc: Exception):
+    def call(**_kwargs):
+        raise exc
+
+    return call
+
+
+def _segment() -> Segment:
+    return Segment(
+        segment_id="s1",
+        file_path=Path("c.xhtml"),
+        xpath="/html/body/p",
+        extract_mode=ExtractMode.TEXT,
+        source_content="Hello.",
+        metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=1),
+    )
 
 
 def _replies(monkeypatch, *responses):
@@ -96,6 +129,96 @@ def test_sdk_exceptions_are_classified_by_status(exc, kind) -> None:
         status=getattr(exc, "status_code", None) or getattr(exc, "code", None),
     )
     assert type(error) is kind
+
+
+@pytest.mark.parametrize(("status", "kind"), [(429, ProviderError), (401, ProviderFatalError)])
+def test_anthropic_classifies_sdk_status_through_translate(monkeypatch, status, kind) -> None:
+    """The helper was tested directly, so a broken call in the adapter was not."""
+    from translation.providers import anthropic as anthropic_module
+
+    monkeypatch.setattr(anthropic_module.anthropic, "APIError", StatusError)
+    provider = create_provider(ProviderConfig(name="anthropic", model="m", api_key="k"))
+    provider._client = SimpleNamespace(
+        messages=SimpleNamespace(create=_raising(StatusError(status)))
+    )
+
+    with pytest.raises(kind) as excinfo:
+        provider.translate(_segment(), source_language="fr", target_language="en")
+    assert type(excinfo.value) is kind
+
+
+@pytest.mark.parametrize(("status", "kind"), [(429, ProviderError), (403, ProviderFatalError)])
+def test_gemini_classifies_sdk_status_through_translate(monkeypatch, status, kind) -> None:
+    client = SimpleNamespace(models=SimpleNamespace(generate_content=_raising(StatusError(status))))
+    provider = create_provider(ProviderConfig(name="gemini", model="m", api_key="k"))
+    monkeypatch.setattr(provider, "_client_instance", lambda: client)
+
+    with pytest.raises(kind) as excinfo:
+        provider.translate(_segment(), source_language="fr", target_language="en")
+    assert type(excinfo.value) is kind
+
+
+def test_a_deepl_quota_error_is_fatal() -> None:
+    """456 is DeepL's exhausted character quota; waiting three cooldowns cannot
+    replenish it."""
+    assert type(error_for_status("DeepL", 456, "Quota exceeded")) is ProviderFatalError
+
+
+@pytest.mark.parametrize("header", ["-5", "-inf", "nan", "inf"])
+def test_an_unusable_retry_after_falls_back_to_backoff(monkeypatch, header) -> None:
+    """A negative or non-finite delay raised ValueError inside time.sleep and
+    ended the retries."""
+    sleeps = _replies(monkeypatch, Response(429, headers={"Retry-After": header}), Response(200))
+    assert http.post_json("X", "http://x") == {"ok": True}
+    assert sleeps == [1.0]
+
+
+def test_a_free_deepl_key_uses_the_free_endpoint(monkeypatch) -> None:
+    """A ":fx" key is rejected by the paid endpoint and vice versa."""
+    urls = []
+
+    def capture(label, url, **kwargs):
+        urls.append(url)
+        return {"translations": [{"text": "x"}]}
+
+    monkeypatch.setattr("translation.providers.deepl.post_json", capture)
+    free = create_provider(ProviderConfig(name="deepl", model="deepl", api_key="k:fx"))
+    free.translate(_segment(), source_language="en", target_language="fr")
+    paid = create_provider(ProviderConfig(name="deepl", model="deepl", api_key="k"))
+    paid.translate(_segment(), source_language="en", target_language="fr")
+    configured = create_provider(
+        ProviderConfig(
+            name="deepl", model="deepl", api_key="k:fx", base_url="http://proxy.example"
+        )
+    )
+    configured.translate(_segment(), source_language="en", target_language="fr")
+
+    assert urls == [free.FREE_BASE_URL, paid.DEFAULT_BASE_URL, "http://proxy.example"]
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "expected_source", "expected_target"),
+    [
+        ("zh-CN", "it", "ZH", "IT"),
+        ("pt-PT", "en-GB", "PT", "EN-GB"),
+        ("en-US", "zh-TW", "EN", "ZH-HANT"),
+    ],
+)
+def test_deepl_language_codes(monkeypatch, source, target, expected_source, expected_target) -> None:
+    """Bare codes such as "it" used to resolve to None, and target-only
+    variants were sent as source_lang."""
+    sent = {}
+
+    def capture(label, url, *, headers, data, timeout):
+        sent.update(data)
+        return {"translations": [{"text": "x"}]}
+
+    monkeypatch.setattr("translation.providers.deepl.post_json", capture)
+    create_provider(ProviderConfig(name="deepl", model="deepl", api_key="k")).translate(
+        _segment(), source_language=source, target_language=target
+    )
+
+    assert (sent["source_lang"], sent["target_lang"]) == (expected_source, expected_target)
 
 
 def test_deepl_rate_limit_is_retried(monkeypatch) -> None:

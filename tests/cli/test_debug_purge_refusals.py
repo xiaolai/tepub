@@ -109,10 +109,13 @@ def test_purge_refusals_dry_run(monkeypatch, tmp_path):
 
     monkeypatch.setattr("cli.core.load_settings_from_cli", lambda path=None: settings)
 
+    before = settings.state_file.read_bytes()
     runner = CliRunner()
     result = runner.invoke(app, ["debug", "purge-refusals", "--dry-run"])
 
     assert result.exit_code == 0
+    # A dry run must not rewrite the file, however its fields are handled.
+    assert settings.state_file.read_bytes() == before
     state = load_state(settings.state_file)
     assert state.segments["seg-1"].status == SegmentStatus.COMPLETED
 

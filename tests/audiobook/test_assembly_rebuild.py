@@ -133,6 +133,26 @@ def test_chapter_title_cannot_steer_scratch_cleanup(tmp_path) -> None:
     assert not [p for p in (book.output_root / "chapters").iterdir() if p.is_dir()]
 
 
+def test_a_custom_title_applies_when_the_toc_document_has_no_segments(tmp_path) -> None:
+    """The preview writes the chapter's included documents; the TOC document
+    itself (an image-only title page here) need not be one of them."""
+    from audiobook.chapters import ChapterInfo, write_chapters_yaml
+
+    book = Book(tmp_path, [
+        ("one.xhtml", "Chapter One", "<div><img src='pic.png'/></div>"),
+        ("two.xhtml", "", "<p>Alpha.</p>"),
+    ])
+    write_chapters_yaml(
+        [ChapterInfo("Custom Title", segments=["two.xhtml"])],
+        {"source": "book.epub"},
+        book.settings.work_dir / "chapters.yaml",
+    )
+
+    book.assemble()
+
+    assert [path.name for path in book.chapters()] == ["001-Custom_Title.m4a"]
+
+
 def test_overlong_title_still_makes_a_book(tmp_path) -> None:
     book = Book(tmp_path, [("one.xhtml", "Word " * 80, "<p>Alpha.</p>")], title="Title " * 80)
 

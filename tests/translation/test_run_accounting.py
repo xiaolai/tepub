@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -198,20 +197,37 @@ def test_a_success_already_running_at_a_fatal_stop_is_kept(monkeypatch, settings
     settings = settings.model_copy(update={"translation_workers": 2})
     _segments(settings, epub, "Fails once the other runs.", "Finishes later.")
     second_running = threading.Event()
+    stop_handled = threading.Event()
+    real_announce = controller._announce_stop
+
+    def announce(reason):
+        stop_handled.set()
+        real_announce(reason)
+
+    monkeypatch.setattr("translation.controller._announce_stop", announce)
 
     def translate(segment, source_language, target_language):
         if segment.segment_id == "s-1":
             assert second_running.wait(timeout=10)
             raise ProviderFatalError("key revoked")
         second_running.set()
-        time.sleep(0.5)
+        # Return only after the fatal result was recorded, so this success is
+        # still in flight at the stop. A fixed sleep could finish first.
+        assert stop_handled.wait(timeout=10)
         return "Hola"
 
     _provider(monkeypatch, translate)
 
     run_translation(settings, epub, source_language="en", target_language="es")
 
-    assert _statuses(settings) == {"s-1": SegmentStatus.ERROR, "s-2": SegmentStatus.COMPLETED}
+    state = load_state(settings.state_file)
+    assert {k: r.status for k, r in state.segments.items()} == {
+        "s-1": SegmentStatus.ERROR,
+        "s-2": SegmentStatus.COMPLETED,
+    }
+    # The failed record names the intended fatal error, not a failed
+    # synchronization assertion swallowed as an unexpected error.
+    assert "key revoked" in state.segments["s-1"].error_message
 
 
 def test_one_pass_takes_at_most_one_cooldown(monkeypatch, settings, epub, console, slept):

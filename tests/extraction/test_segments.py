@@ -165,7 +165,13 @@ def test_iter_segments_nested_div_smart_extraction():
 
 
 def _normalize_html(value: str) -> str:
-    return re.sub(r"\s+", "", value)
+    """Drop formatting whitespace between tags, keeping word separators.
+
+    Removing all whitespace made "Firstpoint" compare equal to "First point",
+    so extraction that merged words passed this comparison.
+    """
+    without_indentation = re.sub(r">\s+<", "><", value)
+    return re.sub(r"\s+", " ", without_indentation).strip()
 
 
 def test_iter_segments_handles_complex_markup():
@@ -326,6 +332,56 @@ def test_comment_inside_atomic_element_does_not_abort_extraction():
 
     assert len(segments) == 1
     assert "Item" in segments[0].source_content
+
+
+def test_a_list_holding_a_skipped_subtree_is_split_around_it() -> None:
+    """Kept whole, a <pre> inside an item was sent to the model for translation."""
+    markup = """
+    <html><body>
+    <ul><li>Visible item</li><li><pre>code sample</pre>After code</li></ul>
+    </body></html>
+    """
+
+    segments = list(iter_segments(_xhtml(markup), Path("c.xhtml"), spine_index=0))
+    sources = " ".join(segment.source_content for segment in segments)
+
+    assert "Visible item" in sources
+    assert "After code" in sources
+    assert "code sample" not in sources
+
+
+def test_loose_text_in_a_split_container_becomes_a_unit() -> None:
+    """A split container's own text and child tails used to be dropped."""
+    from lxml import etree
+
+    from epub_io.xhtml import XHTML_NS
+    from extraction.segments import iter_units, source_of
+
+    paragraphs = "".join(f"<p>Paragraph number {n} of a long chapter.</p>" for n in range(200))
+    body = etree.fromstring(
+        f'<body xmlns="{XHTML_NS}"><div>Lead words{paragraphs}Tail words</div></body>'
+    )
+
+    sources = [source_of(element, mode) for element, mode in iter_units(body)]
+
+    assert "Lead words" in sources[0]
+    assert "Tail words" in sources[-1]
+
+
+def test_structural_attributes_survive_extraction() -> None:
+    """colspan, rowspan and list numbering are structure, not presentation."""
+    markup = """
+    <html><body>
+    <table><tr><td colspan="2" rowspan="3">Cell</td></tr></table>
+    <ul><li>One<ol start="4"><li value="7">Seven</li></ol></li></ul>
+    </body></html>
+    """
+
+    segments = list(iter_segments(_xhtml(markup), Path("c.xhtml"), spine_index=0))
+    sources = " ".join(segment.source_content for segment in segments)
+
+    for attribute in ('colspan="2"', 'rowspan="3"', 'start="4"', 'value="7"'):
+        assert attribute in sources
 
 
 def test_tail_text_after_nested_same_tag_is_preserved():

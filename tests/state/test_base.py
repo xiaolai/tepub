@@ -29,6 +29,18 @@ class ComplexState(BaseModel):
     metadata: dict[str, str] = {}
 
 
+def _increment(state: SimpleState) -> SimpleState:
+    state.counter += 1
+    return state
+
+
+def _increment_many(state_file: str, times: int, start) -> None:
+    """Worker for the cross-process test; module level so spawn can import it."""
+    start.wait(timeout=30)
+    for _ in range(times):
+        update_state_item(Path(state_file), SimpleState, _increment)
+
+
 class TestAtomicWrite:
     """Tests for atomic_write function."""
 
@@ -50,8 +62,8 @@ class TestAtomicWrite:
         # The .tmp file should not exist after successful write
         atomic_write(target, payload)
 
-        tmp_file = target.with_suffix(target.suffix + ".tmp")
-        assert not tmp_file.exists()
+        # atomic_write names its temporary file <target>.<random>.tmp.
+        assert not list(tmp_path.glob(f"{target.name}.*.tmp"))
         assert target.exists()
 
     def test_atomic_write_overwrites_existing(self, tmp_path: Path):
@@ -182,8 +194,7 @@ class TestSaveGenericState:
         save_generic_state(state, state_file)
 
         # Temporary file should not exist after save
-        tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
-        assert not tmp_file.exists()
+        assert not list(tmp_path.glob(f"{state_file.name}.*.tmp"))
         assert state_file.exists()
 
     def test_save_overwrites_existing(self, tmp_path: Path):
@@ -314,25 +325,41 @@ class TestIntegration:
         final = load_generic_state(state_file, SimpleState)
         assert final.counter == 2
 
-    def test_concurrent_updates_use_atomic_write(self, tmp_path: Path):
-        """Test that concurrent updates don't leave tmp files."""
+    def test_concurrent_updates_from_processes_are_serialised(self, tmp_path: Path):
+        """Sequential updates passed even without cross-process locking; these
+        overlap, so a lost update changes the exact final count."""
+        import multiprocessing
+
         state_file = tmp_path / "concurrent.json"
-        state = SimpleState(counter=0)
-        save_generic_state(state, state_file)
+        save_generic_state(SimpleState(counter=0), state_file)
 
-        def increment(s: SimpleState) -> SimpleState:
-            s.counter += 1
-            return s
+        workers, times = 4, 25
+        ctx = multiprocessing.get_context("spawn")
+        start = ctx.Barrier(workers)
+        processes = [
+            ctx.Process(
+                target=_increment_many, args=(str(state_file), times, start), daemon=True
+            )
+            for _ in range(workers)
+        ]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=60)
 
-        # Multiple updates
-        for _ in range(5):
-            update_state_item(state_file, SimpleState, increment)
+        assert all(process.exitcode == 0 for process in processes)
+        assert load_generic_state(state_file, SimpleState).counter == workers * times
+        assert not list(tmp_path.glob(f"{state_file.name}.*.tmp"))
 
-        # No tmp files should remain
-        tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
-        assert not tmp_file.exists()
-        assert state_file.exists()
+    def test_a_failed_write_leaves_no_temporary_file(self, tmp_path: Path, monkeypatch) -> None:
+        target = tmp_path / "test.json"
 
-        # Final state should be correct
-        final = load_generic_state(state_file, SimpleState)
-        assert final.counter == 5
+        def fail(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("state.base.os.replace", fail)
+        with pytest.raises(OSError):
+            atomic_write(target, {"key": "value"})
+
+        assert not list(tmp_path.glob(f"{target.name}.*.tmp"))
+        assert not target.exists()

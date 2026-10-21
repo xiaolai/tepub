@@ -29,41 +29,61 @@ def _is_truncated(body: Any) -> bool:
     return False
 
 
+def _part_texts(parts: Any) -> list[str]:
+    """The text of each content part, in order, leaving reasoning parts out."""
+    texts = []
+    for part in parts:
+        if isinstance(part, dict):
+            if part.get("type", "output_text") not in ("output_text", "text"):
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text)
+        elif isinstance(part, str) and part.strip():
+            texts.append(part)
+    return texts
+
+
 def _extract_text(body: Any) -> str | None:
     """Pull the translated text out of a Responses or Chat Completions body.
 
-    Only ``output[0]`` used to be examined, but the Responses API may emit a
-    reasoning item before the message, in which case the translation was reported
-    as missing even though the call succeeded. Every item is scanned instead.
+    Only the first text part used to be returned, so a reply the API split into
+    several output messages or output_text parts lost everything after the
+    first while it was recorded as complete.
     """
     if not isinstance(body, dict):
         return None
 
-    items = body.get("output") or body.get("choices")
-    if not isinstance(items, list):
+    if isinstance(body.get("output"), list):
+        items = body["output"]
+    elif isinstance(body.get("choices"), list):
+        # Each choice is an alternative; the first is the reply.
+        items = body["choices"][:1]
+    else:
         return None
 
+    texts: list[str] = []
     for item in items:
         if not isinstance(item, dict):
             continue
 
         # Chat Completions nests the text under "message".
         message = item.get("message")
-        if isinstance(message, dict) and isinstance(message.get("content"), str):
-            return message["content"]
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+                continue
+            if isinstance(content, list):
+                texts.extend(_part_texts(content))
+                continue
 
         candidate = item.get("text") or item.get("content")
         if isinstance(candidate, str) and candidate.strip():
-            return candidate
-        if isinstance(candidate, list):
-            for part in candidate:
-                if isinstance(part, dict):
-                    part_text = part.get("text")
-                    if isinstance(part_text, str) and part_text.strip():
-                        return part_text
-                elif isinstance(part, str) and part.strip():
-                    return part
-    return None
+            texts.append(candidate)
+        elif isinstance(candidate, list):
+            texts.extend(_part_texts(candidate))
+    return "".join(texts) or None
 
 
 class OpenAIProvider(BaseProvider):

@@ -44,8 +44,9 @@ def _is_external_url(value: str) -> bool:
 def _prefix_content_path(relative_to: Path, url: str) -> str:
     if not url or _is_external_url(url):
         return url
-    if url.startswith("content/"):
-        return url
+    # A URL that begins with "content/" is still relative to the chapter.
+    # Treating it as already rewritten sent Text/ch.xhtml's "content/p.png" to
+    # content/p.png instead of the file that sits beside the chapter.
     base = relative_to.parent.as_posix()
     combined = f"{base}/{url}" if base else url
     normalised = normpath(combined)
@@ -130,30 +131,42 @@ def _rewrite_links(doc: html.HtmlElement, relative_path: Path) -> None:
 
 
 def _split_srcset(value: str) -> list[str]:
-    """Split a srcset on candidate boundaries, not on every comma.
+    """Split a srcset into candidates using the srcset grammar.
 
     A data: URL's payload may itself contain commas, so a plain split(",")
-    shredded such entries into fragments. Commas inside a data: URL are only
-    separators once whitespace follows them.
+    shredded such entries. A candidate's URL runs to the next whitespace; a
+    comma before that point separates candidates only when the URL is not a
+    data: URL. Once the URL has ended, a comma always separates them, whether
+    or not whitespace follows it.
     """
     candidates: list[str] = []
     current: list[str] = []
-    in_data_url = False
-    index = 0
-    while index < len(value):
-        char = value[index]
-        if not in_data_url and "".join(current).strip().lower().endswith("data:") is False:
-            # Detect entry into a data: URL by looking at the token so far.
-            token = "".join(current).lstrip()
-            if token.lower().startswith("data:"):
-                in_data_url = True
-        if char == "," and (not in_data_url or value[index + 1 : index + 2].isspace()):
+    url_head = ""
+    url_started = False
+    in_url = True
+    for char in value:
+        if in_url:
+            if char.isspace():
+                if url_started:
+                    in_url = False
+            elif char == "," and url_head != "data:":
+                candidates.append("".join(current))
+                current = []
+                url_head = ""
+                url_started = False
+                continue
+            else:
+                url_started = True
+                if len(url_head) < 5:
+                    url_head += char.lower()
+        elif char == ",":
             candidates.append("".join(current))
             current = []
-            in_data_url = False
-        else:
-            current.append(char)
-        index += 1
+            url_head = ""
+            url_started = False
+            in_url = True
+            continue
+        current.append(char)
     if current:
         candidates.append("".join(current))
     return candidates
@@ -180,12 +193,13 @@ def _rewrite_media_urls(doc: html.HtmlElement, relative_path: Path) -> None:
                         candidate = candidate.strip()
                         if not candidate:
                             continue
-                        if " " in candidate:
-                            url_part, descriptor = candidate.split(" ", 1)
+                        bits = candidate.split(None, 1)
+                        if len(bits) == 2:
+                            url_part, descriptor = bits
                             prefixed = _prefix_content_path(relative_path, url_part)
                             parts.append(f"{prefixed} {descriptor.strip()}")
                         else:
-                            parts.append(_prefix_content_path(relative_path, candidate))
+                            parts.append(_prefix_content_path(relative_path, bits[0]))
                     if parts:
                         el.set(attr, ", ".join(parts))
                 else:
@@ -197,7 +211,7 @@ REMOVABLE_TAGS = {"font", "center"}
 # language attributes stay: they cannot run anything, the viewer's
 # original/translation toggles match the tepub-* classes (the only markers EPUB 2
 # output has), and lang selects fonts for CJK text.
-REMOVABLE_ATTRS = {"style"}
+REMOVABLE_ATTRS = {"style", "srcdoc"}
 
 #: Elements dropped with their contents. The book is untrusted input and the
 #: export is opened in a browser, but none of these were removed, so a book
@@ -205,6 +219,10 @@ REMOVABLE_ATTRS = {"style"}
 UNSAFE_TAGS = (
     "script", "iframe", "object", "embed", "base", "noscript",
     "frame", "frameset", "applet", "meta", "link", "template", "portal",
+    # A <style> element is served with the chapter and inserted into the
+    # viewer document, where its rules restyle the viewer's own controls and
+    # an @import can load an attacker's stylesheet.
+    "style",
     # SVG/MathML foreign content can execute without a <script> element:
     # <animate attributeName="href" values="javascript:…"> is live.
     "animate", "animatemotion", "animatetransform", "set", "handler",
@@ -215,6 +233,15 @@ UNSAFE_TAGS = (
 def _remove_tags(doc: html.HtmlElement) -> None:
     # Whole subtree, not drop_tag: drop_tag keeps the element's text, which for a
     # <script> would leave the source code inline in the page.
+    if isinstance(doc.tag, str) and doc.tag.lower() in UNSAFE_TAGS:
+        # The document itself is the unsafe element (a standalone iframe), so
+        # dropping descendants cannot reach it. Keep a harmless, empty root.
+        doc.tag = "div"
+        doc.attrib.clear()
+        doc.text = None
+        for child in list(doc):
+            doc.remove(child)
+        return
     for tag in UNSAFE_TAGS:
         for el in doc.xpath(f".//{tag}"):
             parent = el.getparent()

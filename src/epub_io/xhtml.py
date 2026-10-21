@@ -23,6 +23,23 @@ from .container import secure_xml_parser
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 OPS_NS = "http://www.idpf.org/2007/ops"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+
+# The HTML fallback keeps a prefixed name as literal text. Applying a namespace
+# to it unchanged produced invalid QNames such as {xhtml}epub:switch.
+_FRAGMENT_PREFIXES = {
+    "epub": OPS_NS,
+    "xlink": XLINK_NS,
+    "xml": XML_NS,
+}
+
+
+def _qualified(name: str, default_namespace: str) -> str:
+    if ":" not in name:
+        return f"{{{default_namespace}}}{name}"
+    prefix, local = name.split(":", 1)
+    namespace = _FRAGMENT_PREFIXES.get(prefix.lower())
+    return f"{{{namespace or default_namespace}}}{local}"
 
 _XML_PREDEFINED = {"lt", "gt", "amp", "quot", "apos"}
 # Comments and CDATA sections are copied untouched by the entity pre-pass.
@@ -85,11 +102,14 @@ def parse_xhtml(data: bytes) -> XhtmlDocument:
 
 
 def serialize_xhtml(document: XhtmlDocument) -> bytes:
+    # Do not pass doctype=: docinfo.doctype is only the declaration, so
+    # overriding with it dropped an internal DTD subset while the entity
+    # references it defined stayed in the body. The tree still holds the whole
+    # DTD node and serialises it itself.
     return etree.tostring(
         document.root.getroottree(),
         xml_declaration=document.xml_declaration,
         encoding=document.encoding,
-        doctype=document.doctype,
     )
 
 
@@ -136,6 +156,16 @@ def parse_fragment(markup: str) -> tuple[str, list[etree._Element]]:
 
         wrapper = lxml_html.fragment_fromstring(markup, create_parent="wrapper")
         for element in wrapper.iter():
-            if isinstance(element.tag, str) and not element.tag.startswith("{"):
-                element.tag = f"{{{XHTML_NS}}}{element.tag}"
+            if not isinstance(element.tag, str):
+                continue
+            if not element.tag.startswith("{"):
+                element.tag = _qualified(element.tag, XHTML_NS)
+            for attribute in list(element.attrib):
+                if attribute.startswith("{") or ":" not in attribute:
+                    continue
+                value = element.attrib.pop(attribute)
+                qualified = _qualified(attribute, XHTML_NS)
+                if qualified.startswith(f"{{{XHTML_NS}}}"):
+                    continue  # an unknown prefix on an attribute is dropped
+                element.set(qualified, value)
     return wrapper.text or "", list(wrapper)

@@ -7,6 +7,7 @@ from rich.table import Table
 
 from config import AppSettings
 from state.models import SegmentStatus
+from translation.controller import select_for_translation
 
 from .common import console, load_all_segments, load_translation_state
 
@@ -17,6 +18,10 @@ def show_pending(settings: AppSettings) -> None:
 
     pending_by_file = defaultdict(int)
     segment_index = {segment.segment_id: segment for segment in segments_doc.segments}
+    # The same units a translate run works on: an explicit translation_files
+    # list includes files skip rules left out, whose pending units were
+    # excluded here and hidden behind "all caught up".
+    selected = {seg.segment_id for seg in select_for_translation(segments_doc.segments, settings)}
     orphaned = 0
     auto_skipped = 0
     for record in state.segments.values():
@@ -28,7 +33,7 @@ def show_pending(settings: AppSettings) -> None:
             # so a state file out of sync with segments.json looked healthy.
             orphaned += 1
             continue
-        if segment.skip_reason is not None:
+        if record.segment_id not in selected:
             # Auto-skipped segments stay PENDING in state but translation filters
             # them out, so counting them meant the pending total never reached
             # zero no matter how many runs completed.

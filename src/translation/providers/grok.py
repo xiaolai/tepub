@@ -71,9 +71,12 @@ class GrokProvider(BaseProvider):
                     message = first.get("message")
                     if isinstance(message, dict):
                         output = message.get("content")
-        if isinstance(output, list) and output:
-            # Some implementations return a list of dicts with text
-            maybe = output[0]
-            if isinstance(maybe, dict):
-                output = maybe.get("text")
+        if isinstance(output, list):
+            # Some implementations return a list of parts; every text part is
+            # content, and reading only the first dropped the rest.
+            output = "".join(
+                part["text"]
+                for part in output
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
         return ensure_translation_available(output)

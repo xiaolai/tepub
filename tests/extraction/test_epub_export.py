@@ -237,6 +237,19 @@ class TestArchiveMemberSafety:
         assert contents == ["first", "second"]
         assert len({p.name for p in mapping.values()}) == 2
 
+    def test_flatten_keeps_names_that_differ_only_in_case(self, tmp_path):
+        """a/fig.png and b/FIG.png collide on a case-insensitive filesystem."""
+        epub_path = tmp_path / "case.epub"
+        with zipfile.ZipFile(epub_path, "w") as epub:
+            epub.writestr("OEBPS/a/fig.png", "lower")
+            epub.writestr("OEBPS/b/FIG.PNG", "upper")
+
+        output_dir = tmp_path / "extracted"
+        mapping = extract_epub_structure(epub_path, output_dir, preserve_structure=False)
+
+        assert sorted(p.read_text() for p in mapping.values()) == ["lower", "upper"]
+        assert len({p.name.casefold() for p in mapping.values()}) == 2
+
 
 class TestMetadataDiscoveryIsDeterministic:
     """Metadata discovery must not depend on mapping iteration order."""
@@ -262,6 +275,47 @@ class TestMetadataDiscoveryIsDeterministic:
 
         assert get_epub_metadata_files(forward)["opf"] == tmp_path / "content.opf"
         assert get_epub_metadata_files(reverse)["opf"] == tmp_path / "content.opf"
+
+
+class TestMetadataFollowsPackageReferences:
+    """The container names the package, and the package names the NCX."""
+
+    def test_unrelated_shallow_files_do_not_win(self, tmp_path):
+        container = tmp_path / "container.xml"
+        container.write_text(
+            '<?xml version="1.0"?>'
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            "<rootfiles>"
+            '<rootfile full-path="OEBPS/package.opf" '
+            'media-type="application/oebps-package+xml"/>'
+            "</rootfiles></container>",
+            encoding="utf-8",
+        )
+        package = tmp_path / "package.opf"
+        package.write_text(
+            '<?xml version="1.0"?>'
+            '<package xmlns="http://www.idpf.org/2007/opf">'
+            "<manifest>"
+            '<item id="ncx" href="nav/toc.ncx" media-type="application/x-dtbncx+xml"/>'
+            "</manifest>"
+            '<spine toc="ncx"/>'
+            "</package>",
+            encoding="utf-8",
+        )
+        ncx = tmp_path / "toc.ncx"
+        mapping = {
+            "META-INF/container.xml": container,
+            "OEBPS/package.opf": package,
+            "OEBPS/nav/toc.ncx": ncx,
+            # Shallower, unrelated files that path-depth selection picked first.
+            "decoy.opf": tmp_path / "decoy.opf",
+            "decoy.ncx": tmp_path / "decoy.ncx",
+        }
+
+        metadata = get_epub_metadata_files(mapping)
+
+        assert metadata["opf"] == package
+        assert metadata["ncx"] == ncx
 
 
 class TestGetEpubMetadataFiles:

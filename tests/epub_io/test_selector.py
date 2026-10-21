@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from config import AppSettings
+from config import AppSettings, SkipRule
 from epub_io import selector
 from tests.epub_builder import build_epub
 
@@ -63,16 +63,28 @@ def test_skip_after_logic_triggers_cascade(book, settings):
     assert not any(c.source == "cascade" for c in candidates)
 
 
-def test_skip_after_logic_can_be_disabled(book, settings):
-    """Test that cascade skipping can be disabled via configuration."""
+def test_skip_after_logic_can_be_disabled(tmp_path, settings):
+    """A late trigger with a continuation file after it: the switch decides
+    whether the continuation is skipped, so ignoring it cannot pass."""
+    book = build_epub(
+        tmp_path / "b.epub",
+        [
+            *_chapters(8),
+            ("Text/notes.xhtml", "Notes", "<p>Notes</p>"),
+            ("Text/notes2.xhtml", "", "<p>Chapter 1</p><p>A source.</p>"),
+        ],
+    )
 
-    # Disable cascade skipping
-    settings = settings.model_copy(update={"skip_after_back_matter": False})
+    enabled = selector.collect_skip_candidates(
+        book, settings.model_copy(update={"skip_after_back_matter": True})
+    )
+    disabled = selector.collect_skip_candidates(
+        book, settings.model_copy(update={"skip_after_back_matter": False})
+    )
 
-    candidates = selector.collect_skip_candidates(book, settings)
-
-    # Should only have TOC-based skips, no cascade
-    assert all(c.source != "cascade" for c in candidates)
+    assert {c.file_path.name for c in enabled if c.source == "cascade"} == {"notes2.xhtml"}
+    assert not any(c.source == "cascade" for c in disabled)
+    assert "notes2.xhtml" not in {c.file_path.name for c in disabled}
 
 
 def _skipped(book: Path, settings) -> dict[str, str]:
@@ -94,7 +106,9 @@ def test_plural_acknowledgements_are_skipped(tmp_path, settings) -> None:
         tmp_path / "b.epub",
         [*_chapters(3), ("Text/ack.xhtml", "Acknowledgements", "<p>Thanks.</p>")],
     )
-    assert _skipped(book, settings) == {"Text/ack.xhtml": "acknowledgements"}
+    assert _skipped(book, settings) == {
+        "Text/ack.xhtml": "auto-detected front/back matter"
+    }
 
 
 def test_notes_missing_from_the_toc_are_found_by_their_first_line(tmp_path, settings) -> None:
@@ -116,7 +130,7 @@ def test_notes_missing_from_the_toc_are_found_by_their_first_line(tmp_path, sett
     assert _skipped(book, settings) == {
         "Text/notes1.xhtml": "notes",
         "Text/notes2.xhtml": "after notes",
-        "Text/index.xhtml": "index",
+        "Text/index.xhtml": "auto-detected front/back matter",
     }
 
 
@@ -163,7 +177,9 @@ def test_a_section_title_does_not_skip_its_whole_chapter() -> None:
         ("Further Reading", "ch10.xhtml#further"),
     ]
     candidates, _ = selector._collect_toc_candidates(
-        spine, toc, ["acknowledgments", "further reading"]
+        spine,
+        toc,
+        [SkipRule(keyword="acknowledgments"), SkipRule(keyword="further reading")],
     )
     assert candidates == {}
 
@@ -178,7 +194,7 @@ def test_a_late_back_matter_section_marks_its_file() -> None:
         ("Index", "back.xhtml#idx"),
     ]
     candidates, _ = selector._collect_toc_candidates(
-        spine, toc, ["index"], back_matter=["index"], back_matter_from=2
+        spine, toc, [SkipRule(keyword="index")], back_matter=["index"], back_matter_from=2
     )
     assert {path.as_posix(): c.reason for path, c in candidates.items()} == {"back.xhtml": "index"}
 

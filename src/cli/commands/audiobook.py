@@ -576,6 +576,13 @@ def export_chapters(ctx: click.Context, source: Path, output: Path | None) -> No
             f"Unsupported file type: {source.suffix}. Expected .epub or .m4a"
         )
 
+    # YAML written over the source destroys the book or audiobook. samefile
+    # catches the spellings, symlinks and hard links a path comparison misses.
+    if output.exists() and output.samefile(source):
+        raise click.UsageError(
+            f"Output path {output} is the source file; write the chapters somewhere else."
+        )
+
     # Write YAML
     write_chapters_yaml(chapters, metadata, output)
 

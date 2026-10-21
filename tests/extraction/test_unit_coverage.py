@@ -54,9 +54,12 @@ def _misplaced_text(root) -> list[tuple[int, str]]:
 
     found = []
     for element in body.iter():
-        if not isinstance(element.tag, str):
-            continue
-        for text, owner in ((element.text, element), (element.tail, element.getparent())):
+        # A comment's own content is not reader-visible, but the text after it
+        # is; skipping the node entirely skipped its tail too.
+        pairs = [(element.tail, element.getparent())]
+        if isinstance(element.tag, str):
+            pairs.insert(0, (element.text, element))
+        for text, owner in pairs:
             if owner is None or not (text and text.strip()):
                 continue
             if element is body and owner is not body:
@@ -106,14 +109,31 @@ def test_fixture_text_is_covered(name: str, tmp_path: Path) -> None:
                 assert _misplaced_text(parse_xhtml(archive.read(item.path)).root) == [], item.path
 
 
+def test_text_after_a_comment_in_a_split_container_is_covered() -> None:
+    """The oracle skipped comment nodes, so their tails were never inspected."""
+    paragraphs = "".join(f"<p>Paragraph number {n} of a long chapter.</p>" for n in range(200))
+    markup = (
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title></head>'
+        f"<body><div>{paragraphs}<!--note-->Tail words</div></body></html>"
+    )
+
+    assert _misplaced_text(parse_xhtml(markup.encode()).root) == []
+
+
 CORPUS = os.environ.get("TEPUB_CORPUS_DIR")
 
 
 @pytest.mark.corpus
 @pytest.mark.skipif(not CORPUS, reason="set TEPUB_CORPUS_DIR to a folder of real EPUBs")
 def test_corpus_text_is_covered() -> None:
+    directory = Path(CORPUS).expanduser()
+    # An empty or missing directory iterated zero times and passed.
+    assert directory.is_dir(), f"TEPUB_CORPUS_DIR is not a directory: {directory}"
+    books = sorted(directory.glob("*.epub"))
+    assert books, f"no EPUB files found in {directory}"
+
     problems = []
-    for book in sorted(Path(CORPUS).expanduser().glob("*.epub")):
+    for book in books:
         package = read_package(book)
         with zipfile.ZipFile(book) as archive:
             for item in package.manifest.values():

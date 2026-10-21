@@ -13,6 +13,7 @@ from state.models import ExtractMode, Segment, SegmentMetadata
 from translation.controller import _translate_segment
 from translation.markup import (
     markup_mismatch,
+    protect,
     stray_tags,
     strip_code_fence,
     strip_model_artifacts,
@@ -78,6 +79,13 @@ def test_escaped_tags_in_a_marker_reply_are_caught() -> None:
     assert result.error is None and result.translation == '见<a href="#n41">41</a>报告。'
 
 
+def test_added_executable_attributes_are_caught() -> None:
+    problem = markup_mismatch(
+        '<img src="x.png"/>', '<img src="x.png" onerror="alert(1)"/>'
+    )
+    assert problem is not None and "onerror" in problem
+
+
 def test_tags_the_source_itself_shows_are_allowed() -> None:
     assert stray_tags("Write <p> for a paragraph.", "用 <p> 写段落。") is None
     assert (
@@ -96,6 +104,24 @@ def test_a_fenced_copy_appended_to_the_translation_is_removed() -> None:
         strip_model_artifacts(reply, markup=False)
         == "第一章：为什么信任才是真正的价值"
     )
+
+
+def test_a_fenced_example_is_content_and_is_kept() -> None:
+    """Only a duplicate escaped copy is an artifact; deleting from any opening
+    fence onward also deleted legitimate code and the prose after it."""
+    reply = "Example:\n```python\nprint(42)\n```"
+    assert strip_model_artifacts(reply, markup=False) == reply
+
+
+def test_a_unit_with_inline_code_keeps_the_html_route() -> None:
+    """Marker protection collapsed whitespace inside <code>, so such units go
+    the HTML route, where polish leaves code byte for byte."""
+    source = "Use <code>a  b\nc</code> now."
+    assert protect(source) is None
+
+    result = _translate_segment(_segment(source, ExtractMode.HTML), Replies(source), "en", "zh")
+
+    assert result.error is None and result.translation == source
 
 
 def test_a_markup_fence_is_unwrapped_not_deleted() -> None:

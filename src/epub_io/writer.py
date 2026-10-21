@@ -11,6 +11,7 @@ carries that marker: the rule did nothing but edit the publisher's CSS.
 
 from __future__ import annotations
 
+import codecs
 import re
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -19,8 +20,10 @@ from lxml import etree
 
 from .container import (
     DC_NS,
+    MAX_PACKAGE_MEMBER_BYTES,
     OPF_NS,
     Package,
+    read_member_bounded,
     read_package,
     resolve,
     secure_xml_parser,
@@ -63,7 +66,9 @@ def write_updated_epub(
                 for path, titles in toc_updates.items()
             }
             for toc in _toc_documents(package):
-                source = replacements.get(toc) or archive.read(toc)
+                source = replacements.get(toc) or read_member_bounded(
+                    archive, toc, limit=MAX_PACKAGE_MEMBER_BYTES
+                )
                 replacements[toc] = _retitle(toc, source, by_entry)
 
         replacements = _declare_languages(
@@ -96,9 +101,15 @@ def _lookup_title(
     titles = updates.get(entry)
     if not titles:
         return None
-    if fragment and fragment in titles:
-        return titles[fragment]
     key = title_key(label)
+    if fragment:
+        if fragment in titles:
+            return titles[fragment]
+        if key and key in titles:
+            return titles[key]
+        # A fragment names one section. Falling back to the document's first
+        # heading renamed untranslated subsections after the chapter title.
+        return None
     if key and key in titles:
         return titles[key]
     return titles.get(None)
@@ -166,15 +177,19 @@ def _declare_languages(
         codes = [code for code in (source_language, target_language) if code]
     codes = list(dict.fromkeys(codes))
 
-    opf = replacements.get(package.opf_path) or archive.read(package.opf_path)
+    opf = replacements.get(package.opf_path) or read_member_bounded(
+        archive, package.opf_path, limit=MAX_PACKAGE_MEMBER_BYTES
+    )
     replacements[package.opf_path] = _relabel_package(opf, codes)
 
     if css_mode == "translated_only":
         for document in package.spine_items():
             if "html" not in document.media_type:
                 continue
-            entry = package.zip_path(document.href.as_posix())
-            content = replacements.get(entry) or archive.read(entry)
+            # The manifest has the resolved zip path; spine hrefs are decoded,
+            # and running them through zip_path would decode again.
+            entry = package.manifest[document.idref].path
+            content = replacements.get(entry) or read_member_bounded(archive, entry)
             replacements[entry] = _relabel_document(content, target_language)
     return replacements
 
@@ -192,16 +207,38 @@ def _relabel_package(source: bytes, codes: list[str]) -> bytes:
     return etree.tostring(root.getroottree(), xml_declaration=True, encoding="utf-8")
 
 
+def _document_encoding(source: bytes) -> str:
+    """The encoding the document is written in: its byte-order mark, else its
+    XML declaration.
+
+    Translated-only output needs each document's original bytes to change only
+    in the opening <html> tag; decoding everything as UTF-8 crashed on a UTF-16
+    document before the language could be updated.
+    """
+    if source.startswith(codecs.BOM_UTF16_LE):
+        return "utf-16-le"
+    if source.startswith(codecs.BOM_UTF16_BE):
+        return "utf-16-be"
+    match = re.match(rb"\s*<\?xml[^>]*\bencoding=[\"']([^\"']+)[\"']", source)
+    if match is not None:
+        return match.group(1).decode("ascii")
+    return "utf-8"
+
+
 def _relabel_document(source: bytes, language: str) -> bytes:
     """Set lang and xml:lang on the root element, keeping the DOCTYPE.
 
     Parsing and re-serialising would drop the document type declaration, which
     XHTML 1.1 content (EPUB 2) still carries.
     """
-    text = source.decode("utf-8")
+    encoding = _document_encoding(source)
+    text = source.decode(encoding)
     match = re.search(r"<html\b[^>]*>", text)
     if match is None:
         return source
-    opening = re.sub(r'\s(?:xml:)?lang="[^"]*"', "", match.group(0))
+    # Both quote styles: an attribute left behind would now be a duplicate.
+    opening = re.sub(
+        r"""\s(?:xml:)?lang=(?:"[^"]*"|'[^']*')""", "", match.group(0)
+    )
     opening = opening[:-1] + f' lang="{language}" xml:lang="{language}">'
-    return (text[: match.start()] + opening + text[match.end() :]).encode("utf-8")
+    return (text[: match.start()] + opening + text[match.end() :]).encode(encoding)

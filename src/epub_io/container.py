@@ -12,7 +12,9 @@ same names, bytes and compression, except the entries a caller replaces.
 
 from __future__ import annotations
 
+import os
 import posixpath
+import tempfile
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -36,11 +38,51 @@ class EpubStructureError(TepubError):
     """The EPUB's container or package cannot be read safely."""
 
 
+#: Decompressed-size limits. A zip's declared size is attacker-controlled, so
+#: the read itself is capped too: checking the header alone misses a member
+#: whose central directory understates what the compressor emits.
+MAX_PACKAGE_MEMBER_BYTES = 16 * 1024 * 1024
+MAX_CONTENT_MEMBER_BYTES = 128 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def read_member_bounded(
+    archive: zipfile.ZipFile,
+    name: str,
+    *,
+    limit: int = MAX_CONTENT_MEMBER_BYTES,
+) -> bytes:
+    """Read one archive member, refusing it before it can exhaust memory."""
+    info = archive.getinfo(name)
+    if info.file_size > limit:
+        raise EpubStructureError(
+            f"{name} declares {info.file_size:,} bytes, over the {limit:,}-byte limit"
+        )
+    with archive.open(info) as stream:
+        payload = stream.read(limit + 1)
+    if len(payload) > limit:
+        raise EpubStructureError(f"{name} expanded past the {limit:,}-byte limit")
+    return payload
+
+
 def secure_xml_parser(**options) -> etree.XMLParser:
     """An XML parser that never resolves entities, loads DTDs or touches the network."""
     return etree.XMLParser(
         resolve_entities=False, load_dtd=False, no_network=True, huge_tree=False, **options
     )
+
+
+def _parse_member(data: bytes, member: str) -> etree._Element:
+    """Parse a package member, naming it when it is not well-formed XML.
+
+    A raw XMLSyntaxError from container.xml or the package document reached the
+    CLI as a traceback instead of the error message every other bad book gets.
+    """
+    try:
+        return etree.fromstring(data, parser=secure_xml_parser())
+    except etree.XMLSyntaxError as exc:
+        raise EpubStructureError(f"{member} is not well-formed XML: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -152,8 +194,13 @@ class Package:
         return None
 
     def zip_path(self, href: str) -> str:
-        """Resolve an OPF-relative href to a zip entry name."""
-        return resolve(self.opf_path, href)
+        """Resolve an already-decoded OPF-relative path to a zip entry name.
+
+        Callers pass manifest paths, which ``resolve`` has already unquoted.
+        Decoding again turned a literal ``%20`` in a filename into a space, so
+        the member could not be found. Raw hrefs still go through ``resolve``.
+        """
+        return posixpath.normpath(posixpath.join(self.opf_dir or ".", href))
 
 
 def resolve(from_entry: str, href: str) -> str:
@@ -198,8 +245,11 @@ def read_package(epub_path: Path) -> Package:
         entries = archive.infolist()
         _check_entry_names(entries)
         try:
-            container = etree.fromstring(
-                archive.read("META-INF/container.xml"), parser=secure_xml_parser()
+            container = _parse_member(
+                read_member_bounded(
+                    archive, "META-INF/container.xml", limit=MAX_PACKAGE_MEMBER_BYTES
+                ),
+                "META-INF/container.xml",
             )
         except KeyError as exc:
             raise EpubStructureError(f"{epub_path.name} has no META-INF/container.xml") from exc
@@ -208,7 +258,10 @@ def read_package(epub_path: Path) -> Package:
             raise EpubStructureError(f"{epub_path.name}: container.xml names no package document")
         opf_path = rootfile.get("full-path")
         try:
-            opf = etree.fromstring(archive.read(opf_path), parser=secure_xml_parser())
+            opf = _parse_member(
+                read_member_bounded(archive, opf_path, limit=MAX_PACKAGE_MEMBER_BYTES),
+                opf_path,
+            )
         except KeyError as exc:
             raise EpubStructureError(f"{epub_path.name}: package {opf_path} is missing") from exc
 
@@ -346,7 +399,10 @@ def _read_toc(package: Package, archive: zipfile.ZipFile) -> list[TocEntry]:
     """
     nav = package.nav_item()
     if nav is not None:
-        root = etree.fromstring(archive.read(nav.path), parser=secure_xml_parser())
+        root = _parse_member(
+            read_member_bounded(archive, nav.path, limit=MAX_PACKAGE_MEMBER_BYTES),
+            nav.path,
+        )
         for element in root.iter(f"{{{XHTML_NS}}}nav"):
             if "toc" in (element.get(f"{{{OPS_NS}}}type") or "").split():
                 ol = element.find(f"{{{XHTML_NS}}}ol")
@@ -354,7 +410,10 @@ def _read_toc(package: Package, archive: zipfile.ZipFile) -> list[TocEntry]:
                     return _nav_entries(package, nav.path, ol)
     ncx = package.ncx_item()
     if ncx is not None:
-        root = etree.fromstring(archive.read(ncx.path), parser=secure_xml_parser())
+        root = _parse_member(
+            read_member_bounded(archive, ncx.path, limit=MAX_PACKAGE_MEMBER_BYTES),
+            ncx.path,
+        )
         nav_map = root.find(f"{{{NCX_NS}}}navMap")
         if nav_map is not None:
             return _ncx_entries(package, ncx.path, nav_map)
@@ -375,31 +434,66 @@ def write_copy(source: Path, output: Path, replacements: dict[str, bytes]) -> No
         if unknown:
             raise EpubStructureError(f"cannot replace entries the book does not have: {unknown}")
 
+        total = 0
         output.parent.mkdir(parents=True, exist_ok=True)
-        tmp = output.with_name(output.name + ".tmp")
-        with zipfile.ZipFile(tmp, "w") as out:
-            mimetype = next((i for i in entries if i.filename == "mimetype"), None)
-            data = archive.read(mimetype) if mimetype is not None else MIMETYPE
-            out.writestr(
-                zipfile.ZipInfo("mimetype", date_time=_date(mimetype)),
-                data,
-                compress_type=zipfile.ZIP_STORED,
-            )
-            for info in entries:
-                if info.filename == "mimetype":
-                    continue
-                payload = replacements.get(info.filename)
-                if payload is None:
-                    payload = archive.read(info)
-                copy = zipfile.ZipInfo(info.filename, date_time=info.date_time)
-                # The attributes mean what the creating system says they mean:
-                # a FAT book's zero attributes, relabelled as Unix, became
-                # Python's stand-in mode 600, and folders unzipped unopenable.
-                copy.create_system = info.create_system
-                copy.external_attr = info.external_attr
-                copy.compress_type = info.compress_type
-                out.writestr(copy, payload)
-        tmp.replace(output)
+        # A unique file per writer, created exclusively: a fixed name let a
+        # symlink planted there redirect the write, and let concurrent exports
+        # truncate each other's half-written book.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(output.parent), prefix=f"{output.name}.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as stream, zipfile.ZipFile(stream, "w") as out:
+                mimetype = next((i for i in entries if i.filename == "mimetype"), None)
+                data = (
+                    read_member_bounded(archive, mimetype.filename, limit=MAX_PACKAGE_MEMBER_BYTES)
+                    if mimetype is not None
+                    else MIMETYPE
+                )
+                out.writestr(
+                    zipfile.ZipInfo("mimetype", date_time=_date(mimetype)),
+                    data,
+                    compress_type=zipfile.ZIP_STORED,
+                )
+                for info in entries:
+                    if info.filename == "mimetype":
+                        continue
+                    payload = replacements.get(info.filename)
+                    if payload is None:
+                        total += info.file_size
+                        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                            raise EpubStructureError(
+                                f"{info.filename} declares {info.file_size:,} bytes, over the "
+                                f"{MAX_ARCHIVE_MEMBER_BYTES:,}-byte limit"
+                            )
+                        if total > MAX_ARCHIVE_TOTAL_BYTES:
+                            raise EpubStructureError(
+                                f"the archive expands past the "
+                                f"{MAX_ARCHIVE_TOTAL_BYTES:,}-byte limit"
+                            )
+                        with archive.open(info) as member_stream:
+                            payload = member_stream.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+                        if len(payload) > MAX_ARCHIVE_MEMBER_BYTES:
+                            raise EpubStructureError(
+                                f"{info.filename} expanded past the "
+                                f"{MAX_ARCHIVE_MEMBER_BYTES:,}-byte limit"
+                            )
+                    copy = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+                    # The attributes mean what the creating system says they mean:
+                    # a FAT book's zero attributes, relabelled as Unix, became
+                    # Python's stand-in mode 600, and folders unzipped unopenable.
+                    copy.create_system = info.create_system
+                    copy.external_attr = info.external_attr
+                    copy.compress_type = info.compress_type
+                    out.writestr(copy, payload)
+            # mkstemp creates 0600. A copy of a world-readable book should not
+            # come out private, so take the source's mode before publishing it.
+            os.chmod(tmp, source.stat().st_mode & 0o777)
+            os.replace(tmp, output)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def _date(info: zipfile.ZipInfo | None) -> tuple[int, int, int, int, int, int]:

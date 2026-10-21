@@ -1,4 +1,5 @@
 import threading
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -86,12 +87,15 @@ def test_without_a_terminal_progress_is_plain_lines(monkeypatch, settings, tmp_p
     input_epub.write_text("stub", encoding="utf-8")
     _write_segments(settings, input_epub)
     monkeypatch.setattr("translation.controller.create_provider", lambda _config: DummyProvider())
-    log = Console(record=True, force_terminal=False)
+    # export_text() strips styling and control codes, so it cannot show
+    # whether any were written; read the stream itself.
+    raw = StringIO()
+    log = Console(file=raw, force_terminal=False)
     monkeypatch.setattr("translation.controller.console", log)
 
     run_translation(settings, input_epub, source_language="en", target_language="zh-CN")
 
-    output = log.export_text()
+    output = raw.getvalue()
     assert "Dashboard" not in output and "\x1b" not in output
     assert "Translated: 1 of 1" in output
 

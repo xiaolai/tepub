@@ -41,3 +41,28 @@ def test_set_html_content_empty_markup():
 
     assert element.text is None
     assert len(element) == 0
+
+
+def test_leading_text_on_a_list_is_wrapped_in_an_item():
+    element = _element("ol")
+    _set_html_content(element, "Prefix<li>Item</li>")
+
+    assert element.text is None
+    assert element[0].tag == f"{{{XHTML_NS}}}li"
+    assert element[0].text == "Prefix"
+    assert element[1].tag == f"{{{XHTML_NS}}}li"
+
+
+def test_translated_markup_cannot_introduce_execution():
+    element = _element("div")
+    _set_html_content(
+        element,
+        '<img src="x.png" onerror="alert(1)"/>'
+        '<a href="java&#9;script:alert(1)">x</a>'
+        "<script>alert(2)</script>",
+    )
+
+    markup = etree.tostring(element, encoding="unicode")
+    assert "onerror" not in markup
+    assert "javascript:" not in markup.replace("java\tscript:", "")
+    assert "<script" not in markup

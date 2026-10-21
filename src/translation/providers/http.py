@@ -8,6 +8,7 @@ the others treated every error as fatal. The behaviour lives here once.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -28,9 +29,14 @@ def _retry_delay(response: Any, attempt: int) -> float:
     header = getattr(response, "headers", {}).get("Retry-After") if response is not None else None
     if header:
         try:
-            return min(float(header), MAX_RETRY_AFTER_SECONDS)
+            delay = float(header)
         except ValueError:
             pass  # An HTTP-date; fall back to exponential backoff.
+        else:
+            # A negative or NaN delay raised ValueError inside time.sleep and
+            # ended the retries; only a finite nonnegative wait is usable.
+            if math.isfinite(delay) and delay >= 0:
+                return min(delay, MAX_RETRY_AFTER_SECONDS)
     return float(2**attempt)
 
 

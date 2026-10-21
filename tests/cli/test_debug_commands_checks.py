@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from cli.main import app
@@ -14,6 +16,13 @@ from state.store import load_state, save_state
 from tests.epub_builder import build_epub
 
 REFUSAL = "I'm sorry, I can't help with that."
+
+
+def _permissions_enforced() -> bool:
+    """Whether chmod can make a file unreadable: an unprivileged POSIX user,
+    not root (which reads anything) and not Windows (which ignores the bits)."""
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() != 0
 
 
 def _translated_workspace(tmp_path: Path, translation: str) -> tuple[Path, AppSettings]:
@@ -87,6 +96,9 @@ def test_analyze_skips_needs_a_library_and_sane_counts(tmp_path: Path) -> None:
         assert result.exit_code == 2, (option, result.output)
 
 
+@pytest.mark.skipif(
+    not _permissions_enforced(), reason="file permissions are not enforced for this user"
+)
 def test_purge_refusals_reports_a_state_file_it_cannot_read(tmp_path: Path) -> None:
     """The first read's OSError escaped as a traceback."""
     book, settings = _translated_workspace(tmp_path, REFUSAL)

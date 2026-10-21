@@ -31,9 +31,9 @@ from .preprocess import segment_to_text, split_sentences
 from .renderer import CouldntEncodeError, RenderStoppedError, SegmentRenderer
 from .selection import audiobook_segments
 from .state import (
+    AudioStateWriter,
     apply_text_digests,
     ensure_state,
-    get_or_create_segment,
     mark_status,
     reset_error_segments,
     save_state,
@@ -703,67 +703,91 @@ class AudiobookRunner:
         outcome = _PassOutcome()
         stop = threading.Event()
         executor = ThreadPoolExecutor(max_workers=progress.max_workers)
-        try:
-            future_to_seg_id = {}
-            for seg_id in pending_queue:
-                if _has_audio(get_or_create_segment(self.state_path, seg_id)):
-                    continue
-                future = executor.submit(
-                    _synthesize_segment,
-                    work_map[seg_id],
-                    renderer,
-                    self.segment_audio_dir,
-                    max_attempts=3,
-                    stop=stop,
-                )
-                future_to_seg_id[future] = seg_id
-            progress.running = set(future_to_seg_id)
+        future_to_seg_id: dict = {}
+        # The whole pass runs under the workspace lock, so one in-memory
+        # document is current for the duration. Reading and rewriting the
+        # state file for every queued segment and every result was O(segments)
+        # per segment; the writer batches the writes instead.
+        with AudioStateWriter(self.state_path) as writer:
+            try:
+                for seg_id in pending_queue:
+                    if _has_audio(writer.doc.segments.get(seg_id)):
+                        continue
+                    future = executor.submit(
+                        _synthesize_segment,
+                        work_map[seg_id],
+                        renderer,
+                        self.segment_audio_dir,
+                        max_attempts=3,
+                        stop=stop,
+                    )
+                    future_to_seg_id[future] = seg_id
+                progress.running = set(future_to_seg_id)
 
-            for future in as_completed(future_to_seg_id):
-                progress.running.discard(future)
-                seg_id = future_to_seg_id[future]
-                if future.cancelled():
-                    # Cancelled when cooldown began; the segment stays
-                    # pending and is picked up by the next pass.
-                    continue
-                result = future.result()
-                if result.deferred:
-                    continue
-                if result.error:
-                    outcome.failures.append(seg_id)
-                    if result.permanent:
-                        outcome.permanent.append(seg_id)
-                    if self._record_failure(seg_id, result) and outcome.cooldown_until is None:
-                        # Stop queued work and tell running workers not to
-                        # start another request. Results still arriving are
-                        # saved as this loop drains; the wait happens after
-                        # it, so nothing finished is held unsaved.
-                        stop.set()
-                        for queued in future_to_seg_id:
-                            if not queued.done():
-                                queued.cancel()
-                        outcome.cooldown_until = datetime.now(timezone.utc) + COOLDOWN
-                        set_cooldown(self.state_path, outcome.cooldown_until)
-                else:
-                    self._record_success(seg_id, result, work_map[seg_id])
-                    outcome.successes += 1
-                progress.record(result)
+                for future in as_completed(future_to_seg_id):
+                    progress.running.discard(future)
+                    seg_id = future_to_seg_id[future]
+                    if future.cancelled():
+                        # Cancelled when cooldown began; the segment stays
+                        # pending and is picked up by the next pass.
+                        continue
+                    result = future.result()
+                    if result.deferred:
+                        continue
+                    if result.error:
+                        outcome.failures.append(seg_id)
+                        if result.permanent:
+                            outcome.permanent.append(seg_id)
+                        if (
+                            self._record_failure(writer, seg_id, result)
+                            and outcome.cooldown_until is None
+                        ):
+                            # Stop queued work and tell running workers not to
+                            # start another request. Results still arriving are
+                            # saved as this loop drains; the wait happens after
+                            # it, so nothing finished is held unsaved.
+                            stop.set()
+                            for queued in future_to_seg_id:
+                                if not queued.done():
+                                    queued.cancel()
+                            outcome.cooldown_until = datetime.now(timezone.utc) + COOLDOWN
+                            writer.set_cooldown(outcome.cooldown_until)
+                    else:
+                        self._record_success(writer, seg_id, result, work_map[seg_id])
+                        outcome.successes += 1
+                    progress.record(result)
 
-        except KeyboardInterrupt:
-            # Covers submission as well as collection: an interrupt while
-            # submitting used to wait for every running worker.
-            console.print("\n[yellow]Interrupted by user. Saving progress...[/yellow]")
-            stop.set()
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise
-        executor.shutdown(wait=True)
-        progress.running = set()
+            except KeyboardInterrupt:
+                # Covers submission as well as collection: an interrupt while
+                # submitting used to wait for every running worker.
+                console.print("\n[yellow]Interrupted by user. Saving progress...[/yellow]")
+                stop.set()
+                executor.shutdown(wait=False, cancel_futures=True)
+                writer.flush()
+                raise
+            except BaseException:
+                # A failure while saving a result (a full disk, a state write)
+                # used to leave queued synthesis running after this method
+                # returned — and the caller releases the workspace lock on return,
+                # so those workers could keep charging and writing clips.
+                stop.set()
+                for queued in future_to_seg_id:
+                    if not queued.done():
+                        queued.cancel()
+                executor.shutdown(wait=True)
+                writer.flush()
+                raise
+            else:
+                executor.shutdown(wait=True)
+            finally:
+                progress.running = set()
         return outcome
 
-    def _record_failure(self, seg_id: str, result: SynthesisResult) -> bool:
+    def _record_failure(
+        self, writer: AudioStateWriter, seg_id: str, result: SynthesisResult
+    ) -> bool:
         """Save a failed segment; True once failures call for a cooldown."""
-        mark_status(
-            self.state_path,
+        writer.mark(
             seg_id,
             AudioSegmentStatus.ERROR,
             attempts=result.attempts,
@@ -773,13 +797,13 @@ class AudiobookRunner:
             # A full disk or a rejected API key says nothing about the
             # provider's load; pausing requests for half an hour fixes neither.
             return False
-        consecutive = load_audio_state(self.state_path).consecutive_failures + 1
-        set_consecutive_failures(self.state_path, consecutive)
-        return consecutive >= COOLDOWN_AFTER_FAILURES
+        writer.consecutive_failures += 1
+        return writer.consecutive_failures >= COOLDOWN_AFTER_FAILURES
 
-    def _record_success(self, seg_id: str, result: SynthesisResult, work: SegmentWork) -> None:
-        mark_status(
-            self.state_path,
+    def _record_success(
+        self, writer: AudioStateWriter, seg_id: str, result: SynthesisResult, work: SegmentWork
+    ) -> None:
+        writer.mark(
             seg_id,
             AudioSegmentStatus.COMPLETED,
             audio_path=result.audio_path,
@@ -788,7 +812,7 @@ class AudiobookRunner:
             last_error=None,
             text_sha256=work.text_sha256,
         )
-        set_consecutive_failures(self.state_path, 0)
+        writer.consecutive_failures = 0
 
 
 class _PassOutcome:

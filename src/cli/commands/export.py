@@ -315,6 +315,13 @@ def run_exports(settings: AppSettings, input_epub: Path, plan: ExportPlan) -> Ex
 
 
 def _run_exports(settings: AppSettings, input_epub: Path, plan: ExportPlan) -> ExportResult:
+    # The state records the language the translations were made in; the current
+    # settings may name a different one. Polishing and the file names follow
+    # the recorded language, as the injection's language tags already do.
+    if settings.state_file.exists():
+        settings = settings.model_copy(
+            update={"target_language": load_state(settings.state_file).target_language}
+        )
     # Once for every edition; it ran inside each, taking the lock held here.
     polish_if_chinese(
         settings.state_file,

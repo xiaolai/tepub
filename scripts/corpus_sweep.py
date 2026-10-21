@@ -130,6 +130,9 @@ def check_book(book: Path, epubcheck: bool) -> dict:
                 if added:
                     result["epubcheck_added_where"] = sorted({path for path, _ in added})[:5]
                 result["epubcheck_source_fatal_files"] = len(fatal)
+                # Recorded so a later --epubcheck run re-checks a book whose
+                # earlier record was made without one.
+                result["epubcheck"] = True
 
         result["status"] = "ok"
     except Exception as exc:  # noqa: BLE001 - a finding, recorded
@@ -183,15 +186,28 @@ def main() -> int:
     if not books:
         parser.error(f"no .epub files under {args.books}")
     checked = set(random.Random(args.seed).sample(books, min(args.epubcheck, len(books))))
-    done = set()
-    if args.out.exists():  # resume: skip books already recorded
-        done = {json.loads(line)["book"] for line in args.out.read_text(encoding="utf-8").splitlines() if line}
-    todo = [book for book in books if book.name not in done]
+    records = (
+        [json.loads(line) for line in args.out.read_text(encoding="utf-8").splitlines() if line]
+        if args.out.exists()
+        else []
+    )
+    # Resume skips a recorded book only when it holds the validation this run
+    # asks for; a record made without --epubcheck does not stand in for one.
+    done = {
+        record["book"]
+        for record in records
+        if record.get("book") and (not args.epubcheck or record.get("epubcheck"))
+    }
+    # By path relative to the corpus root: a/book.epub and b/book.epub are
+    # different books that share a basename.
+    todo = [book for book in books if book.relative_to(args.books).as_posix() not in done]
     print(f"{len(books)} books, {len(done)} already done, {len(checked)} with epubcheck", flush=True)
     with args.out.open("a", encoding="utf-8") as out, ThreadPoolExecutor(args.jobs) as pool:
         futures = {pool.submit(_run_one, book, book in checked): book for book in todo}
         for count, future in enumerate(as_completed(futures), start=1):
-            out.write(json.dumps(future.result(), ensure_ascii=False) + "\n")
+            result = future.result()
+            result["book"] = futures[future].relative_to(args.books).as_posix()
+            out.write(json.dumps(result, ensure_ascii=False) + "\n")
             out.flush()
             if count % 50 == 0:
                 print(f"{count}/{len(todo)}", flush=True)

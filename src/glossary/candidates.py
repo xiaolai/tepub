@@ -106,7 +106,10 @@ def _uppercase_class() -> str:
             else:
                 ranges.append([code, code])
     return "".join(
-        re.escape(chr(a)) if a == b else f"{re.escape(chr(a))}-{re.escape(chr(b))}" for a, b in ranges
+        re.escape(chr(a))
+        if a == b
+        else f"{re.escape(chr(a))}-{re.escape(chr(b))}"
+        for a, b in ranges
     )
 
 

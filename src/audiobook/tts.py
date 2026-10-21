@@ -167,7 +167,9 @@ def create_tts_engine(
     elif provider == "openai":
         return OpenAITTSEngine(
             voice=voice,
-            model=kwargs.get("model", "tts-1"),
+            # An explicit None (a session with no model chosen) used to override
+            # the engine's default and send a null model to the API.
+            model=kwargs.get("model") or "tts-1",
             speed=kwargs.get("speed", 1.0),
             api_key=kwargs.get("api_key"),
         )

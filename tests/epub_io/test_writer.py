@@ -13,7 +13,7 @@ import pytest
 from lxml import etree
 
 from epub_io.container import EpubStructureError
-from epub_io.writer import write_updated_epub
+from epub_io.writer import _relabel_document, write_updated_epub
 from tests.epub_builder import build_epub
 
 
@@ -190,3 +190,23 @@ def test_bilingual_declares_both_languages_and_leaves_documents_alone(
     assert "<dc:language>en</dc:language>" in opf
     assert "<dc:language>zh-CN</dc:language>" in opf
     assert _read(out, "OEBPS/ch1.xhtml") == _read(book, "OEBPS/ch1.xhtml")
+
+
+def test_the_export_keeps_the_source_file_mode(tmp_path: Path) -> None:
+    """mkstemp creates 0600; a 0644 book must not come out private."""
+    book = build_epub(tmp_path / "in.epub", [("ch1.xhtml", "One", "<p>One.</p>")])
+    book.chmod(0o640)
+    out = tmp_path / "out.epub"
+
+    write_updated_epub(book, out, {})
+
+    assert out.stat().st_mode & 0o777 == 0o640
+
+
+def test_single_quoted_language_attributes_do_not_become_duplicates() -> None:
+    relabelled = _relabel_document(
+        b"<html lang='en' xml:lang='en'><body><p>x</p></body></html>", "zh-CN"
+    )
+    assert relabelled.count(b"lang=") == 2
+    assert b"'en'" not in relabelled
+    assert b'lang="zh-CN"' in relabelled and b'xml:lang="zh-CN"' in relabelled

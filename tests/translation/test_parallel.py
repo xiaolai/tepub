@@ -1,5 +1,6 @@
 """Tests for parallel translation processing."""
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -12,21 +13,39 @@ from translation.controller import run_translation
 
 
 class DummyParallelProvider:
-    """Provider that simulates parallel translation."""
+    """Provider that records how many calls run at the same time."""
 
     name = "dummy"
     model = "dummy-model"
 
-    def __init__(self):
+    def __init__(self, *, together: int | None = None):
         self.call_count = 0
+        self.active = 0
+        self.max_active = 0
+        self._together = together
+        self._lock = threading.Lock()
+        # The first ``together`` calls block until all of them are running, so
+        # the test fails unless the run really overlaps them. Later calls pass
+        # straight through, since the remainder need not fill a barrier.
+        self._barrier = threading.Barrier(together, timeout=10) if together else None
 
     def preflight(self):
         pass
 
     def translate(self, segment: Segment, source_language: str, target_language: str) -> str:
-        """Simulate translation with a counter."""
-        self.call_count += 1
-        return f"Translation {self.call_count}"
+        """Simulate translation with a counter and concurrency gauge."""
+        with self._lock:
+            self.call_count += 1
+            number = self.call_count
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            if self._barrier is not None and number <= self._together:
+                self._barrier.wait()
+            return f"Translation {number}"
+        finally:
+            with self._lock:
+                self.active -= 1
 
 
 @pytest.fixture
@@ -66,7 +85,7 @@ def test_parallel_translation_processes_all_segments(monkeypatch, settings, tmp_
     input_epub.write_text("stub", encoding="utf-8")
     segments = _write_segments(settings, input_epub, count=10)
 
-    provider = DummyParallelProvider()
+    provider = DummyParallelProvider(together=3)
     monkeypatch.setattr("translation.controller.create_provider", lambda _config: provider)
 
     test_console = Console(record=True)
@@ -93,6 +112,8 @@ def test_parallel_translation_processes_all_segments(monkeypatch, settings, tmp_
 
     # Verify provider was called for each segment
     assert provider.call_count == 10
+    # Three calls had to be running together for the barrier to release.
+    assert provider.max_active == 3
 
 
 def test_parallel_with_single_worker_is_sequential(monkeypatch, settings, tmp_path):
@@ -126,3 +147,5 @@ def test_parallel_with_single_worker_is_sequential(monkeypatch, settings, tmp_pa
         assert record.translation is not None
 
     assert provider.call_count == 5
+    # One worker never runs two calls at once.
+    assert provider.max_active == 1

@@ -6,7 +6,8 @@ from rich.markup import escape
 
 from config import AppSettings
 from console_singleton import get_console
-from state.store import load_segments, load_state
+from state.base import safe_load_state
+from state.models import SegmentsDocument, StateDocument
 
 console = get_console()
 
@@ -21,9 +22,9 @@ def require_file(path: Path, description: str) -> None:
 
 def load_all_segments(settings: AppSettings):
     require_file(settings.segments_file, "Segments file")
-    return load_segments(settings.segments_file)
+    return safe_load_state(settings.segments_file, SegmentsDocument, "segments")
 
 
 def load_translation_state(settings: AppSettings):
     require_file(settings.state_file, "State file")
-    return load_state(settings.state_file)
+    return safe_load_state(settings.state_file, StateDocument, "translation")

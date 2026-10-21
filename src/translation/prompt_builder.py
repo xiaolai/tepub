@@ -75,7 +75,11 @@ def build_prompt(segment: Segment, source_language: str, target_language: str) -
     # markers and tags, so on a whole book the model, never told, dropped
     # note-link markers in most long paragraphs. A prompt naming no target
     # language would leave the model to guess one.
-    if preamble and "{language_instruction}" not in preamble and "{target_language}" not in preamble:
+    if (
+        preamble
+        and "{language_instruction}" not in preamble
+        and "{target_language}" not in preamble
+    ):
         preamble = f"{preamble}\n{{language_instruction}}"
     if preamble and "{mode_instruction}" not in preamble:
         preamble = f"{preamble}\n{{mode_instruction}}"

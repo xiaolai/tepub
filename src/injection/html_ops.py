@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 
 from lxml import etree
@@ -10,6 +11,55 @@ from epub_io.xhtml import XHTML_NS, local_name, parse_fragment
 from state.models import ExtractMode, Segment
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
+
+#: Elements that execute or navigate the reader. A translated fragment has no
+#: business introducing any of them.
+_UNSAFE_ELEMENTS = frozenset(
+    {
+        "script", "iframe", "object", "embed", "applet", "base", "meta", "link",
+        "template", "frame", "frameset", "portal",
+    }
+)
+_URL_ATTRIBUTES = frozenset({"href", "src", "xlink:href", "poster", "action", "formaction"})
+_UNSAFE_SCHEMES = ("javascript:", "vbscript:", "data:text/html", "data:application/xhtml")
+
+
+def _safe_url(value: str) -> bool:
+    normalised = re.sub(r"[\x00-\x20]", "", value).lower()
+    return not normalised.startswith(_UNSAFE_SCHEMES)
+
+
+def _attribute_name(name: str) -> str:
+    if name.startswith("{"):
+        return etree.QName(name).localname.lower()
+    return name.lower()
+
+
+def _sanitize_fragment(elements: list[etree._Element]) -> list[etree._Element]:
+    """Remove executable elements and attributes from a translated fragment.
+
+    markup_mismatch rejects a reply that adds them and asks for another, but a
+    reply can still arrive that the check cannot see (a tag it exempts, an
+    unfamiliar attribute spelling). This is the guard that runs regardless.
+    """
+    for element in elements:
+        for node in list(element.iter()):
+            if not isinstance(node.tag, str):
+                continue
+            if local_name(node) in _UNSAFE_ELEMENTS:
+                parent = node.getparent()
+                if parent is not None:
+                    parent.remove(node)
+                continue
+            for name in list(node.attrib):
+                local = _attribute_name(name)
+                if local.startswith("on"):
+                    del node.attrib[name]
+                elif local in _URL_ATTRIBUTES and not _safe_url(node.attrib[name]):
+                    del node.attrib[name]
+                elif local == "srcdoc":
+                    del node.attrib[name]
+    return [element for element in elements if element.getparent() is not None]
 
 
 def _set_language(element: etree._Element, language: str | None) -> None:
@@ -88,9 +138,53 @@ def _blocks_where_required(element: etree._Element) -> None:
     element.append(paragraph)
 
 
+#: Containers that cannot hold text directly, and the chain that can. A
+#: translator sometimes prefixes a block of markup with a word or a note; on
+#: an <ol> that text made the exported document invalid (epubcheck RSC-005).
+_TEXT_WRAPPERS: dict[str, tuple[str, ...]] = {
+    "ul": ("li",),
+    "ol": ("li",),
+    "dl": ("dd",),
+    "tr": ("td",),
+    "thead": ("tr", "td"),
+    "tbody": ("tr", "td"),
+    "tfoot": ("tr", "td"),
+    "table": ("tbody", "tr", "td"),
+    "select": ("option",),
+    "optgroup": ("option",),
+}
+
+
+def _attach_leading_text(element: etree._Element, text: str) -> None:
+    """Put text where the element is allowed to hold it."""
+    if not text:
+        return
+    path = _TEXT_WRAPPERS.get(local_name(element))
+    if path is None or not text.strip():
+        element.text = text
+        return
+    holder = element
+    for name in path:
+        child = etree.Element(f"{{{XHTML_NS}}}{name}")
+        if local_name(holder) == "table":
+            # tbody belongs after thead and before tfoot, not at position 0.
+            tfoot = next(
+                (node for node in holder if local_name(node) == "tfoot"), None
+            )
+            if tfoot is not None:
+                holder.insert(holder.index(tfoot), child)
+            else:
+                holder.append(child)
+        else:
+            holder.insert(0, child)
+        holder = child
+    holder.text = text
+
+
 def _set_text_only(element: etree._Element, text: str) -> None:
     _clear_children(element)
-    element.text = text
+    element.text = None
+    _attach_leading_text(element, text)
     _blocks_where_required(element)
 
 
@@ -105,7 +199,9 @@ def _set_html_content(element: etree._Element, markup: str) -> None:
     if not markup:
         return
     text, children = parse_fragment(markup)
-    element.text = text or None
+    children = _sanitize_fragment(children)
+    element.text = None
+    _attach_leading_text(element, text or "")
     for child in children:
         element.append(child)
     _blocks_where_required(element)
@@ -118,6 +214,23 @@ def _is_page_break(node: etree._Element) -> bool:
     return node.get("role") == "doc-pagebreak" or "pagebreak" in (node.get(_OPS_TYPE) or "").split()
 
 
+def _unmark_page_break(node: etree._Element) -> None:
+    """Keep a page-break marker's text without marking the same page again.
+
+    Only empty markers are dropped outright; one holding text stays in the
+    copy, where its role or epub:type announced the printed page a second time.
+    """
+    if node.get("role") == "doc-pagebreak":
+        node.attrib.pop("role", None)
+    types = (node.get(_OPS_TYPE) or "").split()
+    if "pagebreak" in types:
+        types.remove("pagebreak")
+        if types:
+            node.set(_OPS_TYPE, " ".join(types))
+        else:
+            node.attrib.pop(_OPS_TYPE, None)
+
+
 def _strip_ids(element: etree._Element) -> None:
     """Translated copies sit beside their originals; repeating ids would make
     every in-book link ambiguous, and epubcheck rejects duplicates (D5).
@@ -125,19 +238,20 @@ def _strip_ids(element: etree._Element) -> None:
     Page-break markers go too: they mark where a page of the printed book
     begins, and a copy marked the same page twice for page lists and screen
     readers, as role="doc-pagebreak" with its id gone.
+
+    xml:id is an ID in its own right; leaving it on a copy is a duplicate XML
+    ID, and a parser rejects the document.
     """
     for node in list(element.iter()):
         if not isinstance(node.tag, str):
             continue
-        if (
-            node is not element
-            and _is_page_break(node)
-            and not len(node)
-            and not (node.text or "").strip()
-        ):
-            _remove_keeping_tail(node)
-            continue
+        if node is not element and _is_page_break(node):
+            if not len(node) and not (node.text or "").strip():
+                _remove_keeping_tail(node)
+                continue
+            _unmark_page_break(node)
         node.attrib.pop("id", None)
+        node.attrib.pop(f"{{{XML_NS}}}id", None)
 
 
 def _remove_keeping_tail(node: etree._Element) -> None:

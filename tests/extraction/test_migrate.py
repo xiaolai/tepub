@@ -329,3 +329,48 @@ def test_a_finished_import_is_not_redone_from_its_backups(tmp_path: Path) -> Non
     save_state(later, state_file)
     import_legacy_workspace(tmp_path, state_file, old, new)
     assert load_state(state_file).segments["u-1"].translation == "甲改"
+
+
+def test_a_carried_clip_is_renamed_to_its_new_id(tmp_path: Path) -> None:
+    """Synthesis names output after the id; a stale old-name clip would be
+    overwritten, and a stale new-name clip would be replaced by this one."""
+    state_file = tmp_path / "state.json"
+    save_state(StateDocument(segments={"old-b": _done("old-b", "乙")}), state_file)
+    audio_dir = tmp_path / "audiobook@edgetts"
+    segments_dir = audio_dir / "segments"
+    segments_dir.mkdir(parents=True)
+    clip = segments_dir / "old-b.m4a"
+    clip.write_bytes(b"audio")
+    (audio_dir / "audio_state.json").write_text(
+        json.dumps(
+            {
+                "session": {},
+                "segments": {
+                    "old-b": {"segment_id": "old-b", "audio_path": str(clip)},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import_legacy_workspace(tmp_path, state_file, OLD, NEW)
+
+    data = json.loads((audio_dir / "audio_state.json").read_text(encoding="utf-8"))
+    assert data["segments"]["new-2"]["audio_path"].endswith("new-2.m4a")
+    assert (segments_dir / "new-2.m4a").read_bytes() == b"audio"
+    assert not clip.exists()
+
+
+def test_whitespace_inside_text_is_not_deleted_for_matching() -> None:
+    """Deleting all whitespace made "Now here." match "Nowhere."."""
+    old = [_segment("o", 1, "Now here.")]
+    new = [_segment("n", 1, "Nowhere.")]
+
+    assert legacy_mapping(old, new) == {}
+
+
+def test_item_text_that_looks_like_a_tag_stays_text() -> None:
+    """Leading item text was decoded into markup; "<b>" became an element."""
+    from extraction.migrate import _items
+
+    assert _items("<li>&lt;b&gt; literal</li>") == ["&lt;b&gt; literal"]

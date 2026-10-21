@@ -27,8 +27,6 @@ _DIRECT_REFUSALS: tuple[str, ...] = (
     "i cant",
     "i am unable",
     "i'm unable",
-    "as an ai",
-    "as a language model",
 )
 
 # Corroborating evidence that an apology is actually declining the task.
@@ -51,17 +49,15 @@ _REFUSAL_MARKERS: tuple[str, ...] = (
     "無法完成",
 )
 
-# A refusal declines the task, so it names the task. Without this, a book
-# translated into English was full of false positives: "I cannot believe it",
-# "I'm sorry, I can't come tonight".
+# A refusal declines the task, so it names the task. Bare "help" and "content"
+# matched ordinary prose ("I cannot help smiling"), so only explicit phrasing
+# that pairs the refusal with the task counts.
 _TASK_MARKERS: tuple[str, ...] = (
     "translat",
-    "help",
+    "help with",
     "assist",
     "comply",
     "request",
-    "provide",
-    "content",
     "翻译",
     "翻譯",
     "协助",
@@ -77,7 +73,8 @@ _TASK_MARKERS: tuple[str, ...] = (
 )
 
 # Openers that announce a model, which no ordinary sentence in a book does.
-_SELF_IDENTIFYING: tuple[str, ...] = ("as an ai", "as a language model")
+# The word boundary keeps "As an airman…" from matching "as an ai".
+_SELF_IDENTIFYING = re.compile(r"^as an? (?:ai|artificial intelligence|language model)\b")
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -100,7 +97,7 @@ def looks_like_refusal(text: str | None, *, max_length: int = 400) -> bool:
     normalised = _normalise(stripped)
     prefix_window = normalised[:max_length]
 
-    if prefix_window.startswith(_SELF_IDENTIFYING):
+    if _SELF_IDENTIFYING.match(prefix_window):
         return True
 
     names_the_task = any(marker in prefix_window for marker in _TASK_MARKERS)

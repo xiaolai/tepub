@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,13 @@ from click.testing import CliRunner
 
 from cli.main import app
 from tests.epub_builder import build_epub
+
+
+def _permissions_enforced() -> bool:
+    """Whether chmod can make a file unreadable: an unprivileged POSIX user,
+    not root (which reads anything) and not Windows (which ignores the bits)."""
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() != 0
 
 
 @pytest.fixture(autouse=True)
@@ -241,6 +249,9 @@ def test_only_a_recorded_current_file_counts_as_done(tmp_path: Path) -> None:
     assert "Done." not in output and "export story.epub" in output
 
 
+@pytest.mark.skipif(
+    not _permissions_enforced(), reason="file permissions are not enforced for this user"
+)
 def test_an_export_in_a_folder_without_permission_is_reported(tmp_path: Path) -> None:
     """exists() raised PermissionError before the per-output handling."""
     book, root = _book(tmp_path)

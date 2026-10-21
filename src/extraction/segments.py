@@ -62,8 +62,15 @@ _UNWRAPPED_INLINE = ("span", "font", "a")
 OPS_TYPE = "{http://www.idpf.org/2007/ops}type"
 
 # Attributes the translation must carry back unchanged: link targets, anchors,
-# images and note semantics. Classes and styles are noise to a model.
-_KEPT_ATTRIBUTES = frozenset({"href", "src", "id", "alt", "title", "role", OPS_TYPE})
+# images, note semantics and the structure of tables and lists. A colspan,
+# rowspan or ol/li numbering attribute is part of the table or list, not
+# presentation; dropping it silently corrupted the layout on re-injection.
+_KEPT_ATTRIBUTES = frozenset(
+    {
+        "href", "src", "id", "alt", "title", "role", OPS_TYPE,
+        "colspan", "rowspan", "start", "reversed", "value",
+    }
+)
 
 
 def _is_block(element: etree._Element) -> bool:
@@ -77,6 +84,20 @@ def _has_block_descendant(element: etree._Element) -> bool:
 def _holds_skipped(element: etree._Element) -> bool:
     return any(
         isinstance(d.tag, str) and local_name(d) in SKIPPED_TAGS for d in element.iterdescendants()
+    )
+
+
+# SVG and MathML are kept whole in a unit's source: they are drawings and
+# formulas, not prose, and taking them out of a paragraph would lose them. The
+# remaining skipped tags are subtrees whose text must never reach a model, so a
+# unit that contains one is split around it.
+_UNSEGMENTED_SKIPPED = SKIPPED_TAGS - {"svg", "math"}
+
+
+def _holds_untranslatable(element: etree._Element) -> bool:
+    return any(
+        isinstance(d.tag, str) and local_name(d) in _UNSEGMENTED_SKIPPED
+        for d in element.iterdescendants()
     )
 
 
@@ -113,13 +134,18 @@ def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, Extr
             # Measured on what is sent: lists of links ran to 15,000 characters
             # of markup around 1,300 of text, and stayed whole when the text
             # alone was measured.
-            if (name in _SPLITTABLE and len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS) or (
-                name == "figure" and _holds_skipped(child)
+            if (
+                (name in _SPLITTABLE and len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS)
+                or (name == "figure" and _holds_skipped(child))
+                or _holds_untranslatable(child)
             ):
                 # Items, rows and cells are blocks: the walk makes them units.
                 # A figure holding an SVG chart or a formula is walked too, so
                 # its caption is the unit: whole, one book's figures sent
-                # 340,000 characters of drawing to the model.
+                # 340,000 characters of drawing to the model. A list or table
+                # holding a skipped subtree is walked for the same reason: kept
+                # whole, the script, style or code inside it was sent to be
+                # translated.
                 yield from iter_units(child)
             else:
                 yield child, ExtractMode.HTML
@@ -128,32 +154,71 @@ def iter_units(container: etree._Element) -> Iterator[tuple[etree._Element, Extr
             # paragraphs in a <span>, which is invalid HTML but common.
             if not _has_own_content(child):
                 yield from iter_units(child)
-            elif len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS:
+            elif (
+                len(_extract_inner_html(child)) > SPLIT_ABOVE_CHARS
+                or _holds_untranslatable(child)
+            ):
                 # Text of its own beside blocks makes a container one unit;
                 # one converted book was a single <div> of 5,000,000 characters
                 # whose own text was links and spans between its paragraphs.
-                # Too big to send, its blocks are walked and each inline
-                # element with text of its own is a unit; loose text between
-                # them cannot be one, since a unit is an element.
+                # Too big to send, or holding a subtree that must not be
+                # translated, its blocks are walked; its own text runs are
+                # wrapped as units of their own.
                 yield from _split_mixed(child)
             else:
                 yield child, ExtractMode.HTML
         elif _is_block(child):
-            mode = ExtractMode.HTML if _has_inline_markup(child) else ExtractMode.TEXT
-            yield child, mode
+            if _holds_untranslatable(child):
+                # The same skipped-subtree rule for a leaf block: split around
+                # the script, style or code instead of sending it.
+                yield from _split_mixed(child)
+            else:
+                mode = ExtractMode.HTML if _has_inline_markup(child) else ExtractMode.TEXT
+                yield child, mode
         # Inline content directly in a container that is walked is that
         # container's own text; a container with any is a unit itself above.
 
 
+def _text_run_unit(
+    parent: etree._Element, after: etree._Element | None
+) -> etree._Element:
+    """Wrap a run of loose text in a <span> so it can be a unit.
+
+    A container's own text, and the text after one of its children, belongs to
+    no element and so was silently left untranslated. The span is inserted into
+    the document, so injection finds it by the same enumeration extraction used.
+    """
+    span = etree.Element(f"{{{XHTML_NS}}}span")
+    if after is None:
+        span.text, parent.text = parent.text, None
+        parent.insert(0, span)
+    else:
+        span.text, after.tail = after.tail, None
+        parent.insert(parent.index(after) + 1, span)
+    return span
+
+
 def _split_mixed(container: etree._Element) -> Iterator[tuple[etree._Element, ExtractMode]]:
-    """Units of an oversized container with text of its own, in order."""
-    for child in container:
-        if not isinstance(child.tag, str) or local_name(child) in SKIPPED_TAGS:
-            continue
-        if _is_block(child) or _has_block_descendant(child) or local_name(child) in ATOMIC_TAGS:
-            yield from iter_units(_Single(child))
-        elif _has_text(text_of(child)):
-            yield child, ExtractMode.HTML if _has_inline_markup(child) else ExtractMode.TEXT
+    """Units of a mixed container, including its loose text, in order."""
+    # Snapshot before wrapping the leading text: the wrapper is inserted into
+    # the container and would otherwise be yielded a second time by this loop.
+    children = list(container)
+    if _has_text(container.text):
+        yield _text_run_unit(container, None), ExtractMode.TEXT
+    for child in children:
+        if isinstance(child.tag, str) and local_name(child) not in SKIPPED_TAGS:
+            if (
+                _is_block(child)
+                or _has_block_descendant(child)
+                or local_name(child) in ATOMIC_TAGS
+            ):
+                yield from iter_units(_Single(child))
+            elif _holds_untranslatable(child):
+                yield from _split_mixed(child)
+            elif _has_text(_translatable_text(child)):
+                yield child, ExtractMode.HTML if _has_inline_markup(child) else ExtractMode.TEXT
+        if _has_text(child.tail):
+            yield _text_run_unit(container, child), ExtractMode.TEXT
 
 
 class _Single:

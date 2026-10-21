@@ -11,7 +11,9 @@ _RICH_HANDLER: RichHandler | None = None
 def configure_logging(level: int = logging.INFO) -> None:
     global _RICH_HANDLER
     if _RICH_HANDLER is None:
-        console = Console(force_terminal=True)
+        # Rich decides from the stream whether colours are wanted: forcing a
+        # terminal wrote ANSI escapes into redirected output and captured logs.
+        console = Console()
         handler = RichHandler(
             console=console, show_time=False, show_path=False, rich_tracebacks=True
         )

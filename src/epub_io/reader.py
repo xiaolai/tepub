@@ -10,7 +10,7 @@ from lxml import etree
 from config import AppSettings
 from logging_utils.logger import get_logger
 
-from .container import ManifestItem, read_package
+from .container import ManifestItem, read_member_bounded, read_package
 from .container import SpineDocument as SpineItem
 from .xhtml import NotWellFormedError, XhtmlDocument, parse_xhtml
 
@@ -89,8 +89,11 @@ class EpubReader:
                     continue
                 # The file's own bytes. ebooklib's get_content() returns a rebuilt
                 # document with an empty <head>, so every translated chapter used
-                # to lose its title and stylesheet links.
-                raw_html = archive.read(self.package.zip_path(spine_item.href.as_posix()))
+                # to lose its title and stylesheet links. The manifest's resolved
+                # zip path is used directly: spine hrefs are already decoded, so
+                # resolving them as URI hrefs would percent-decode a second time.
+                item = self.package.manifest[spine_item.idref]
+                raw_html = read_member_bounded(archive, item.path)
                 try:
                     xhtml = parse_xhtml(raw_html)
                 except NotWellFormedError as exc:
@@ -136,7 +139,7 @@ class EpubReader:
 
     def read_bytes(self, item: BookItem) -> bytes:
         with zipfile.ZipFile(self.epub_path) as archive:
-            return archive.read(item.path)
+            return read_member_bounded(archive, item.path)
 
     def read_document_by_path(self, href: Path) -> HtmlDocument:
         """Return the parsed spine document at ``href``, parsing each one once.

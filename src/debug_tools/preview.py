@@ -17,6 +17,10 @@ def preview_skip_candidates(settings: AppSettings, input_epub: Path) -> None:
 
     console.print("[bold]Skip Candidates[/bold]")
     for candidate in candidates:
+        # Book-controlled text: printed as markup, a filename holding "[/x]"
+        # ended the command with a MarkupError.
         console.print(
-            f"- {candidate.file_path.as_posix()} :: {candidate.reason} (source={candidate.source})"
+            f"- {candidate.file_path.as_posix()} :: {candidate.reason} "
+            f"(source={candidate.source})",
+            markup=False,
         )

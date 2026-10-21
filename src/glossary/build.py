@@ -37,7 +37,11 @@ def context_of(source: str, text: str, *, width: int = 240) -> str:
         max(text.rfind(mark, 0, match.start()) for mark in (". ", "? ", "! ", "\n")) + 1,
         match.start() - width // 2,
     )
-    ends = [i for i in (text.find(mark, match.end()) for mark in (". ", "? ", "! ", "\n")) if i >= 0]
+    ends = [
+        i
+        for i in (text.find(mark, match.end()) for mark in (". ", "? ", "! ", "\n"))
+        if i >= 0
+    ]
     end = min([*ends, match.end() + width // 2, len(text)])
     return " ".join(text[start : end + 1].split())
 
@@ -91,8 +95,12 @@ def render_proposals(proposals: list[Proposal], target_language: str) -> str:
         "# rendering rightly depends on the sentence; renderings come from a model and",
         "# can be wrong, names of people especially.",
         f"target_language: {_quoted(target_language)}",
-        "terms:",
     ]
+    if proposals:
+        lines.append("terms:")
+    else:
+        # A bare "terms:" loads as null, which Glossary validation refuses.
+        lines.append("terms: []")
     for proposal in proposals:
         lines.append(f"  # {proposal.count}x: {proposal.context}")
         lines.append(f"  - source: {_quoted(proposal.source)}")

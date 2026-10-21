@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import html
 import json
+import re
+import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,7 +41,9 @@ from translation.markup import markup_mismatch
 # 5: that size is measured on the markup sent, not the text; containers with
 #    text of their own over it are split too; and a unit's leading text is
 #    escaped like the rest of its source.
-SEGMENTS_FORMAT = 5
+# 6: loose container text and child tails become injectable units, so unit
+#    positions shift; old workspaces must be migrated rather than reused.
+SEGMENTS_FORMAT = 6
 
 
 @dataclass
@@ -62,7 +66,10 @@ def _carried_translation(translation: str, old: Segment, new: Segment) -> str | 
         converted = html.escape(translation, quote=False)
         return None if markup_mismatch(new.source_content, converted) else converted
     # Both HTML: drop what the new rule no longer sends, such as bare <a/>.
-    return clean_markup(translation)
+    # Then check it against the *new* source: a translation carried across a
+    # changed link used to be kept because matching ignored markup.
+    cleaned = clean_markup(translation)
+    return None if markup_mismatch(new.source_content, cleaned) else cleaned
 
 
 _ITEM_TAGS = ("li", "td", "th", "dt", "dd")
@@ -75,7 +82,9 @@ def _items(markup: str) -> list[str]:
     for element in root.iter(*_ITEM_TAGS):
         if any(ancestor.tag in _ITEM_TAGS for ancestor in element.iterancestors()):
             continue
-        inner = (element.text or "") + "".join(
+        # The leading text is escaped like the serialized children: copied raw,
+        # a literal "&lt;b&gt;" became a <b> element when the fragment was parsed.
+        inner = html.escape(element.text or "", quote=False) + "".join(
             lxml_html.tostring(child, encoding="unicode") for child in element
         )
         found.append(inner.strip())
@@ -94,7 +103,7 @@ def _only_child(markup: str):
 
 
 def _inner(element) -> str:
-    return ((element.text or "") + "".join(
+    return (html.escape(element.text or "", quote=False) + "".join(
         lxml_html.tostring(child, encoding="unicode") for child in element
     )).strip()
 
@@ -171,13 +180,29 @@ def _split_whole_lists(
     return carried, used
 
 
+_BLOCK_TAG = (
+    "address|article|aside|blockquote|caption|dd|div|dl|dt|figure|figcaption|footer|"
+    "h[1-6]|header|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul"
+)
+# Whitespace next to a block tag is serialisation, not a word separator. Between
+# inline elements it is the opposite: "<a>x</a> <a>y</a>" has two words.
+_SERIALISATION_SPACE = re.compile(
+    rf"(</?(?:{_BLOCK_TAG})\b[^>]*>)\s+|\s+(</?(?:{_BLOCK_TAG})\b)"
+)
+
+
+def _without_serialisation_space(markup: str) -> str:
+    return _SERIALISATION_SPACE.sub(lambda match: match.group(1) or match.group(2), markup)
+
+
 def _match_key(segment: Segment) -> tuple[str, str]:
     text = segment.source_content
     if segment.extract_mode == ExtractMode.HTML:
-        text = _plain_text(text)
-    # Whitespace is ignored: old and new serialisations of the same HTML unit
-    # differ only in the spacing between tags.
-    return segment.file_path.as_posix(), "".join(text.split())
+        # Whitespace inside text separates words and must not be deleted:
+        # removing all of it made "Now here." match "Nowhere." and carried a
+        # translation onto the wrong paragraph.
+        text = _plain_text(_without_serialisation_space(text))
+    return segment.file_path.as_posix(), " ".join(text.split())
 
 
 def legacy_mapping(old: list[Segment], new: list[Segment]) -> dict[str, str]:
@@ -215,6 +240,49 @@ def _journal_sources(work_dir: Path, state_file: Path) -> dict[Path, Path]:
 def finish_legacy_import(work_dir: Path) -> None:
     """Called once the new segments document is saved: the import is final."""
     (work_dir / _JOURNAL).unlink(missing_ok=True)
+
+
+def _remap_audio_files(audio_state: Path, data: dict, mapping: dict[str, str]) -> None:
+    """Rename each carried clip to its new segment id, without overwriting one.
+
+    Segment ids name positions, so a new id can already have a clip from a
+    different old unit. Synthesis names its output after the id, so leaving the
+    carried clip under the old name let a later synthesis overwrite it.
+    """
+    segments_dir = audio_state.parent / "segments"
+    moves: list[tuple[str, str, Path, dict]] = []
+    for old_id, record in (data.get("segments") or {}).items():
+        if old_id not in mapping:
+            continue
+        candidates: list[Path] = []
+        stored = record.get("audio_path")
+        if stored:
+            path = Path(stored)
+            candidates.append(path if path.is_absolute() else audio_state.parent / path)
+        if segments_dir.is_dir():
+            candidates.extend(sorted(segments_dir.glob(f"{old_id}.*")))
+        source = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if source is not None:
+            moves.append((old_id, mapping[old_id], source, record))
+    if not moves:
+        return
+
+    # Two phases: every source moves aside before any takes a final name, so
+    # swapping A->B and B->A cannot destroy one of them.
+    staged: list[tuple[str, Path, str, dict]] = []
+    for old_id, new_id, source, record in moves:
+        temporary = source.with_name(f".{old_id}.{uuid.uuid4().hex}.migrate")
+        source.replace(temporary)
+        staged.append((new_id, temporary, source.suffix, record))
+
+    for new_id, temporary, suffix, record in staged:
+        target = temporary.parent / f"{new_id}{suffix}"
+        counter = 1
+        while target.exists():
+            target = temporary.parent / f"{new_id}-{counter}{suffix}"
+            counter += 1
+        temporary.replace(target)
+        record["audio_path"] = str(target)
 
 
 def import_legacy_workspace(
@@ -268,6 +336,7 @@ def import_legacy_workspace(
     for audio_state in sorted(work_dir.glob("audiobook*/audio_state.json")):
         source = sources.get(audio_state, audio_state)
         data = json.loads(source.read_text(encoding="utf-8"))
+        _remap_audio_files(audio_state, data, mapping)
         remapped = {}
         for old_id, record in data.get("segments", {}).items():
             if old_id in mapping:

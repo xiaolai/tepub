@@ -9,6 +9,7 @@ import click
 from rich.markup import escape
 
 from cli.core import optional_book, prepare_settings_for_epub, settings_for_book
+from cli.errors import handle_state_errors
 from config import AppSettings
 from console_singleton import get_console
 from exceptions import CorruptedStateError, WorkspaceBusyError
@@ -23,6 +24,7 @@ console = get_console()
 @click.command("show-skip-list")
 @optional_book
 @click.pass_context
+@handle_state_errors
 def show_skip_list_cmd(ctx: click.Context, book: Path | None) -> None:
     """Show the documents and segments a book's extraction skipped."""
     from debug_tools.skip_lists import show_skip_list
@@ -34,6 +36,7 @@ def show_skip_list_cmd(ctx: click.Context, book: Path | None) -> None:
 @click.command("show-pending")
 @optional_book
 @click.pass_context
+@handle_state_errors
 def show_pending_cmd(ctx: click.Context, book: Path | None) -> None:
     """Show pending segments."""
     from debug_tools.pending import show_pending
@@ -125,6 +128,7 @@ def purge_refusals(ctx: click.Context, dry_run: bool, book: Path | None) -> None
 @click.argument("segment_id")
 @optional_book
 @click.pass_context
+@handle_state_errors
 def inspect_segment_cmd(ctx: click.Context, segment_id: str, book: Path | None) -> None:
     """Inspect a specific segment."""
     from debug_tools.inspect import inspect_segment
@@ -136,6 +140,7 @@ def inspect_segment_cmd(ctx: click.Context, segment_id: str, book: Path | None) 
 @click.command("list-files")
 @optional_book
 @click.pass_context
+@handle_state_errors
 def list_files_cmd(ctx: click.Context, book: Path | None) -> None:
     """List all processed files."""
     from debug_tools.files import list_files
@@ -152,7 +157,7 @@ def preview_skips(ctx: click.Context, input_epub: Path) -> None:
     from debug_tools.preview import preview_skip_candidates
 
     settings: AppSettings = ctx.obj["settings"]
-    settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
+    settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None, create=False)
     preview_skip_candidates(settings, input_epub)
 
 
@@ -162,7 +167,9 @@ def preview_skips(ctx: click.Context, input_epub: Path) -> None:
 def workspace(ctx: click.Context, input_epub: Path) -> None:
     """Show workspace paths for an EPUB."""
     settings: AppSettings = ctx.obj["settings"]
-    preview_settings = prepare_settings_for_epub(ctx, settings, input_epub, override=None)
+    preview_settings = prepare_settings_for_epub(
+        ctx, settings, input_epub, override=None, create=False
+    )
     console.print(f"Base work root: {escape(str(preview_settings.work_root))}", soft_wrap=True)
     console.print(f"Derived workspace: {escape(str(preview_settings.work_dir))}", soft_wrap=True)
     console.print(f"Segments file: {escape(str(preview_settings.segments_file))}", soft_wrap=True)

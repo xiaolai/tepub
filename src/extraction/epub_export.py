@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import posixpath
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote
 
+from lxml import etree
+
+from epub_io.container import (
+    MAX_ARCHIVE_MEMBER_BYTES,
+    MAX_ARCHIVE_TOTAL_BYTES,
+    EpubStructureError,
+    secure_xml_parser,
+)
 from epub_io.path_utils import safe_relative_member
 
 
@@ -71,6 +81,7 @@ def extract_epub_structure(
             # Flattening collapses distinct members onto one name; track what we
             # have written so a collision does not silently destroy the earlier file.
             used_names: dict[str, str] = {}
+            total_bytes = 0
 
             for internal_path in file_list:
                 # Skip directories (they end with /)
@@ -86,24 +97,47 @@ def extract_epub_structure(
                 else:
                     # Flatten to single directory
                     filename = member.name
-                    if filename in used_names:
+                    # Two names that differ only in case collide on the
+                    # case-insensitive filesystem this export is often written
+                    # to, and the later one silently replaced the earlier.
+                    if filename.casefold() in used_names:
                         # Disambiguate deterministically instead of overwriting.
                         stem, dot, suffix = filename.partition(".")
                         counter = 1
                         candidate = filename
-                        while candidate in used_names:
+                        while candidate.casefold() in used_names:
                             counter += 1
                             candidate = f"{stem}-{counter}{dot}{suffix}"
                         filename = candidate
-                    used_names[filename] = internal_path
+                    used_names[filename.casefold()] = internal_path
                     output_path = output_dir / filename
 
                 # Create parent directories if needed
                 output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Extract file
-                with epub_zip.open(internal_path) as source:
-                    output_path.write_bytes(source.read())
+                # Extract file, bounded: a zip bomb used to be decompressed
+                # whole into memory and then written to disk.
+                info = epub_zip.getinfo(internal_path)
+                total_bytes += info.file_size
+                if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                    raise EpubStructureError(
+                        f"{internal_path} declares {info.file_size:,} bytes, over the "
+                        f"{MAX_ARCHIVE_MEMBER_BYTES:,}-byte limit"
+                    )
+                if total_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise EpubStructureError(
+                        f"the archive expands past the {MAX_ARCHIVE_TOTAL_BYTES:,}-byte limit"
+                    )
+                written = 0
+                with epub_zip.open(internal_path) as source, output_path.open("wb") as destination:
+                    while chunk := source.read(1024 * 1024):
+                        written += len(chunk)
+                        if written > MAX_ARCHIVE_MEMBER_BYTES:
+                            raise EpubStructureError(
+                                f"{internal_path} expanded past the "
+                                f"{MAX_ARCHIVE_MEMBER_BYTES:,}-byte limit"
+                            )
+                        destination.write(chunk)
 
                 # Store mapping
                 mapping[internal_path] = output_path
@@ -114,9 +148,111 @@ def extract_epub_structure(
     return mapping
 
 
+_CONTAINER_PATH = "meta-inf/container.xml"
+_NCX_MEDIA_TYPE = "application/x-dtbncx+xml"
+
+
+def _parse_extracted_xml(path: Path):
+    """The extracted file's XML root, or None when it is missing or malformed."""
+    try:
+        return etree.parse(str(path), parser=secure_xml_parser()).getroot()
+    except (OSError, etree.XMLSyntaxError):
+        return None
+
+
+def _local_name(element) -> str:
+    return etree.QName(element).localname if isinstance(element.tag, str) else ""
+
+
+def _member(mapping: dict[str, Path], internal_path: str) -> str | None:
+    """The mapping key for ``internal_path``; an exact match, else by case."""
+    if internal_path in mapping:
+        return internal_path
+    folded = internal_path.casefold()
+    return next((key for key in mapping if key.casefold() == folded), None)
+
+
+def _resolve_member(base_internal: str, href: str) -> str:
+    directory = base_internal.rsplit("/", 1)[0] if "/" in base_internal else ""
+    return posixpath.normpath(posixpath.join(directory, unquote(href)))
+
+
+def _rootfile(mapping: dict[str, Path]) -> str | None:
+    """The package document named by META-INF/container.xml."""
+    container_key = next(
+        (
+            key
+            for key in mapping
+            if key.replace("\\", "/").casefold() == _CONTAINER_PATH
+        ),
+        None,
+    )
+    if container_key is None:
+        return None
+    root = _parse_extracted_xml(mapping[container_key])
+    if root is None:
+        return None
+    for element in root.iter():
+        if _local_name(element) != "rootfile":
+            continue
+        full_path = (element.get("full-path") or "").replace("\\", "/")
+        if not full_path:
+            continue
+        found = _member(mapping, full_path)
+        if found is not None:
+            return found
+    return None
+
+
+def _ncx_reference(mapping: dict[str, Path], opf_internal: str) -> str | None:
+    """The NCX the package's spine or manifest declares."""
+    root = _parse_extracted_xml(mapping[opf_internal])
+    if root is None:
+        return None
+    items: dict[str, tuple[str, str]] = {}
+    spine_toc: str | None = None
+    for element in root.iter():
+        name = _local_name(element)
+        if name == "item":
+            item_id = element.get("id")
+            href = element.get("href")
+            if item_id and href:
+                items[item_id] = (href, (element.get("media-type") or "").lower())
+        elif name == "spine":
+            spine_toc = element.get("toc")
+    candidates: list[tuple[str, str]] = []
+    if spine_toc and spine_toc in items:
+        candidates.append(items[spine_toc])
+    candidates += [item for item in items.values() if item[1] == _NCX_MEDIA_TYPE]
+    for href, _media_type in candidates:
+        found = _member(mapping, _resolve_member(opf_internal, href))
+        if found is not None:
+            return found
+    return None
+
+
+def _shallowest(mapping: dict[str, Path], suffix: str) -> str | None:
+    """The shallowest, then alphabetically first, member with ``suffix``."""
+    ranked = [
+        key
+        for key in mapping
+        if key.replace("\\", "/").lower().rsplit("/", 1)[-1].endswith(suffix)
+    ]
+    if not ranked:
+        return None
+    return min(
+        ranked, key=lambda key: (key.replace("\\", "/").count("/"), key.lower())
+    )
+
+
 def get_epub_metadata_files(mapping: dict[str, Path]) -> dict[str, Path]:
     """
     Extract key metadata files from the structure mapping.
+
+    The container names the package document, which names the NCX. Following
+    those references replaces choosing by path depth, which could report an
+    unrelated container, OPF or NCX; depth is only a fallback when no usable
+    reference exists.
 
     Args:
         mapping: Dictionary from extract_epub_structure()
@@ -136,27 +272,28 @@ def get_epub_metadata_files(mapping: dict[str, Path]) -> dict[str, Path]:
     """
     result: dict[str, Path] = {}
 
-    # An EPUB may legitimately carry several .opf/.ncx files. Iterating the mapping
-    # and overwriting made the winner depend on dict order; pick deterministically
-    # instead — shallowest path first, then alphabetically.
-    def _rank(internal_path: str) -> tuple[int, str]:
-        normalized = internal_path.replace("\\", "/")
-        return (normalized.count("/"), normalized.lower())
+    mimetype = _member(mapping, "mimetype")
+    if mimetype is not None:
+        result["mimetype"] = mapping[mimetype]
 
-    for internal_path in sorted(mapping, key=_rank):
-        extracted_path = mapping[internal_path]
-        normalized = internal_path.replace("\\", "/").lower()
-        basename = normalized.rsplit("/", 1)[-1]
+    container_key = next(
+        (
+            key
+            for key in mapping
+            if key.replace("\\", "/").casefold() == _CONTAINER_PATH
+        ),
+        None,
+    )
+    if container_key is not None:
+        result["container"] = mapping[container_key]
 
-        if normalized == "mimetype":
-            result.setdefault("mimetype", extracted_path)
-        elif basename == "container.xml":
-            # Match the basename, not a substring: "OEBPS/not-a-container.xml.html"
-            # previously matched and could shadow the real META-INF/container.xml.
-            result.setdefault("container", extracted_path)
-        elif basename.endswith(".opf"):
-            result.setdefault("opf", extracted_path)
-        elif basename.endswith(".ncx"):
-            result.setdefault("ncx", extracted_path)
+    opf_key = _rootfile(mapping) or _shallowest(mapping, ".opf")
+    if opf_key is not None:
+        result["opf"] = mapping[opf_key]
+        ncx_key = _ncx_reference(mapping, opf_key)
+        if ncx_key is not None:
+            result["ncx"] = mapping[ncx_key]
+    if "ncx" not in result and (ncx_key := _shallowest(mapping, ".ncx")):
+        result["ncx"] = mapping[ncx_key]
 
     return result

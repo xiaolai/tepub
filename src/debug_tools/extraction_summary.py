@@ -31,8 +31,9 @@ def print_extraction_summary(
         _print_epub_statistics(epub_path, segments_doc, auto_skips)
 
     if auto_skips:
-        # Separate TOC-based and cascade skips
+        # Separate TOC-based, content-based and cascade skips
         toc_skips = [s for s in auto_skips if s.source == "toc"]
+        content_skips = [s for s in auto_skips if s.source == "content"]
         cascade_skips = [s for s in auto_skips if s.source == "cascade"]
 
         if toc_skips:
@@ -47,6 +48,19 @@ def print_extraction_summary(
                     escape(str(skipped.source)),
                 )
             console.print(auto_table)
+
+        if content_skips:
+            # Back-matter detection names the document that triggered it; with
+            # no table of its own it appeared in neither list.
+            content_table = Table(title="Skipped Documents (Detected by Content)")
+            content_table.add_column("File")
+            content_table.add_column("Reason")
+            for skipped in content_skips:
+                content_table.add_row(
+                    escape(skipped.file_path.as_posix()),
+                    escape(str(skipped.reason)),
+                )
+            console.print(content_table)
 
         if cascade_skips:
             # Show cascade skip summary, not all files
@@ -112,10 +126,13 @@ def _print_epub_statistics(epub_path: Path, segments_doc, auto_skips) -> None:
         spine_items = reader.package.spine_items()
         toc_entries = _flatten_toc_entries(reader.package.toc)
 
-        # Count processed files
-        processed_files = len(set(seg.file_path for seg in segments_doc.segments))
-        skipped_files = len(auto_skips)
-        total_handled = processed_files + skipped_files
+        # Count distinct file paths: segments also cover skipped documents,
+        # so adding the skip count to the segment count counted them twice.
+        segment_files = {seg.file_path for seg in segments_doc.segments}
+        skipped_paths = {skip.file_path for skip in auto_skips}
+        processed_files = len(segment_files - skipped_paths)
+        skipped_files = len(skipped_paths)
+        total_handled = len(segment_files | skipped_paths)
 
         # Build statistics table
         stats_table = Table(title="EPUB Structure Statistics", show_header=False)

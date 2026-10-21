@@ -154,7 +154,12 @@ class TranslationResult:
 
 
 def _reply(segment, provider, source_language: str, target_language: str) -> str:
-    """One provider call, refused if it declines the task, polished if not."""
+    """One provider call, refused if it declines the task.
+
+    Polishing happens after the markup is restored (see _translate_checked):
+    run over the marker text, it hid the code boundaries, so an untouched
+    <code>中文2</code> came back as <code>中文 2</code>.
+    """
     text = strip_model_artifacts(
         provider.translate(
             segment, source_language=source_language, target_language=target_language
@@ -167,12 +172,11 @@ def _reply(segment, provider, source_language: str, target_language: str) -> str
     if looks_like_refusal(text) and not looks_like_refusal(segment.source_content):
         preview = " ".join(text.split())[:80]
         raise ReplyRejectedError(f"Provider refused segment {segment.segment_id}: {preview!r}")
-    polished = polish_translation(text)
     # The provider's own emptiness check sees the reply with its fence, so a
     # fenced empty reply passed it and was stored as a finished translation.
-    if not polished.strip():
+    if not text.strip():
         raise ReplyRejectedError(f"Provider returned an empty translation of {segment.segment_id}")
-    return polished
+    return text
 
 
 def _language_codes(source_language: str, target_language: str) -> tuple[str, str]:
@@ -239,7 +243,7 @@ def _translate_checked(
         return markup, glossary.problems(terms, text) if terms else []
 
     raw = _reply(sent, provider, source_language, target_language)
-    text = rebuild(raw)
+    text = polish_translation(rebuild(raw))
     markup, missed = problems(raw, text)
     if markup is None and (not missed or not provider.follows_instructions):
         _log_missed(segment, missed)
@@ -256,7 +260,7 @@ def _translate_checked(
     retry = sent.model_copy(update={"metadata": metadata})
     first, first_markup, first_missed = text, markup, missed
     raw = _reply(retry, provider, source_language, target_language)
-    text = rebuild(raw)
+    text = polish_translation(rebuild(raw))
     markup, missed = problems(raw, text)
     if markup is not None:
         if first_markup is None:

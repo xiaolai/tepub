@@ -5,6 +5,7 @@ Prints READY once the blocking call has started.
 """
 
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -20,8 +21,10 @@ from state.models import (  # noqa: E402
     Segment,
     SegmentMetadata,
     SegmentsDocument,
+    SegmentStatus,
 )
 from state.store import save_segments  # noqa: E402
+from state.writer import StateWriter  # noqa: E402
 
 work = Path(sys.argv[1])
 guarded = len(sys.argv) > 2 and sys.argv[2] == "guarded"
@@ -44,6 +47,22 @@ save_segments(
     SegmentsDocument(epub_path=epub, generated_at="x", segments=segments), settings.segments_file
 )
 
+# Set once two results are in the controller's state; the blocking third call
+# waits for it before announcing READY, rather than guessing with a sleep.
+two_recorded = threading.Event()
+
+_real_mark = StateWriter.mark
+
+
+def _mark(self, segment_id, status, **fields):
+    record = _real_mark(self, segment_id, status, **fields)
+    if sum(r.status == SegmentStatus.COMPLETED for r in self.doc.segments.values()) >= 2:
+        two_recorded.set()
+    return record
+
+
+StateWriter.mark = _mark
+
 
 class SlowThird:
     name = "fake"
@@ -56,9 +75,9 @@ class SlowThird:
     def translate(self, segment, source_language, target_language):
         SlowThird.calls += 1
         if SlowThird.calls == 3:
-            # Give the main thread time to record the first two results, so the
-            # test measures the save on interrupt, not this race.
-            time.sleep(0.5)
+            # Bounded, so a regression fails the test instead of hanging it.
+            if not two_recorded.wait(timeout=10):
+                print("TIMEOUT waiting for completed results", flush=True)
             print("READY", flush=True)
             time.sleep(30)
         return "译文"

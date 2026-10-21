@@ -28,36 +28,102 @@ from epub_io.xhtml import OPS_NS, XHTML_NS, local_name
 _RUBY = frozenset({"ruby", "rt", "rp", "rb", "rtc"})
 _EMPHASIS = frozenset({"em", "i", "b", "strong", "u", "small", "mark", "cite", "q", "s"})
 _EXEMPT = _RUBY | _EMPHASIS | {"br"}
-_KEPT_VALUES = ("href", "src", "id", "epub:type")
+_KEPT_VALUES = (
+    "href",
+    "src",
+    "id",
+    "epub:type",
+    # Structural attributes: a model that drops colspan or start changes the
+    # table or list, so they are pinned like a link or an anchor.
+    "colspan",
+    "rowspan",
+    "start",
+    "reversed",
+    "value",
+)
+
+#: Attributes that can execute. A translation may keep the source's own links,
+#: but it must not introduce one of these.
+_URL_ATTRIBUTES = frozenset({"href", "src", "xlink:href", "poster", "action", "formaction"})
+_UNSAFE_SCHEMES = ("javascript:", "vbscript:", "data:text/html", "data:application/xhtml")
 
 
-def _inventory(markup: str) -> tuple[Counter, Counter]:
+def _unsafe_attributes(markup: str) -> set[str]:
+    root = lxml_html.fragment_fromstring(markup or "", create_parent="tepub-fragment")
+    found: set[str] = set()
+    for node in root.iterdescendants():
+        if not isinstance(node.tag, str):
+            continue
+        for name, value in node.attrib.items():
+            lower = name.lower()
+            if lower.startswith("on"):
+                found.add(lower)
+            elif lower in _URL_ATTRIBUTES:
+                # Browsers ignore whitespace and control characters in a
+                # scheme, so "java\nscript:" is still javascript:.
+                normalised = re.sub(r"[\x00-\x20]", "", value).lower()
+                if normalised.startswith(_UNSAFE_SCHEMES):
+                    found.add(f"{lower}={value}")
+    return found
+
+
+def _inventory(markup: str) -> tuple[Counter, Counter, Counter]:
     root = lxml_html.fragment_fromstring(markup or "", create_parent="tepub-fragment")
     tags: Counter = Counter()
     values: Counter = Counter()
+    shapes: Counter = Counter()
     for node in root.iterdescendants():
         if not isinstance(node.tag, str):
             continue
         name = node.tag.lower()
-        if name in _EXEMPT:
-            continue
-        tags[name] += 1
-        for attribute in _KEPT_VALUES:
-            value = node.get(attribute)
-            if value is not None:
-                values[(attribute, value)] += 1
-    return tags, values
+        if name not in _EXEMPT:
+            tags[name] += 1
+        # Exempt tags still carry ids that links land on, so their protected
+        # attributes count even though the tag itself may come or go.
+        kept = tuple(
+            (attribute, node.get(attribute))
+            for attribute in _KEPT_VALUES
+            if node.get(attribute) is not None
+        )
+        if kept:
+            # As one combination: swapping two links' hrefs leaves every value
+            # present but breaks which note each id refers to.
+            values[kept] += 1
+        wanted = _STRUCTURE_CHILDREN.get(name)
+        if wanted is not None:
+            children = Counter(
+                child.tag.lower()
+                for child in node
+                if isinstance(child.tag, str) and child.tag.lower() in wanted
+            )
+            shapes[(name, tuple(sorted(children.items())))] += 1
+    return tags, values, shapes
 
 
 def _describe(counter: Counter, *, kind: str) -> str:
     parts = []
     for item, count in sorted(counter.items(), key=str):
-        label = f"<{item}>" if kind == "tag" else f'{item[0]}="{item[1]}"'
+        if kind == "tag":
+            label = f"<{item}>"
+        elif kind == "shape":
+            parent, children = item
+            label = f"<{parent}> with " + ", ".join(f"{n} <{tag}>" for tag, n in children)
+        else:
+            label = " ".join(f'{attribute}="{value}"' for attribute, value in item)
         parts.append(label if count == 1 else f"{label} x{count}")
     return ", ".join(parts)
 
 
 _STRUCTURE = frozenset({"ul", "ol", "dl", "table", "thead", "tbody", "tfoot", "tr"})
+
+#: Relations a plain tag count misses: four cells moved out of two rows of two
+#: into rows of one and three still count four cells.
+_STRUCTURE_CHILDREN = {
+    "tr": frozenset({"td", "th"}),
+    "ul": frozenset({"li"}),
+    "ol": frozenset({"li"}),
+    "dl": frozenset({"dt", "dd"}),
+}
 
 
 def _loose_text(markup: str) -> int:
@@ -66,7 +132,8 @@ def _loose_text(markup: str) -> int:
     count = 0
     # A list unit's source is the inside of its list: items at the top.
     items_at_top = any(
-        isinstance(child.tag, str) and child.tag.lower() in ("li", "tr", "dt", "dd", "tbody", "thead")
+        isinstance(child.tag, str)
+        and child.tag.lower() in ("li", "tr", "dt", "dd", "tbody", "thead")
         for child in root
     )
     for node in root.iter():
@@ -80,13 +147,18 @@ def _loose_text(markup: str) -> int:
 
 def markup_mismatch(source: str, translated: str) -> str | None:
     """None when the markup matches; otherwise a short description for the model."""
-    source_tags, source_values = _inventory(source)
-    translated_tags, translated_values = _inventory(translated)
+    source_tags, source_values, source_shapes = _inventory(source)
+    translated_tags, translated_values, translated_shapes = _inventory(translated)
     problems = []
     # A reply fenced as a code block put "```html" inside a list: invalid,
     # and shown to readers.
     if _loose_text(translated) > _loose_text(source):
         problems.append("text outside the list items or table cells")
+    added_executable = _unsafe_attributes(translated) - _unsafe_attributes(source)
+    if added_executable:
+        problems.append(
+            "added executable attributes " + ", ".join(sorted(added_executable))
+        )
     if missing := source_tags - translated_tags:
         problems.append("missing " + _describe(missing, kind="tag"))
     if extra := translated_tags - source_tags:
@@ -95,6 +167,10 @@ def markup_mismatch(source: str, translated: str) -> str | None:
         problems.append("missing or changed " + _describe(missing, kind="value"))
     if extra := translated_values - source_values:
         problems.append("unexpected " + _describe(extra, kind="value"))
+    if missing := source_shapes - translated_shapes:
+        problems.append("missing or changed " + _describe(missing, kind="shape"))
+    if extra := translated_shapes - source_shapes:
+        problems.append("unexpected " + _describe(extra, kind="shape"))
     return "; ".join(problems) or None
 
 
@@ -114,18 +190,20 @@ _WHITESPACE = re.compile(r"\s+")
 _UNSPACED = re.compile(r"[\u2e80-\u303f\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]")
 _XML_NS = "http://www.w3.org/XML/1998/namespace"
 _PREFIXES = {OPS_NS: "epub", _XML_NS: "xml"}
-# Structure a reader would lose if a marker went astray; such units keep the
-# HTML route and its check.
+# Structure a reader would lose if a marker went astray, and code, whose
+# whitespace is content; such units keep the HTML route and its check.
 _NOT_INLINE = frozenset(
     {
-        "address", "article", "aside", "blockquote", "caption", "dd", "details", "div",
+        "address", "article", "aside", "blockquote", "caption", "code", "dd", "details", "div",
         "dl", "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6",
-        "header", "li", "math", "nav", "ol", "p", "pre", "script", "section", "style",
-        "svg", "table", "tbody", "td", "template", "tfoot", "th", "thead", "tr", "ul",
+        "header", "kbd", "li", "math", "nav", "ol", "p", "pre", "samp", "script", "section",
+        "style", "svg", "table", "tbody", "td", "template", "tfoot", "th", "thead", "tr", "ul",
     }
 )
 
 
+#: Subtrees given back unchanged as one marker: a foreign-namespace drawing or
+#: formula, whose markup no reader-facing text can carry.
 _OPAQUE = frozenset({"svg", "math"})
 
 
@@ -191,7 +269,7 @@ def protect(markup: str) -> tuple[str, Markers] | None:
     """
     if "⟦" in markup or "⟧" in markup:
         return None
-    wrapped = f'<w xmlns="{XHTML_NS}" xmlns:epub="{OPS_NS}">{markup}</w>'.encode("utf-8")
+    wrapped = f'<w xmlns="{XHTML_NS}" xmlns:epub="{OPS_NS}">{markup}</w>'.encode()
     try:
         root = etree.fromstring(wrapped, parser=secure_xml_parser())
     except etree.XMLSyntaxError:
@@ -340,7 +418,9 @@ def restore(reply: str, markers: Markers) -> str:
         if tag.anchor and number not in placed
     ]
     out = [*lost_anchors, text(pieces[0])]
-    for position, ((closing, number), piece) in enumerate(zip(tokens, pieces[3::3])):
+    for position, ((closing, number), piece) in enumerate(
+        zip(tokens, pieces[3::3], strict=False)
+    ):
         if position in kept:
             tag = tags[number - 1]
             if tag.opaque:
@@ -364,8 +444,23 @@ def strip_code_fence(reply: str) -> str:
     return match.group(1).strip() if match else reply
 
 
-_TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n.*?\n```[ \t]*\Z", re.DOTALL)
-_OPEN_TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n.*\Z", re.DOTALL)
+_TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n(?P<body>.*?)\n?```[ \t]*\Z", re.DOTALL)
+_OPEN_TRAILING_FENCE = re.compile(r"\n*```[^\n]*\n(?P<body>.*)\Z", re.DOTALL)
+_ANY_TAG = re.compile(r"</?[a-zA-Z][^<>]*>")
+_NO_SPACE = re.compile(r"\s+")
+
+
+def _repeats_the_reply(before: str, body: str) -> bool:
+    """Whether a fenced tail is a second copy of the reply before it.
+
+    The copy is escaped markup of the same translation. A fenced example the
+    model wrote itself is content, not an artifact, and is left alone.
+    """
+    unescaped = html.unescape(body)
+    if _ANY_TAG.search(unescaped) is None:
+        return False
+    visible = _NO_SPACE.sub("", _ANY_TAG.sub("", unescaped))
+    return bool(visible) and visible in _NO_SPACE.sub("", before)
 
 
 def strip_model_artifacts(reply: str, *, markup: bool) -> str:
@@ -376,7 +471,8 @@ def strip_model_artifacts(reply: str, *, markup: bool) -> str:
     itself: measured, two chapter titles came back as the title, a blank line,
     then ``​```html`` holding an escaped ``<h1>`` of the same title. Left in,
     that reaches the reader as visible text; it carries no content, so the
-    fenced tail is removed rather than unwrapped.
+    fenced tail is removed rather than unwrapped. A fence whose content is not
+    such a copy is kept: it may be a code example in the translation.
 
     Tags outside such a fence are deliberately left for :func:`stray_tags`: a
     reply that adds HTML to plain text is retried, not silently rewritten.
@@ -391,8 +487,13 @@ def strip_model_artifacts(reply: str, *, markup: bool) -> str:
     previous = None
     while previous != text:
         previous = text
-        text = _TRAILING_FENCE.sub("", text)
-        text = _OPEN_TRAILING_FENCE.sub("", text)
+        for fence in (_TRAILING_FENCE, _OPEN_TRAILING_FENCE):
+            match = fence.search(text)
+            if match is not None and _repeats_the_reply(
+                text[: match.start()], match.group("body")
+            ):
+                text = text[: match.start()]
+                break
     return text.strip()
 
 

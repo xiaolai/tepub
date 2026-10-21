@@ -56,3 +56,13 @@ def test_refusals_that_name_the_task_are_flagged():
     assert looks_like_refusal("I can't help with that.")
     assert looks_like_refusal("I am unable to translate this passage.")
     assert looks_like_refusal("As an AI language model, I must decline.")
+
+
+def test_a_model_opener_needs_a_word_boundary():
+    """ "As an ai" is a prefix of "As an airman", an ordinary sentence."""
+    assert not looks_like_refusal("As an airman, he flew nightly missions.")
+    assert looks_like_refusal("As an AI, I cannot translate this.")
+
+
+def test_ordinary_prose_that_merely_uses_help_is_not_a_refusal():
+    assert not looks_like_refusal("I cannot help smiling when I see it.")

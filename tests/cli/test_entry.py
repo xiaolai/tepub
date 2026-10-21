@@ -142,8 +142,14 @@ def test_a_config_that_is_a_lone_value_is_an_error(tmp_path: Path) -> None:
 
 def test_quiet_silences_settings_warnings(tmp_path: Path, caplog) -> None:
     """Log records went to the logging handler's own console, which -q missed."""
+    import logging
+
+    from console_singleton import get_console
+
     config = tmp_path / "config.yaml"
     config.write_text("no_such_setting: 1\n", encoding="utf-8")
+    disable_level = logging.root.manager.disable
+    was_quiet = get_console().quiet
     try:
         _run("--config", str(config), "translate", "--help")
         loud = caplog.text
@@ -151,7 +157,10 @@ def test_quiet_silences_settings_warnings(tmp_path: Path, caplog) -> None:
         _run("-q", "--config", str(config), "translate", "--help")
         quiet = caplog.text
     finally:
-        _run("--help")  # leaves logging enabled for the tests after this one
+        # Root --help is handled before the app callback, so it does not reset
+        # these; the setting is process-wide and leaked into later tests.
+        logging.disable(disable_level)
+        get_console().quiet = was_quiet
     assert "Ignoring settings" in loud
     assert "Ignoring settings" not in quiet
 

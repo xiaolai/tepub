@@ -33,8 +33,11 @@ def _translate_everything(settings: AppSettings) -> None:
     segments = json.loads(settings.segments_file.read_text(encoding="utf-8"))["segments"]
     state = json.loads(settings.state_file.read_text(encoding="utf-8"))
     for segment in segments:
+        # A marker before the source text changes every unit, markup included,
+        # without disturbing the markup itself. A translation equal to the
+        # source let an injection that never happened pass this gate.
         text = segment["source_content"]
-        translation = text if segment["extract_mode"] == "html" else f"【译】{text}"
+        translation = f"【译】{text}"
         state["segments"][segment["segment_id"]] = {
             "segment_id": segment["segment_id"],
             "translation": translation,
@@ -50,7 +53,11 @@ def _head_of(data: bytes) -> list[str]:
     """The <title> and every <link> of a document, as a comparable list."""
     from lxml import etree
 
-    root = etree.fromstring(data)
+    from epub_io.xhtml import parse_xhtml
+
+    # parse_xhtml accepts the HTML named entities (&nbsp;) that XHTML permits
+    # and a plain XML parser rejects.
+    root = parse_xhtml(data).root
     head = root.find("{http://www.w3.org/1999/xhtml}head")
     if head is None:
         return []
@@ -74,11 +81,11 @@ def _links_resolve(output: Path) -> list[str]:
     import posixpath
     from urllib.parse import unquote
 
-    from lxml import etree
+    from epub_io.xhtml import parse_xhtml
 
     with zipfile.ZipFile(output) as archive:
         documents = {
-            name: etree.fromstring(archive.read(name))
+            name: parse_xhtml(archive.read(name)).root
             for name in archive.namelist()
             if name.endswith(".xhtml")
         }
@@ -93,6 +100,7 @@ def _links_resolve(output: Path) -> list[str]:
             if not href or "://" in href or href.startswith("mailto:"):
                 continue
             path, _, fragment = href.partition("#")
+            fragment = unquote(fragment)
             target = (
                 posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(path)))
                 if path
@@ -115,20 +123,22 @@ def _error_counts(findings) -> collections.Counter:
     return collections.Counter(f.code for f in epubcheck.errors(findings))
 
 
-def _new_kinds_of_error(book: Path, out: Path) -> set[tuple[str, str]]:
+def _new_kinds_of_error(book: Path, out: Path) -> set[tuple[str, str, str]]:
     """Kinds of error the output has and the book does not.
 
     Real books often break their own schema, and a translated copy repeats its
     paragraph's markup, so an existing violation can occur more often. That
     cannot be counted: epubcheck caps the locations it lists per message, and
     counting its messages miscounted when the cap split one kind into two.
-    A kind is the message up to "; expected": what follows lists the
-    attributes still allowed, which changes when a copy loses its id.
+    A kind is the message up to "; expected" (what follows lists the attributes
+    still allowed, which changes when a copy loses its id) and the document.
+    Keeping the document means a link newly broken in another file is a new
+    kind, while markup repeated in the same file is allowed to duplicate.
     """
 
-    def kinds(epub: Path) -> set[tuple[str, str]]:
+    def kinds(epub: Path) -> set[tuple[str, str, str]]:
         return {
-            (f.code, f.message.split("; expected")[0])
+            (f.code, f.message.split("; expected")[0], f.path)
             for f in epubcheck.errors(epubcheck.check(epub))
         }
 
@@ -168,6 +178,10 @@ def test_translated_output_adds_no_epubcheck_errors(name: str, mode: str, tmp_pa
 
 
 CORPUS = __import__("os").environ.get("TEPUB_CORPUS_DIR")
+if CORPUS:
+    # Resolved before the isolation fixture changes the working directory; a
+    # relative path would then name a different folder.
+    CORPUS = str(Path(CORPUS).expanduser().resolve())
 
 
 def _corpus_books() -> list[Path]:
@@ -186,8 +200,10 @@ def test_real_books_translate_into_valid_epubs(book: Path, mode: str, tmp_path: 
     _translate_everything(settings)
     out = tmp_path / f"out-{mode}.epub"
 
-    run_injection(settings, book, out, mode=mode)
+    injection = run_injection(settings, book, out, mode=mode)
 
+    assert injection.updated_html, "nothing was injected"
+    assert not injection.failed
     _assert_heads_kept(book, out)
     added = _new_kinds_of_error(book, out)
     assert not added, added

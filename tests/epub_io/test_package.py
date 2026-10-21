@@ -84,6 +84,18 @@ def test_metadata(tmp_path: Path) -> None:
     assert meta.title == "Moby-Dick" and meta.language == "en"
 
 
+def test_a_chapter_name_with_a_quote_stays_well_formed(tmp_path: Path) -> None:
+    """Attribute values were escaped with escape(), which leaves quotes raw, so
+    this name produced malformed OPF and navigation XML."""
+    name = 'a"b.xhtml'
+    book = build_epub(tmp_path / "b.epub", [(name, "Quoted", "<p>1</p>")])
+
+    package = read_package(book)
+
+    assert _titles(package.toc) == [f'Quoted -> {name}']
+    assert [item.href.as_posix() for item in package.spine_items()] == [name]
+
+
 def _move_nav(book: Path, new_path: str, content: str) -> None:
     """Replace the book's nav document, possibly at a new path."""
     with zipfile.ZipFile(book) as archive:

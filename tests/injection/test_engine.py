@@ -118,9 +118,18 @@ def test_a_changed_document_is_not_injected():
 def test_translated_copies_carry_no_ids():
     """Bilingual copies beside their originals must not repeat ids (D5)."""
     document, (segment,) = _document("<p id='p1'>Text <a id='r1' href='#n1'>1</a></p>")
-    _apply_translations_to_document(document, [(segment, "Texte")], "bilingual", defaultdict(dict))
+    _apply_translations_to_document(
+        document,
+        [(segment, "Texte <a id='r2' href='#n1'>1</a>")],
+        "bilingual",
+        defaultdict(dict),
+    )
     ids = [e.get("id") for e in document.tree.iter() if isinstance(e.tag, str) and e.get("id")]
     assert ids == ["p1", "r1"]
+    translated = [p for p in _elements(document, "p") if p.get("data-lang") == "translation"][0]
+    (anchor,) = [a for a in translated.iter() if local_name(a) == "a"]
+    assert anchor.get("href") == "#n1"
+    assert anchor.get("id") is None
 
 
 def test_group_translated_segments_excludes_auto_copied(tmp_path, monkeypatch):

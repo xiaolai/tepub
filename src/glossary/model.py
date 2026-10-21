@@ -8,6 +8,7 @@ inside its markup.
 
 from __future__ import annotations
 
+import html
 import re
 from functools import cached_property
 from pathlib import Path
@@ -114,7 +115,9 @@ def plain_text(content: str) -> str:
     dropped too: it is not translated, so no term in it can be held to one.
     """
     if "<" not in content:
-        return content
+        # A tag-free fragment still holds entities: "AT&amp;T" reads as AT&T,
+        # while literal plain text such as "AT&T" is unchanged.
+        return html.unescape(content)
     root = lxml_html.fragment_fromstring(content, create_parent="div")
     for element in list(root.iter()):
         if element is root or not isinstance(element.tag, str):
@@ -155,7 +158,11 @@ class Glossary(BaseModel):
         "Compound", so both cannot be listed; "us" does not match "US"."""
         for index, term in enumerate(self.terms):
             for other in self.terms[index + 1 :]:
-                if term.source == other.source or term.pattern.fullmatch(other.source) or other.pattern.fullmatch(term.source):
+                if (
+                    term.source == other.source
+                    or term.pattern.fullmatch(other.source)
+                    or other.pattern.fullmatch(term.source)
+                ):
                     raise ValueError(f"the term {other.source!r} is listed twice")
         return self
 
@@ -186,7 +193,10 @@ class Glossary(BaseModel):
                 for span in other_spans
             ]
             if any(
-                not any(a <= start and end <= b and b - a > end - start for a, b in covered_by_longer)
+                not any(
+                    a <= start and end <= b and b - a > end - start
+                    for a, b in covered_by_longer
+                )
                 for start, end in spans[term.source]
             ):
                 found.append(term)
@@ -222,8 +232,18 @@ class Glossary(BaseModel):
                 f"Glossaries for different languages: {self.target_language} and "
                 f"{book.target_language}"
             )
-        overridden = {term.source.casefold() for term in book.terms}
-        kept = [term for term in self.terms if term.source.casefold() not in overridden]
+        # The same words only where the glossary itself would match them:
+        # casefolding made "US" override "us", which are different terms.
+        kept = [
+            term
+            for term in self.terms
+            if not any(
+                term.source == other.source
+                or term.pattern.fullmatch(other.source)
+                or other.pattern.fullmatch(term.source)
+                for other in book.terms
+            )
+        ]
         return Glossary(target_language=book.target_language, terms=(*kept, *book.terms))
 
 

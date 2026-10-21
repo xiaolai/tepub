@@ -218,6 +218,12 @@ def safe_load_state(
             state_type,
             f"Invalid JSON format (line {e.lineno}, column {e.colno})",
         ) from e
+    except UnicodeDecodeError as e:
+        raise CorruptedStateError(
+            path,
+            state_type,
+            f"Not valid UTF-8 text (byte {e.start} cannot be decoded as {e.encoding})",
+        ) from e
     except ValidationError as e:
         error_count = len(e.errors())
         first_error = e.errors()[0]

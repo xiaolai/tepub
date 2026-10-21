@@ -32,6 +32,19 @@ def _is_flag_cluster(token: str, short_flags: set[str]) -> bool:
     )
 
 
+def _config_error_detail(exc: Exception) -> str:
+    """A configuration error's messages, without the input values.
+
+    Pydantic's own text repeats every failing input, so a provider block that
+    failed validation printed its api_key to the terminal."""
+    if not isinstance(exc, pydantic.ValidationError):
+        return str(exc)
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc']) or '(settings)'}: {error['msg']}"
+        for error in exc.errors(include_url=False)
+    )
+
+
 class DefaultCommandGroup(click.Group):
     """The tepub group: a book given alone runs the pipeline, global options
     are accepted after the command too, typos get a suggestion, and help lists
@@ -143,7 +156,10 @@ class DefaultCommandGroup(click.Group):
             # book too, so a typo read "Path 'transalte' does not exist".
             candidate = Path(args[index])
             if candidate.suffix.lower() == ".epub" and candidate.is_file():
-                args.insert(index, self.default_command)
+                # Before a global "--", not after: the delimiter would otherwise
+                # be consumed and "pipeline" taken for its positional argument.
+                position = index - 1 if index > 0 and args[index - 1] == "--" else index
+                args.insert(position, self.default_command)
         return super().parse_args(ctx, args)
 
     def resolve_command(self, ctx: click.Context, args: list[str]):
@@ -217,7 +233,9 @@ def app(
     try:
         settings = prepare_initial_settings(config_file, work_dir, verbose)
     except (yaml.YAMLError, pydantic.ValidationError, ConfigFileError) as exc:
-        raise click.ClickException(f"The configuration is not valid: {exc}") from exc
+        raise click.ClickException(
+            f"The configuration is not valid: {_config_error_detail(exc)}"
+        ) from exc
     ctx.ensure_object(dict)
     ctx.obj["settings"] = settings
     ctx.obj["config_file"] = config_file

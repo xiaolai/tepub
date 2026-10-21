@@ -49,6 +49,17 @@ def test_listed_variants_match() -> None:
 
 def test_terms_are_found_in_html_text_not_attributes() -> None:
     assert _sources('<a href="#compound">see</a> the <em>compound</em>') == ["compound"]
+    # The word occurs only in an attribute, so the unit holds no term at all.
+    assert _sources('<a href="#compound">see</a>') == []
+
+
+def test_entities_in_a_tag_free_fragment_are_decoded() -> None:
+    """A fragment without a tag took the early return, so "AT&amp;T" never
+    matched the term AT&T."""
+    glossary = Glossary(
+        target_language="zh", terms=[Term(source="AT&T", target="美国电话电报公司")]
+    )
+    assert [t.source for t in glossary.terms_in("AT&amp;T")] == ["AT&T"]
 
 
 def test_a_translation_missing_a_rendering_is_reported() -> None:
@@ -104,3 +115,17 @@ def test_a_book_glossary_overrides_the_global_one() -> None:
     merged = general.merged_with(TERMS)
     assert {t.source: t.target for t in merged.terms}["compound"] == "诈骗园区"
     assert len(merged.terms) == len(TERMS.terms)
+
+
+def test_a_case_variant_is_not_the_same_term_when_merging() -> None:
+    """Casefolding treated "US" as an override of "us" and deleted the global
+    entry, although the glossary matches the two differently."""
+    general = Glossary(
+        target_language="zh",
+        terms=[Term(source="us", target="我们"), Term(source="US", target="美国")],
+    )
+    book = Glossary(target_language="zh", terms=[Term(source="US", target="合众国")])
+
+    merged = general.merged_with(book)
+
+    assert {t.source: t.target for t in merged.terms} == {"us": "我们", "US": "合众国"}

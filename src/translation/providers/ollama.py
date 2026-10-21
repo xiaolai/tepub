@@ -72,7 +72,9 @@ class OllamaProvider(BaseProvider):
         """
         server = self.config.base_url.rsplit("/api/", 1)[0]
         try:
-            response = requests.get(f"{server}/api/tags", timeout=10)
+            response = requests.get(
+                f"{server}/api/tags", timeout=10, headers=self.config.extra_headers or None
+            )
         except requests.exceptions.RequestException as exc:
             raise ProviderFatalError(
                 f"Cannot reach Ollama at {server} ({exc.__class__.__name__}). Start it with "
@@ -101,10 +103,13 @@ class OllamaProvider(BaseProvider):
         }
         if self.config.think is not None:
             payload["think"] = self.config.think
+        # A proxy in front of Ollama may demand its own authentication.
+        headers = {"Content-Type": "application/json"}
+        headers.update(self.config.extra_headers)
         body: Any = post_json(
             "Ollama",
             self.config.base_url,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             data=json.dumps(payload),
             timeout=request_timeout(prompt),
         )

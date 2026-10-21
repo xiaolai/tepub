@@ -45,7 +45,12 @@ def test_custom_preamble_supports_all_documented_placeholders():
 
     out = build_prompt(_segment(), source_language="en", target_language="Simplified Chinese")
 
-    assert "{" not in out.split("SOURCE:")[0]
+    preamble = out.split("SOURCE:")[0]
+    assert "{" not in preamble
+    # Substitution that discarded the preamble would still leave no braces.
+    assert "Translate from English into Simplified Chinese." in preamble
+    assert "English | Simplified Chinese" in preamble
+    assert "Return a faithful translation of the prose without adding explanations." in preamble
 
 
 @pytest.mark.parametrize(

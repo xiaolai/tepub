@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from lxml import html as lxml_html
 
 from config import AppSettings
 from extraction.pipeline import run_extraction
@@ -39,5 +40,11 @@ def test_web_export_keeps_markers_and_language(tmp_path: Path, version: int) -> 
     web = export_web(settings, book, output_dir=tmp_path / "web").site
 
     page = next((web / "content").rglob("ch1.xhtml")).read_text(encoding="utf-8")
-    assert "tepub-original" in page and "tepub-translation" in page
-    assert 'lang="en"' in page
+    tree = lxml_html.fromstring(page)
+    original = tree.xpath(".//p[contains(@class, 'tepub-original')]")
+    translation = tree.xpath(".//p[contains(@class, 'tepub-translation')]")
+    assert len(original) == 1 and len(translation) == 1
+    # The root element's own xml:lang="en" made the old substring assertion
+    # pass even when both marked paragraphs carried no language at all.
+    assert (original[0].get("lang"), original[0].get("xml:lang")) == ("en", "en")
+    assert (translation[0].get("lang"), translation[0].get("xml:lang")) == ("zh-CN", "zh-CN")

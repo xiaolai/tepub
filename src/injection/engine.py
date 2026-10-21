@@ -22,6 +22,7 @@ from translation.markup import strip_model_artifacts
 from .html_ops import (
     ITEM_TAGS,
     _set_html_content,
+    _set_language,
     _set_text_only,
     build_translation_element,
     inject_into_item,
@@ -49,7 +50,7 @@ def _group_translated_segments(settings: AppSettings) -> dict[Path, list[tuple[S
     return grouped
 
 
-HEADING_TAGS = {"h1", "h2", "h3", "h4"}
+HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
 
 def _apply_translations_to_document(
@@ -98,7 +99,9 @@ def _apply_translations_to_document(
                 if local_name(original) in HEADING_TAGS
                 else None
             )
-            _replace_with_translation(original, segment, translation)
+            _replace_with_translation(
+                original, segment, translation, target_language=target_language
+            )
             _record_heading_title(
                 segment.file_path,
                 original,
@@ -133,12 +136,21 @@ def _apply_translations_to_document(
     return bool(located), failed_ids
 
 
-def _replace_with_translation(original, segment: Segment, translation: str) -> None:
+def _replace_with_translation(
+    original,
+    segment: Segment,
+    translation: str,
+    *,
+    target_language: str | None = None,
+) -> None:
     original.attrib.pop("data-lang", None)
     if segment.extract_mode == ExtractMode.TEXT:
         _set_text_only(original, translation)
     else:
         _set_html_content(original, translation)
+    # The element keeps its attributes, source language included; the prose is
+    # now in the target language, and a reader trusts lang over the document.
+    _set_language(original, target_language)
 
 
 def _record_heading_title(
@@ -214,12 +226,13 @@ def apply_translations(
 
     # The package's own language is the reliable source: settings say "auto"
     # for a book whose language was detected rather than chosen. The target is
-    # whatever the translation used, as the canonical code.
+    # what the translations were actually made in, which the state records;
+    # the current settings may since have changed.
     source_language = (reader.package.metadata.language or "").strip() or None
     if not source_language or source_language.lower() == "auto":
         candidate, _ = normalize_language(settings.source_language)
         source_language = None if candidate == "auto" else candidate
-    target_language, _ = normalize_language(settings.target_language)
+    target_language, _ = normalize_language(load_state(settings.state_file).target_language)
     if not target_language or target_language == "auto":
         target_language = None
 

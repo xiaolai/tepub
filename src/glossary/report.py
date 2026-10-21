@@ -17,7 +17,9 @@ class Miss:
     problem: str
 
 
-def find_misses(segments: Iterable[Segment], state: StateDocument, glossary: Glossary) -> list[Miss]:
+def find_misses(
+    segments: Iterable[Segment], state: StateDocument, glossary: Glossary
+) -> list[Miss]:
     """Each glossary problem in a completed, model-translated unit.
 
     Units copied without translation (punctuation, numbers) are not checked.

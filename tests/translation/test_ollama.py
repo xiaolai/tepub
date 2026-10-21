@@ -22,7 +22,9 @@ def _ollama(**config) -> object:
 def _tags(monkeypatch, *names: str) -> None:
     body = {"models": [{"name": name} for name in names]}
     monkeypatch.setattr(
-        ollama_module.requests, "get", lambda url, timeout: SimpleNamespace(json=lambda: body)
+        ollama_module.requests,
+        "get",
+        lambda url, timeout, **kwargs: SimpleNamespace(json=lambda: body),
     )
 
 
@@ -33,7 +35,7 @@ def test_the_default_provider_is_local() -> None:
 
 
 def test_an_unreachable_server_stops_the_run_with_the_fix(monkeypatch) -> None:
-    def refuse(url, timeout):
+    def refuse(url, timeout, **kwargs):
         raise requests.exceptions.ConnectionError("refused")
 
     monkeypatch.setattr(ollama_module.requests, "get", refuse)
@@ -62,9 +64,36 @@ def test_a_server_that_cannot_list_models_is_not_blocked(monkeypatch) -> None:
         raise ValueError("no json")
 
     monkeypatch.setattr(
-        ollama_module.requests, "get", lambda url, timeout: SimpleNamespace(json=not_json)
+        ollama_module.requests,
+        "get",
+        lambda url, timeout, **kwargs: SimpleNamespace(json=not_json),
     )
     _ollama(base_url="http://proxy.example/ollama/api/generate").preflight()
+
+
+def test_extra_headers_reach_preflight_and_generation(monkeypatch) -> None:
+    """A proxy in front of Ollama may demand its own authentication."""
+    from tests.translation.test_reply_checks import _segment
+
+    seen = {}
+
+    def get(url, timeout, **kwargs):
+        seen["preflight"] = kwargs.get("headers")
+        body = {"models": [{"name": "translategemma:12b"}]}
+        return SimpleNamespace(json=lambda: body)
+
+    def post(label, url, *, headers, data, timeout):
+        seen["generate"] = headers
+        return {"response": "好", "done_reason": "stop"}
+
+    monkeypatch.setattr(ollama_module.requests, "get", get)
+    monkeypatch.setattr(ollama_module, "post_json", post)
+    provider = _ollama(extra_headers={"X-Api-Key": "k"})
+    provider.preflight()
+    provider.translate(_segment(), "fr", "zh")
+
+    assert seen["preflight"] == {"X-Api-Key": "k"}
+    assert seen["generate"] == {"Content-Type": "application/json", "X-Api-Key": "k"}
 
 
 @pytest.mark.parametrize(("think", "expected"), [(None, "absent"), (False, False), (True, True)])

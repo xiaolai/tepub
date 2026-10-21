@@ -70,7 +70,9 @@ def test_bilingual_items_keep_the_list_and_hold_both_texts(tmp_path: Path) -> No
         "class"
     )
     assert original.find(f"{XHTML}a").get("href") == "ch1.xhtml#r1"  # backlink kept
-    assert "【译】" in "".join(translated.itertext()) or translated.find(f"{XHTML}a") is not None
+    # The translation is distinct text, so an untranslated copy cannot pass.
+    assert "【译】" in "".join(translated.itertext())
+    assert translated.find(f"{XHTML}a").get("href") == "ch1.xhtml#r1"
 
 
 def test_a_dt_translation_is_inline_in_epub2(tmp_path: Path) -> None:
@@ -108,6 +110,10 @@ def test_a_translated_copy_does_not_repeat_page_markers(tmp_path: Path) -> None:
     body = (
         '<p>Before the break<span id="page_v" role="doc-pagebreak" title="v"/> and '
         '<a href="#x">after</a>.</p>'
+        # A marker holding text is kept for its text, but is no page break.
+        # The anchor keeps the unit in HTML mode, so the marker is copied.
+        '<p>Marked <span id="page_vi" role="doc-pagebreak">vi</span> '
+        'and <a href="#x">a link</a>.</p>'
     )
     book = build_epub(tmp_path / "b.epub", [("c.xhtml", "C", body)])
     settings = _extract(book, tmp_path)
@@ -117,9 +123,19 @@ def test_a_translated_copy_does_not_repeat_page_markers(tmp_path: Path) -> None:
 
     tree = _tree(out, "c.xhtml")
     breaks = [n for n in tree.iter() if isinstance(n.tag, str) and n.get("role") == "doc-pagebreak"]
-    assert len(breaks) == 1 and breaks[0].get("id") == "page_v"
+    # Only the two originals announce a page; neither copy does.
+    assert {n.get("id") for n in breaks} == {"page_v", "page_vi"}
     copy = next(p for p in tree.iter(f"{XHTML}p") if "tepub-translation" in (p.get("class") or ""))
     assert "after" in "".join(copy.itertext())
+    marked = [
+        p
+        for p in tree.iter(f"{XHTML}p")
+        if "tepub-translation" in (p.get("class") or "") and "vi" in "".join(p.itertext())
+    ]
+    assert marked and all(
+        n.get("role") != "doc-pagebreak" for p in marked for n in p.iter()
+    )
+    assert "vi" in "".join(marked[0].itertext())
 
 
 def test_a_blockquote_filled_with_text_holds_it_in_a_paragraph(tmp_path: Path) -> None:

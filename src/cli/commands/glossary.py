@@ -17,7 +17,7 @@ from glossary import GLOSSARY_FILE, GlossaryError, glossary_for, load_glossary, 
 from glossary.build import PROPOSED_FILE, propose, render_proposals
 from glossary.candidates import candidates
 from glossary.report import find_misses, mark_for_retranslation, untranslated_with_terms
-from state.models import ExtractMode, Segment, SegmentMetadata
+from state.models import ExtractMode, Segment, SegmentMetadata, StateDocument
 from state.store import load_segments, load_state
 from state.writer import update_state_atomic
 from translation.controller import select_for_translation
@@ -82,7 +82,7 @@ def build(
     indexes = [
         document.tree
         for skipped in segments_doc.skipped_documents
-        if skipped.reason == "index"
+        if (skipped.keyword == "index" or skipped.reason == "index")
         and (document := reader.read_document_by_path(skipped.file_path)).tree is not None
     ]
     found = candidates(indexes, text, known=known, min_count=min_count, limit=limit)
@@ -181,8 +181,22 @@ def check(ctx: click.Context, input_epub: Path, retranslate: bool) -> None:
     units = {miss.segment_id for miss in misses}
     console.print(f"{len(units)} unit(s) affected.")
     if retranslate:
-        update_state_atomic(settings.state_file, lambda doc: mark_for_retranslation(doc, units))
-        console.print(f"[yellow]Marked {len(units)} unit(s) for translation; "
+        remaining: set[str] = set()
+
+        def reset_remaining(state: StateDocument) -> StateDocument:
+            # Recomputed against fresh state and segments under the lock: a
+            # translation corrected since the list above was read must stay
+            # finished, not be reset because an earlier read missed the term.
+            current = select_for_translation(
+                load_segments(settings.segments_file).segments, settings
+            )
+            remaining.update(
+                miss.segment_id for miss in find_misses(current, state, book_glossary)
+            )
+            return mark_for_retranslation(state, remaining)
+
+        update_state_atomic(settings.state_file, reset_remaining)
+        console.print(f"[yellow]Marked {len(remaining)} unit(s) for translation; "
                       "run `tepub translate` to redo them with the glossary.[/yellow]")
     else:
         console.print("Pass --retranslate to redo them with the glossary.")

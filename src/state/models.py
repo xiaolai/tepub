@@ -63,6 +63,8 @@ class SkippedDocument(BaseModel):
     file_path: Path
     reason: str
     source: str = "content"
+    #: The rule keyword that matched, when one did. Old state files omit it.
+    keyword: str | None = None
 
 
 class SegmentsDocument(BaseModel):

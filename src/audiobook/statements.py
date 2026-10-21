@@ -77,8 +77,11 @@ def _generate_statement_audio(
     engine = create_tts_engine(
         provider=session.tts_provider,
         voice=session.voice,
-        rate=None,  # Edge TTS only
-        volume=None,  # Edge TTS only
+        # The body is rendered with the session's prosody; ignoring it here gave
+        # the opening and closing a different voice from the book between them,
+        # even though the cache key includes both settings.
+        rate=session.rate,
+        volume=session.volume,
         model=session.tts_model,
         speed=session.tts_speed,
     )
@@ -88,18 +91,22 @@ def _generate_statement_audio(
     temp_ext = ".aac" if session.tts_provider == "openai" else ".mp3"
     temp_file = output_path.with_suffix(temp_ext)
 
-    # Generate TTS output
-    engine.synthesize(text.strip(), temp_file)
+    try:
+        # Generate TTS output
+        engine.synthesize(text.strip(), temp_file)
 
-    # Always convert to M4A (matching renderer.py approach)
-    audio = AudioSegment.from_file(temp_file)
-    audio.export(
-        output_path,
-        format="mp4",
-        codec="aac",
-        parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
-    )
-    temp_file.unlink()  # Remove temporary file
+        # Always convert to M4A (matching renderer.py approach)
+        audio = AudioSegment.from_file(temp_file)
+        audio.export(
+            output_path,
+            format="mp4",
+            codec="aac",
+            parameters=["-movflags", "+faststart", "-movie_timescale", "24000"],
+        )
+    finally:
+        # A failed synthesis, decode or export left the intermediate file behind;
+        # callers only clean up the M4A partial.
+        temp_file.unlink(missing_ok=True)
     return output_path
 
 def _render_statement(

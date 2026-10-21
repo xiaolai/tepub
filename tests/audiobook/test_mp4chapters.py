@@ -71,8 +71,13 @@ def test_chpl_title_truncation_keeps_valid_utf8():
     length = body[9]
     encoded = bytes(body[10 : 10 + length])
 
-    assert length <= 255
-    encoded.decode("utf-8")  # must not raise
+    # The exact longest complete UTF-8 prefix within 255 bytes: a writer that
+    # replaced the title with "Chapter" would otherwise pass this test.
+    expected = title.encode("utf-8")[:255]
+    expected = expected.decode("utf-8", errors="ignore").encode("utf-8")
+    assert length == len(expected)
+    assert encoded == expected
+    assert encoded.decode("utf-8") == title[: len(encoded.decode("utf-8"))]
 
 
 def _ffprobe_chapter_starts(path: Path) -> list[tuple[float, str]]:

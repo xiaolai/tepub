@@ -1,10 +1,20 @@
 
+import os
+
+import pytest
 from click.testing import CliRunner
 
 from cli.main import app
 from config import AppSettings
 from state.models import SegmentStatus, StateDocument, TranslationRecord
 from state.store import save_state
+
+
+def _permissions_enforced() -> bool:
+    """Whether chmod can make a file unreadable: an unprivileged POSIX user,
+    not root (which reads anything) and not Windows (which ignores the bits)."""
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() != 0
 
 
 def test_format_command_polishes_translations(tmp_path, monkeypatch):
@@ -71,6 +81,9 @@ def test_format_decides_on_the_state_it_rewrites(tmp_path, monkeypatch):
     assert load_state(state_path).segments["seg-1"].translation == "这是2024年的报告"
 
 
+@pytest.mark.skipif(
+    not _permissions_enforced(), reason="file permissions are not enforced for this user"
+)
 def test_format_reports_an_unreadable_state_file(tmp_path):
     state_path = tmp_path / "state.json"
     save_state(_state(tmp_path, "Simplified Chinese"), state_path)
@@ -92,6 +105,9 @@ def test_format_without_state_creates_no_workspace(tmp_path):
     assert not missing.exists()
 
 
+@pytest.mark.skipif(
+    not _permissions_enforced(), reason="file permissions are not enforced for this user"
+)
 def test_format_reports_a_state_file_it_cannot_reach(tmp_path):
     """The existence check raised PermissionError before any diagnostic."""
     from pathlib import Path

@@ -17,6 +17,13 @@ from extraction.pipeline import run_extraction
 from tests.epub_builder import build_epub
 
 
+def _permissions_enforced() -> bool:
+    """Whether chmod can make a file unreadable: an unprivileged POSIX user,
+    not root (which reads anything) and not Windows (which ignores the bits)."""
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() != 0
+
+
 def test_a_provider_chosen_for_the_run_gets_its_server_from_the_environment(
     monkeypatch,
 ) -> None:
@@ -202,6 +209,9 @@ def test_workspace_names_in_the_ambiguity_message_are_not_markup(tmp_path: Path)
     assert "holdsworkspacesforseveralbooks" in flat and "x[/blue]y" in flat
 
 
+@pytest.mark.skipif(
+    not _permissions_enforced(), reason="file permissions are not enforced for this user"
+)
 def test_an_unreadable_workspace_is_reported(tmp_path: Path) -> None:
     """Resolving a workspace without permission raised a traceback."""
     book = build_epub(tmp_path / "book.epub", [("c.xhtml", "C", "<p>One.</p>")])
@@ -220,7 +230,9 @@ def test_an_unreadable_workspace_is_reported(tmp_path: Path) -> None:
         assert "could not be read" in result.output
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads files without permission")
+@pytest.mark.skipif(
+    not _permissions_enforced(), reason="file permissions are not enforced for this user"
+)
 @pytest.mark.parametrize("unreadable", ["segments", "book"])
 def test_unreadable_files_in_the_identity_check_are_reported(
     tmp_path: Path, unreadable: str, capsys: pytest.CaptureFixture[str]

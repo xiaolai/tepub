@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from lxml import html as lxml_html
 
 from webbuilder.dom import clean_html
 
@@ -87,3 +88,6 @@ def test_foreign_content_and_namespaced_urls_are_neutralised(markup, label):
 
     assert "javascript:" not in out.lower(), label
     assert "<script" not in out.lower(), label
+    # Serialisation escapes markup held in srcdoc, so the substring checks pass
+    # even when an executable iframe survives; assert the element is gone.
+    assert not lxml_html.fromstring(out).xpath(".//iframe"), label

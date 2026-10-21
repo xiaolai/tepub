@@ -76,6 +76,7 @@ def _extract_units(
                         file_path=file_path,
                         reason=decision.reason,
                         source=decision.source,
+                        keyword=decision.keyword,
                     )
                 )
                 skip_reason = decision.reason

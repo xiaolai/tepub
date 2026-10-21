@@ -71,6 +71,8 @@ def extract_images(
     # Names claimed during *this* run. Previously the loop tested output_path.exists(),
     # so a rerun saw every prior output as a duplicate and emitted image_1.jpg,
     # image_2.jpg, … growing without bound and leaving stale files behind.
+    # Keyed by casefold: a/fig.png and b/FIG.png land on one file on a
+    # case-insensitive filesystem, silently losing one image.
     used_names: set[str] = set()
 
     # Extract all image items from EPUB
@@ -85,12 +87,12 @@ def extract_images(
 
         # Disambiguate only against names already written in this run, so output is
         # deterministic across runs and managed files are overwritten in place.
-        if output_filename in used_names:
+        if output_filename.casefold() in used_names:
             counter = 1
-            while output_filename in used_names:
+            while output_filename.casefold() in used_names:
                 counter += 1
                 output_filename = f"{epub_path.stem}_{counter}{epub_path.suffix}"
-        used_names.add(output_filename)
+        used_names.add(output_filename.casefold())
         output_path = output_dir / output_filename
 
         # Read the item. A single unreadable manifest entry is recoverable —
@@ -102,7 +104,7 @@ def extract_images(
                 f"[yellow]Warning: Failed to read image {escape(str(epub_path))}: "
                 f"{escape(str(e))}[/yellow]"
             )
-            used_names.discard(output_filename)
+            used_names.discard(output_filename.casefold())
             continue
 
         # Write failures are NOT recoverable: swallowing them produced an export

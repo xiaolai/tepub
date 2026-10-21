@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from lxml import html as lxml_html
+
 from webbuilder.dom import clean_html
 
 
@@ -38,8 +40,9 @@ def test_clean_html_rewrites_media_urls(tmp_path):
     assert 'src="content/chapters/images/a.jpg"' in cleaned
     assert 'srcset="content/chapters/images/a@2x.jpg 2x"' in cleaned
     assert 'src="content/chapters/audio/sample.mp3"' in cleaned
-    assert ('xlink:href="content/chapters/images/cover.jpg"' in cleaned) or (
-        'ns0:href="content/chapters/images/cover.jpg"' in cleaned
-    )
-    assert 'href="content/chapters/images/cover.jpg"' in cleaned
+    # Parse the element and check both attributes: a substring check for href
+    # also matches xlink:href, so it passed while the plain href was untouched.
+    image = next(lxml_html.fromstring(cleaned).iter("image"))
+    assert image.get("href") == "content/chapters/images/cover.jpg"
+    assert image.get("xlink:href") == "content/chapters/images/cover.jpg"
     assert 'href="content/chapter2.xhtml#section"' in cleaned

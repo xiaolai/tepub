@@ -62,6 +62,28 @@ def test_title_that_yaml_reads_as_non_text_is_reported(tmp_path, title):
         read_chapters_yaml(path)
 
 
+@pytest.mark.parametrize("title", ["~", '""', '"   "'])
+def test_a_null_or_blank_title_is_reported(tmp_path, title):
+    """A null title passed loading and reached _slugify(None), an AttributeError."""
+    path = tmp_path / "chapters.yaml"
+    path.write_text(f"chapters:\n  - title: {title}\n    start: 0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing or empty"):
+        read_chapters_yaml(path)
+
+
+def test_a_newline_in_metadata_cannot_end_the_comment_header(tmp_path):
+    """Metadata was interpolated into comments unescaped; the next line became
+    document content that the YAML parser had to make sense of."""
+    path = tmp_path / "chapters.yaml"
+    source = "book.epub\n  broken: ["
+
+    write_chapters_yaml([ChapterInfo("Ch", 1.0)], {"source": source}, path)
+    _, loaded = read_chapters_yaml(path)
+
+    assert loaded["source"] == source
+
+
 @pytest.mark.parametrize(
     "start",
     ["1" + "0" * 400, "'1" + "0" * 400 + ":00'", ".inf", ".nan"],

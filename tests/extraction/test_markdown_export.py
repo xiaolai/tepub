@@ -1,17 +1,185 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from epub_io.path_utils import normalize_epub_href
 from epub_io.toc_utils import parse_toc_to_dict
 from extraction.markdown_export import (
+    ChapterBlock,
     _html_to_markdown,
+    _render_block_body,
     _sanitize_filename,
     export_combined_markdown,
+    export_markdown,
     export_to_markdown,
 )
 from state.models import ExtractMode, Segment, SegmentMetadata, SegmentsDocument
 from state.store import save_segments
 from tests.epub_builder import build_epub
+
+
+def _html_segment(content: str, element_type: str) -> Segment:
+    return Segment(
+        segment_id="seg-1",
+        file_path=Path("c.xhtml"),
+        xpath="/html/body/block",
+        extract_mode=ExtractMode.HTML,
+        source_content=content,
+        metadata=SegmentMetadata(element_type=element_type, spine_index=0, order_in_file=1),
+    )
+
+
+def _rendered(segment: Segment) -> str:
+    block = ChapterBlock("One", 0, 1, [Path("c.xhtml")], "c.xhtml")
+    return "\n".join(_render_block_body(block, {Path("c.xhtml"): [segment]}, {}))
+
+
+def test_plain_text_segments_are_not_parsed_as_html():
+    """Parsed as HTML, "Use <foo> &copy;" lost <foo> and changed &copy;."""
+    segment = _html_segment("Use <foo> &copy; here", "p")
+    segment.extract_mode = ExtractMode.TEXT
+
+    assert "Use <foo> &copy; here" in _rendered(segment)
+
+
+def test_an_ordered_list_keeps_its_numbers():
+    """Without its <ol> wrapper, an ordered list became bullets."""
+    rendered = _rendered(_html_segment("<li>One</li><li>Two</li>", "ol"))
+
+    assert "1. One" in rendered and "2. Two" in rendered
+
+
+def test_a_table_keeps_its_header_separator():
+    """Without its <table> wrapper, the header row was body cells."""
+    segment = _html_segment(
+        "<thead><tr><th>A</th><th>B</th></tr></thead>"
+        "<tbody><tr><td>1</td><td>2</td></tr></tbody>",
+        "table",
+    )
+
+    assert "---|---" in _rendered(segment)
+
+
+def test_svg_image_references_reach_the_markdown():
+    """html2text drops <image>, and nothing after it could bring it back."""
+    html = (
+        '<div><svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink">'
+        '<image xlink:href="../images/fig1.png"/></svg></div>'
+    )
+
+    result = _html_to_markdown(html, Path("Text/ch1.xhtml"), {"images/fig1.png": "fig1.png"})
+
+    assert "](images/fig1.png)" in result
+
+
+@pytest.mark.parametrize(
+    ("source", "extracted", "destination"),
+    [
+        ("fig 1.png", "fig 1.png", "images/fig%201.png"),
+        ("f(1).png", "f(1).png", "images/f%281%29.png"),
+        ("f%231.png", "f#1.png", "images/f%231.png"),
+    ],
+    ids=["space", "parentheses", "hash"],
+)
+def test_extracted_image_names_are_percent_encoded(source, extracted, destination):
+    """An unescaped destination broke at the space, parenthesis or hash."""
+    html = f'<p><img src="../images/{source}" alt="F"/></p>'
+
+    result = _html_to_markdown(
+        html, Path("Text/ch1.xhtml"), {f"images/{extracted}": extracted}
+    )
+
+    assert f"]({destination})" in result
+
+
+def test_local_document_links_point_at_the_exported_chapter_files():
+    """A link kept its XHTML destination, a file the export never creates."""
+    block = ChapterBlock("One", 0, 1, [Path("Text/ch1.xhtml")], "ch1.xhtml")
+    segment = _html_segment('<p>See <a href="ch2.xhtml#note1">the note</a>.</p>', "p")
+
+    rendered = "\n".join(
+        _render_block_body(
+            block,
+            {Path("Text/ch1.xhtml"): [segment]},
+            {},
+            {"Text/ch2.xhtml": "002_two.md"},
+        )
+    )
+
+    assert "002_two.md#note1" in rendered
+
+
+def test_ids_in_a_segment_become_markdown_anchors():
+    """Links land on generated anchors; html2text drops the id attribute."""
+    rendered = _rendered(_html_segment('<p id="note1">A note.</p>', "p"))
+
+    assert '<a id="note1"></a>' in rendered
+
+
+def test_combined_document_links_use_anchors_in_the_same_file(tmp_path):
+    """The combined export writes one file, so its links must stay inside it."""
+    from config import AppSettings
+    from extraction.pipeline import run_extraction
+
+    epub = build_epub(
+        tmp_path / "book.epub",
+        [
+            (
+                "Text/ch1.xhtml",
+                "Introduction",
+                '<p>See <a href="ch2.xhtml#note1">the note</a> or '
+                '<a href="ch2.xhtml">chapter two</a>.</p>',
+            ),
+            ("Text/ch2.xhtml", "Second", '<p id="note1">A note.</p>'),
+        ],
+    )
+    settings = AppSettings(work_dir=tmp_path / "work")
+    run_extraction(settings, epub)
+
+    combined = export_combined_markdown(settings, epub, tmp_path / "markdown")
+    content = combined.read_text()
+
+    assert "the note" in content and "(<#note1>)" in content
+    assert "chapter two" in content and "(<#tepub-chapter-2>)" in content
+    assert '<a id="note1"></a>' in content
+    assert '<a id="tepub-chapter-2"></a>' in content
+
+
+def test_a_combined_file_does_not_overwrite_a_chapter_of_the_same_name(tmp_path):
+    """A book named 001_introduction.epub overwrote its first chapter file."""
+    epub = build_epub(
+        tmp_path / "001_introduction.epub",
+        [("Text/ch1.xhtml", "Introduction", "<p>1</p>")],
+    )
+    segments_file = tmp_path / "segments.json"
+    save_segments(
+        SegmentsDocument(
+            epub_path=epub,
+            generated_at="2024-01-01T00:00:00",
+            segments=[
+                Segment(
+                    segment_id="seg-1",
+                    file_path=Path("Text/ch1.xhtml"),
+                    xpath="/html/body/p[1]",
+                    extract_mode=ExtractMode.TEXT,
+                    source_content="First paragraph.",
+                    metadata=SegmentMetadata(element_type="p", spine_index=0, order_in_file=1),
+                )
+            ],
+        ),
+        segments_file,
+    )
+    settings = SimpleNamespace(segments_file=segments_file)
+    output_dir = tmp_path / "markdown"
+
+    chapters, combined = export_markdown(settings, epub, output_dir)
+
+    assert [path.name for path in chapters] == ["001_introduction.md"]
+    assert combined.name == "001_introduction-combined.md"
+    assert chapters[0].read_text().startswith("# Introduction")
+    assert "## Introduction" in combined.read_text()
 
 
 def test_sanitize_filename():

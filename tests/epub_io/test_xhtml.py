@@ -10,7 +10,14 @@ from __future__ import annotations
 import pytest
 from lxml import etree
 
-from epub_io.xhtml import NotWellFormedError, parse_xhtml, serialize_xhtml
+from epub_io.xhtml import (
+    XML_NS,
+    OPS_NS,
+    NotWellFormedError,
+    parse_fragment,
+    parse_xhtml,
+    serialize_xhtml,
+)
 
 SVG_DOC = b"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -105,3 +112,29 @@ def test_external_entities_are_never_resolved(tmp_path) -> None:
 def test_a_malformed_document_is_reported_not_repaired(broken: bytes) -> None:
     with pytest.raises(NotWellFormedError):
         parse_xhtml(broken)
+
+
+def test_the_html_fallback_resolves_a_prefixed_element() -> None:
+    """lxml.html keeps "epub:switch" literal; prefixing it whole made an invalid QName."""
+    _, children = parse_fragment(
+        "<p>Line<br>break</p><epub:switch><epub:default>y</epub:default></epub:switch>"
+    )
+    tags = {element.tag for element in children[0].getroottree().iter() if isinstance(element.tag, str)}
+    assert f"{{{OPS_NS}}}switch" in tags
+
+
+def test_the_html_fallback_resolves_a_prefixed_attribute() -> None:
+    _, children = parse_fragment("<p xml:lang='fr'>Line<br>break</p>")
+    assert children[0].get(f"{{{XML_NS}}}lang") == "fr"
+
+
+def test_an_internal_dtd_subset_survives_serialisation() -> None:
+    data = (
+        b'<?xml version="1.0"?>\n'
+        b'<!DOCTYPE html [<!ENTITY foo "bar">]>\n'
+        b'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head>'
+        b"<body><p>&foo;</p></body></html>"
+    )
+    out = serialize_xhtml(parse_xhtml(data))
+    assert b"<!ENTITY foo" in out
+    assert b"&foo;" in out

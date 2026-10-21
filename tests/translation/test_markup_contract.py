@@ -46,6 +46,10 @@ def test_table_structure_must_be_kept() -> None:
     source = "<tr><td>Year</td><td>Sales</td></tr><tr><td>2024</td><td>10k</td></tr>"
     merged = "<tr><td>年份</td><td>销量</td></tr><tr><td>2024 10k</td></tr>"
     assert markup_mismatch(source, merged) is not None
+    # Same tag counts, but the four cells moved into rows of one and three:
+    # counting cells alone misses this.
+    redistributed = "<tr><td>年份</td></tr><tr><td>销量</td><td>2024</td><td>10k</td></tr>"
+    assert markup_mismatch(source, redistributed) is not None
 
 
 def test_ruby_annotation_may_differ() -> None:
@@ -64,6 +68,28 @@ def test_emphasis_may_differ() -> None:
     the paragraph untranslated is worse than losing it."""
     assert markup_mismatch(SOURCE, SOURCE.replace("<em>emphasis</em>", "emphasis")) is None
     assert markup_mismatch("plain", "<b>plain</b>") is None
+
+
+def test_an_exempt_tag_keeps_its_protected_attributes() -> None:
+    """Emphasis may come or go, but its id is a link destination: dropping
+    <em id="target"> silently removed one."""
+    source = '<em id="target">emphasis</em>'
+    assert markup_mismatch(source, '<strong id="target">加强</strong>') is None
+    assert markup_mismatch(source, "加强") is not None
+
+
+def test_protected_attributes_stay_with_their_element() -> None:
+    """Swapping two links' hrefs leaves every value present but sends each id
+    to the other note."""
+    source = (
+        '<a id="r1" href="notes.xhtml#n1">1</a> and '
+        '<a id="r2" href="notes.xhtml#n2">2</a>'
+    )
+    swapped = (
+        '<a id="r1" href="notes.xhtml#n2">1</a> and '
+        '<a id="r2" href="notes.xhtml#n1">2</a>'
+    )
+    assert markup_mismatch(source, swapped) is not None
 
 
 def test_a_line_break_may_be_lost() -> None:

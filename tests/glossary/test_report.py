@@ -43,6 +43,7 @@ SEGMENTS = [
     _segment("avoided", "Another compound."),
     _segment("missing", "The compounds."),
     _segment("pending", "A compound again."),
+    _segment("errored", "A compound once more."),
     _segment("copied", "compound"),
     _segment("no-term", "Nothing here."),
 ]
@@ -51,7 +52,10 @@ STATE = StateDocument(
         "ok": _record("ok", "一个诈骗园区。"),
         "avoided": _record("avoided", "另一个集中营。"),
         "missing": _record("missing", "那些地方。"),
-        "pending": _record("pending", None, status=SegmentStatus.PENDING),
+        # Nonempty model translations as well: an unfiltered reader would find
+        # the same misses here, so the status check is what the test exercises.
+        "pending": _record("pending", "那个集中营。", status=SegmentStatus.PENDING),
+        "errored": _record("errored", "又一个集中营。", status=SegmentStatus.ERROR),
         "copied": _record("copied", "compound", provider=None),
         "no-term": _record("no-term", "这里什么都没有。"),
     }

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.prompt import Confirm
 
-from config import AppSettings
+from config import AppSettings, SkipRule
 
 from .container import SpineDocument as SpineItem
 from .container import iter_toc
@@ -28,6 +28,10 @@ class SkipCandidate:
     reason: str
     source: str = "content"
     flagged: bool = True
+    #: The rule keyword that matched, independent of the human-facing reason a
+    #: rule may configure. Callers that need to know *what* matched (the
+    #: glossary looks for an index) must use this, not the reason string.
+    keyword: str | None = None
 
 
 TOC_FRONT_SAMPLE = 8
@@ -71,7 +75,7 @@ def _flatten_toc_entries(entries) -> list[tuple[str, str]]:
 def _collect_toc_candidates(
     spine_lookup: dict[Path, SpineItem],
     toc_entries: list[tuple[str, str]],
-    keywords: Iterable[str],
+    rules: Iterable[SkipRule],
     back_matter: Iterable[str] = (),
     back_matter_from: int | None = None,
 ) -> tuple[dict[Path, SkipCandidate], list[str]]:
@@ -88,6 +92,8 @@ def _collect_toc_candidates(
     total_entries = len(toc_entries)
     seen_titles: set[str] = set()
     decided: set[Path] = set()
+    reasons = {rule.keyword: rule.reason for rule in rules}
+    keywords = list(reasons)
 
     for index, (title, href) in enumerate(toc_entries):
         href_path = Path(href.split("#", 1)[0])
@@ -117,8 +123,9 @@ def _collect_toc_candidates(
             candidates[href_path] = SkipCandidate(
                 file_path=href_path,
                 spine_index=spine_item.index,
-                reason=keyword,
+                reason=reasons[keyword],
                 source="toc",
+                keyword=keyword,
             )
         else:
             if (
@@ -171,8 +178,14 @@ def _untitled_back_matter(
             continue
         line = first_line_of(path)
         keyword = _match_keyword(line, triggers)
-        pattern = _keyword_pattern(keyword) if keyword else None
-        if pattern is not None and pattern.fullmatch(line):
+        if keyword is None:
+            continue
+        pattern = _keyword_pattern(keyword)
+        # Scripts without word boundaries have no pattern; their trigger can
+        # still match, but only the whole line.
+        if (pattern is not None and pattern.fullmatch(line)) or (
+            pattern is None and line == _normalize_text(keyword)
+        ):
             return path, keyword
     return None
 
@@ -250,6 +263,7 @@ def _apply_skip_after_logic(
                         spine_index=spine_lookup[path].index,
                         reason=keyword,
                         source="content",
+                        keyword=keyword,
                     ),
                 )
 
@@ -274,14 +288,13 @@ def analyze_skip_candidates(
     # is not read and parsed a second time.
     if reader is None:
         reader = EpubReader(epub_path, settings)
-    keywords = [rule.keyword for rule in settings.skip_rules]
     spine_lookup = {item.href: item for item in reader.package.spine_items()}
 
     toc_entries = _flatten_toc_entries(reader.package.toc)
     toc_candidates, unmatched_titles = _collect_toc_candidates(
         spine_lookup,
         toc_entries,
-        keywords,
+        settings.skip_rules,
         back_matter=settings.back_matter_triggers if settings.skip_after_back_matter else (),
         back_matter_from=int(len(toc_entries) * settings.back_matter_threshold),
     )
@@ -293,6 +306,11 @@ def analyze_skip_candidates(
 
     # Apply cascade skipping after back-matter triggers
     def first_line_of(path: Path) -> str:
+        item = spine_lookup.get(path)
+        if item is None or not item.media_type.startswith("application/xhtml"):
+            # The document cache holds XHTML only; an SVG or other spine item
+            # has no first line of prose to inspect.
+            return ""
         tree = reader.read_document_by_path(path).tree
         return first_line(tree) if tree is not None else ""
 

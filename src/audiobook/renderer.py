@@ -68,9 +68,30 @@ class SegmentRenderer:
                     pause_seconds = rng.uniform(*self.sentence_pause_range)
                     audio_parts.append(AudioSegment.silent(duration=int(pause_seconds * 1000)))
 
-        combined = audio_parts[0]
-        for part in audio_parts[1:]:
-            combined += part
+        # AudioSegment's += copies every accumulated frame, so appending N parts
+        # copied the growing result N times. Normalise each part once to one
+        # format, then join the raw frames in a single pass. The target format
+        # is the widest of the parts, the same one pydub's + would produce.
+        frame_rate = max(part.frame_rate for part in audio_parts)
+        channels = max(part.channels for part in audio_parts)
+        sample_width = max(part.sample_width for part in audio_parts)
+        frames: list[bytes] = []
+        for part in audio_parts:
+            if (part.frame_rate, part.channels, part.sample_width) != (
+                frame_rate,
+                channels,
+                sample_width,
+            ):
+                part = part.set_frame_rate(frame_rate)
+                part = part.set_channels(channels)
+                part = part.set_sample_width(sample_width)
+            frames.append(part.raw_data)
+        combined = AudioSegment(
+            data=b"".join(frames),
+            sample_width=sample_width,
+            frame_rate=frame_rate,
+            channels=channels,
+        )
 
         output_path = output_dir / f"{segment_id}.m4a"
         combined.export(

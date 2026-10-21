@@ -59,7 +59,7 @@ class GeminiProvider(BaseProvider):
         try:
             response = client.models.generate_content(
                 model=self.config.model,
-                contents=[{"role": "user", "parts": [prompt]}],
+                contents=prompt,
                 config={"max_output_tokens": self.config.max_tokens},
             )
         except Exception as exc:  # noqa: BLE001 - classified, not swallowed

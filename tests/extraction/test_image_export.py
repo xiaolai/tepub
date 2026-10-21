@@ -33,6 +33,24 @@ def test_extract_images(tmp_path):
     assert any("cover" in img.epub_path.name for img in cover_candidates)
 
 
+def test_images_differing_only_in_case_both_survive(tmp_path):
+    """a/fig.png and b/FIG.png collided on a case-insensitive filesystem."""
+    epub_path = build_epub(
+        tmp_path / "case.epub",
+        [("chapter.xhtml", "One", "<p>Text.</p>")],
+        resources={"images/a/fig.png": b"lower", "images/b/FIG.png": b"upper"},
+    )
+    output_dir = tmp_path / "images"
+
+    extract_images(SimpleNamespace(), epub_path, output_dir)
+
+    written = sorted(
+        path.read_bytes() for path in output_dir.iterdir() if path.is_file()
+    )
+    assert written == [b"lower", b"upper"]
+    assert len({path.name.casefold() for path in output_dir.iterdir()}) == 2
+
+
 def test_get_image_mapping():
     from extraction.image_export import ImageInfo
 
