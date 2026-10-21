@@ -29,6 +29,16 @@ from translation.providers import (
 )
 from translation.providers.base import classify_exception, error_for_status
 
+try:
+    import anthropic
+except ImportError:  # pragma: no cover - optional extra
+    anthropic = None
+
+requires_anthropic = pytest.mark.skipif(
+    anthropic is None,
+    reason="anthropic extra not installed; run: pip install -e '.[all-providers]'",
+)
+
 
 class Response:
     def __init__(self, status: int, body=None, headers=None):
@@ -131,6 +141,7 @@ def test_sdk_exceptions_are_classified_by_status(exc, kind) -> None:
     assert type(error) is kind
 
 
+@requires_anthropic
 @pytest.mark.parametrize(("status", "kind"), [(429, ProviderError), (401, ProviderFatalError)])
 def test_anthropic_classifies_sdk_status_through_translate(monkeypatch, status, kind) -> None:
     """The helper was tested directly, so a broken call in the adapter was not."""

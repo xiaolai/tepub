@@ -38,10 +38,14 @@ jobs:
       # round-trip tests skip and output validity goes unchecked.
       - name: Install ffmpeg and epubcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg epubcheck
+      # The provider SDKs are optional extras, and their adapters are guarded at
+      # import. The adapter tests need the real SDKs: without them the Anthropic
+      # tests skip, and a broken adapter call ships untested. Install every
+      # provider this release supports so the gate runs them.
       - name: Install with dev extras
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,all-providers]"
       # The sentence-splitting tests need NLTK's Punkt tables. Tests never
       # download them (tests/conftest.py); without this step they would skip.
       - name: Install NLTK sentence data

@@ -20,6 +20,16 @@ from translation.providers import grok as grok_module
 from translation.providers import ollama as ollama_module
 from translation.providers import openai as openai_module
 
+try:
+    import anthropic
+except ImportError:  # pragma: no cover - optional extra
+    anthropic = None
+
+requires_anthropic = pytest.mark.skipif(
+    anthropic is None,
+    reason="anthropic extra not installed; run: pip install -e '.[all-providers]'",
+)
+
 
 def _segment(text: str = "Il fait beau aujourd'hui, et nous partons.") -> Segment:
     return Segment(
@@ -159,6 +169,7 @@ def test_grok_keeps_every_content_part(monkeypatch) -> None:
     ) == "First. Second."
 
 
+@requires_anthropic
 def test_anthropic_keeps_every_text_block() -> None:
     provider = _provider("anthropic")
     provider._client = SimpleNamespace(
