@@ -27,7 +27,9 @@ MEDIA_TYPES = {
 }
 
 
-def xhtml(title: str, body: str, *, version: int = 3, lang: str = "en", css: str | None = None) -> str:
+def xhtml(
+    title: str, body: str, *, version: int = 3, lang: str = "en", css: str | None = None
+) -> str:
     """Wrap body markup in a complete XHTML content document."""
     link = f'<link rel="stylesheet" type="text/css" href={quoteattr(css)}/>' if css else ""
     if version == 2:
@@ -44,7 +46,10 @@ def xhtml(title: str, body: str, *, version: int = 3, lang: str = "en", css: str
             f'xmlns:epub="http://www.idpf.org/2007/ops" lang={quoteattr(lang)} '
             f'xml:lang={quoteattr(lang)}>\n'
         )
-    return f"{head}<head><title>{escape(title)}</title>{link}</head>\n<body>\n{body}\n</body>\n</html>\n"
+    return (
+        f"{head}<head><title>{escape(title)}</title>{link}</head>\n"
+        f"<body>\n{body}\n</body>\n</html>\n"
+    )
 
 
 def _relative(from_doc: str, target: str) -> str:
@@ -87,12 +92,18 @@ def build_epub(
 
     manifest: list[str] = []
     if version == 3:
-        manifest.append('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
+        manifest.append(
+            '<item id="nav" href="nav.xhtml" '
+            'media-type="application/xhtml+xml" properties="nav"/>'
+        )
     else:
         manifest.append('<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
     for index, name in enumerate(sorted(resources), start=1):
         suffix = PurePosixPath(name).suffix
-        manifest.append(f'<item id="r{index}" href={quoteattr(name)} media-type="{MEDIA_TYPES[suffix]}"/>')
+        manifest.append(
+            f'<item id="r{index}" href={quoteattr(name)} '
+            f'media-type="{MEDIA_TYPES[suffix]}"/>'
+        )
 
     spine: list[str] = ['<itemref idref="nav"/>'] if nav_in_spine and version == 3 else []
     toc_entries: list[tuple[str, str]] = []
@@ -124,8 +135,9 @@ def build_epub(
             f'<dc:title>{escape(title)}</dc:title><dc:language>{lang}</dc:language>'
         )
         spine_open = '<spine toc="ncx">'
+    opf_version = "3.0" if version == 3 else "2.0"
     opf = f"""<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="{'3.0' if version == 3 else '2.0'}" unique-identifier="uid">
+<package xmlns="http://www.idpf.org/2007/opf" version="{opf_version}" unique-identifier="uid">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
     {metadata}
   </metadata>
@@ -143,7 +155,9 @@ def build_epub(
             f'<li><a href={quoteattr(name)}>{escape(t)}</a></li>' for name, t in toc_entries
         )
         files["nav.xhtml"] = xhtml(
-            "Contents", f'<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>{items}</ol></nav>', lang=lang
+            "Contents",
+            f'<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>{items}</ol></nav>',
+            lang=lang,
         )
     else:
         points = "".join(
@@ -155,7 +169,8 @@ def build_epub(
             '<?xml version="1.0" encoding="utf-8"?>\n'
             '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">'
             f'<head><meta name="dtb:uid" content="{uid}"/><meta name="dtb:depth" content="1"/>'
-            '<meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>'
+            '<meta name="dtb:totalPageCount" content="0"/>'
+            '<meta name="dtb:maxPageNumber" content="0"/></head>'
             f"<docTitle><text>{escape(title)}</text></docTitle><navMap>{points}</navMap></ncx>\n"
         )
     for name, chapter_title, body in chapters:

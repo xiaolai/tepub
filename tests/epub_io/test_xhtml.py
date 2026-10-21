@@ -11,8 +11,8 @@ import pytest
 from lxml import etree
 
 from epub_io.xhtml import (
-    XML_NS,
     OPS_NS,
+    XML_NS,
     NotWellFormedError,
     parse_fragment,
     parse_xhtml,
@@ -119,7 +119,11 @@ def test_the_html_fallback_resolves_a_prefixed_element() -> None:
     _, children = parse_fragment(
         "<p>Line<br>break</p><epub:switch><epub:default>y</epub:default></epub:switch>"
     )
-    tags = {element.tag for element in children[0].getroottree().iter() if isinstance(element.tag, str)}
+    tags = {
+        element.tag
+        for element in children[0].getroottree().iter()
+        if isinstance(element.tag, str)
+    }
     assert f"{{{OPS_NS}}}switch" in tags
 
 

@@ -102,7 +102,9 @@ def test_the_file_round_trips_and_terms_without_a_target_are_undecided(tmp_path:
         ("target_language: zh\nterm:\n  - source: x\n", "term"),
     ],
 )
-def test_a_malformed_file_is_refused_with_its_name(tmp_path: Path, body: str, complaint: str) -> None:
+def test_a_malformed_file_is_refused_with_its_name(
+    tmp_path: Path, body: str, complaint: str
+) -> None:
     path = tmp_path / "glossary.yaml"
     path.write_text(body, encoding="utf-8")
     with pytest.raises(GlossaryError, match=complaint) as error:

@@ -6,8 +6,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from exceptions import UnsafeArchiveMemberError
 from epub_io.path_utils import normalize_epub_href, safe_relative_member
+from exceptions import UnsafeArchiveMemberError
 
 
 def test_normalize_empty_href():

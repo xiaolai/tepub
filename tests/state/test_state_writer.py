@@ -43,7 +43,9 @@ def state_path(tmp_path: Path) -> Path:
 def test_writes_are_batched(state_path: Path, monkeypatch) -> None:
     writes: list[int] = []
     real = store.save_state
-    monkeypatch.setattr("state.writer.save_state", lambda doc, path: (writes.append(1), real(doc, path)))
+    monkeypatch.setattr(
+        "state.writer.save_state", lambda doc, path: (writes.append(1), real(doc, path))
+    )
 
     with StateWriter(state_path, flush_every=50, flush_interval=3600) as writer:
         for i in range(1, 501):

@@ -51,7 +51,11 @@ class Model:
 def test_only_the_unit_terms_reach_the_prompt() -> None:
     model = Model("ProPublica 报道了诈骗园区。")
     result = _translate_segment(
-        _segment("ProPublica reported on the compounds, Along said."), model, "en", "Simplified Chinese", GLOSSARY
+        _segment("ProPublica reported on the compounds, Along said."),
+        model,
+        "en",
+        "Simplified Chinese",
+        GLOSSARY,
     )
     assert result.error is None
     prompt = model.prompts[0]
@@ -70,7 +74,9 @@ def test_a_missed_term_is_retried_with_the_term_named() -> None:
 def test_a_term_missed_twice_is_kept_and_logged(caplog) -> None:
     model = Model("他们参观了那里。", "他们又参观了那里。")
     with caplog.at_level(logging.WARNING):
-        result = _translate_segment(_segment("They visited a compound."), model, "en", "zh", GLOSSARY)
+        result = _translate_segment(
+            _segment("They visited a compound."), model, "en", "zh", GLOSSARY
+        )
     assert result.error is None and result.translation == "他们又参观了那里。"
     assert "Glossary not followed in s1" in caplog.text
 
@@ -112,7 +118,10 @@ def test_the_book_glossary_overrides_the_global_one(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     glossary = glossary_for(root, book, "Simplified Chinese")
-    assert {t.source: t.target for t in glossary.terms} == {"triad": "三合会", "compound": "诈骗园区"}
+    assert {t.source: t.target for t in glossary.terms} == {
+        "triad": "三合会",
+        "compound": "诈骗园区",
+    }
     assert glossary_for(root, tmp_path / "none", "zh-CN") is not None
     assert glossary_for(tmp_path / "x", tmp_path / "y", "zh-CN") is None
 

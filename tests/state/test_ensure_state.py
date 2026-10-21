@@ -31,7 +31,13 @@ def _segments(n: int = 3) -> list[Segment]:
 def _translated_state(path: Path) -> None:
     ensure_state(path, _segments(), "openai", "gpt-a", "en", "zh")
     with StateWriter(path) as writer:
-        writer.mark("s1", SegmentStatus.COMPLETED, translation="一", provider_name="openai", model_name="gpt-a")
+        writer.mark(
+            "s1",
+            SegmentStatus.COMPLETED,
+            translation="一",
+            provider_name="openai",
+            model_name="gpt-a",
+        )
 
 
 def test_a_new_model_keeps_finished_translations(tmp_path: Path) -> None:

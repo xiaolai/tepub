@@ -137,7 +137,9 @@ class TestCorruptedStateError:
     def test_error_message_structure(self):
         """Test error message for corrupted state file."""
         file_path = Path("/workspace/state.json")
-        error = CorruptedStateError(file_path, "translation", "Invalid JSON format (line 1, column 5)")
+        error = CorruptedStateError(
+            file_path, "translation", "Invalid JSON format (line 1, column 5)"
+        )
 
         assert "state.json" in str(error)
         assert "Invalid JSON format" in str(error)

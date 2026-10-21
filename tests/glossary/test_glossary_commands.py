@@ -16,7 +16,10 @@ BODY = (
     "<p>Another scam compound opened in Sihanoukville.</p>"
     "<p>A third scam compound, near Bavet.</p>"
 )
-INDEX = "<ul><li>scam compounds, <a href='ch1.xhtml'>2</a></li><li>Bavet, <a href='ch1.xhtml'>3</a></li></ul>"
+INDEX = (
+    "<ul><li>scam compounds, <a href='ch1.xhtml'>2</a></li>"
+    "<li>Bavet, <a href='ch1.xhtml'>3</a></li></ul>"
+)
 
 
 def _workspace(tmp_path: Path) -> tuple[CliRunner, Path, Path]:
@@ -67,9 +70,13 @@ def test_check_lists_misses_and_marks_them_for_retranslation(tmp_path: Path) -> 
         if segment.source_content.startswith(opening)
     ]
     state = load_state(work / "state.json")
-    for segment, translation in zip(segments, renderings.values()):
+    for segment, translation in zip(segments, renderings.values(), strict=True):
         state.segments[segment.segment_id] = state.segments[segment.segment_id].model_copy(
-            update={"translation": translation, "status": SegmentStatus.COMPLETED, "provider_name": "ollama"}
+            update={
+                "translation": translation,
+                "status": SegmentStatus.COMPLETED,
+                "provider_name": "ollama",
+            }
         )
     state.target_language = "zh-CN"
     save_state(state, work / "state.json")

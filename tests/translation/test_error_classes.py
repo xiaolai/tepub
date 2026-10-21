@@ -215,7 +215,9 @@ def test_a_free_deepl_key_uses_the_free_endpoint(monkeypatch) -> None:
         ("en-US", "zh-TW", "EN", "ZH-HANT"),
     ],
 )
-def test_deepl_language_codes(monkeypatch, source, target, expected_source, expected_target) -> None:
+def test_deepl_language_codes(
+    monkeypatch, source, target, expected_source, expected_target
+) -> None:
     """Bare codes such as "it" used to resolve to None, and target-only
     variants were sent as source_lang."""
     sent = {}

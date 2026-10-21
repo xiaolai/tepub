@@ -80,13 +80,20 @@ def test_openai_compatible_chat_translates() -> None:
             name="grok", model=MODEL, api_key="unused", base_url=f"{BASE_URL}/v1/chat/completions"
         )
     )
-    reply = provider.translate(_segment(), source_language="en", target_language="Simplified Chinese")
+    reply = provider.translate(
+        _segment(), source_language="en", target_language="Simplified Chinese"
+    )
     assert CJK.search(reply), reply
 
 
 def test_responses_api_translates() -> None:
     provider = create_provider(
-        ProviderConfig(name="openai", model=MODEL, api_key="unused", base_url=f"{BASE_URL}/v1/responses")
+        ProviderConfig(
+            name="openai",
+            model=MODEL,
+            api_key="unused",
+            base_url=f"{BASE_URL}/v1/responses",
+        )
     )
     reply = provider.translate(_segment(), "en", "Simplified Chinese")
     assert CJK.search(reply), reply

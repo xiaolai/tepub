@@ -32,7 +32,8 @@ def switch_and_mathml(path: Path) -> Path:
     # epub:switch is deprecated (epubcheck warns) but common in older books, and
     # its prefixed name crashed the export when stored in an xpath.
     body = """<h1>Maths</h1>
-<p>Inline <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi><mo>+</mo><mn>1</mn></math> here.</p>
+<p>Inline <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi><mo>+</mo>\
+<mn>1</mn></math> here.</p>
 <epub:switch id="sw1"><epub:case required-namespace="http://www.w3.org/1998/Math/MathML">
 <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>y</mi></math></epub:case>
 <epub:default><p>y</p></epub:default></epub:switch>
@@ -56,7 +57,8 @@ def svg_cover(path: Path) -> Path:
 
 def footnotes_with_backlinks(path: Path) -> Path:
     chapter = """<h1>Chapter</h1>
-<p>A claim<a epub:type="noteref" id="r1" href="notes.xhtml#n1"><sup>1</sup></a> and another<a epub:type="noteref" id="r2" href="notes.xhtml#n2"><sup>2</sup></a>.</p>"""
+<p>A claim<a epub:type="noteref" id="r1" href="notes.xhtml#n1"><sup>1</sup></a> and another\
+<a epub:type="noteref" id="r2" href="notes.xhtml#n2"><sup>2</sup></a>.</p>"""
     notes = """<h1>Notes</h1><section epub:type="endnotes" role="doc-endnotes"><ol>
 <li id="n1"><p>First note. <a href="ch1.xhtml#r1" role="doc-backlink">Back</a></p></li>
 <li id="n2"><p>Second note. <a href="ch1.xhtml#r2" role="doc-backlink">Back</a></p></li>
@@ -90,7 +92,12 @@ def vertical_cjk(path: Path) -> Path:
     css = "html { writing-mode: vertical-rl; -epub-writing-mode: vertical-rl; }\n"
     body = "<h1>第一章</h1><p>天地玄黄，宇宙洪荒。</p><p>日月盈昃，辰宿列张。</p>"
     return build_epub(
-        path, [("ch1.xhtml", "第一章", body)], title="竖排", lang="zh", css=css, page_direction="rtl"
+        path,
+        [("ch1.xhtml", "第一章", body)],
+        title="竖排",
+        lang="zh",
+        css=css,
+        page_direction="rtl",
     )
 
 
@@ -108,7 +115,8 @@ def long_endnotes(path: Path) -> Path:
         f'<a id="r{n}" href="notes.xhtml#n{n}"><sup>{n}</sup></a>' for n in range(1, 41)
     ) + ".</p>"
     items = "".join(
-        f'<li id="n{n}"><a href="ch1.xhtml#r{n}">{n}.</a> {_long_note(n)}</li>' for n in range(1, 41)
+        f'<li id="n{n}"><a href="ch1.xhtml#r{n}">{n}.</a> {_long_note(n)}</li>'
+        for n in range(1, 41)
     )
     notes = f"<h1>Notes</h1><ol>{items}</ol>"
     return build_epub(path, [("ch1.xhtml", "Chapter", chapter), ("notes.xhtml", "Notes", notes)])
