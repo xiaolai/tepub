@@ -53,13 +53,13 @@ jobs:
       - name: Run tests
         run: python -m pytest --no-cov -q -rs
       # Gate on real errors only: F (undefined names, unused imports, dead code)
-      # and E9 (syntax/IO). The repo carries pre-existing E501 line-length debt
-      # across 56 sites; blocking a security release on that would mean the gate
-      # never passes, which is worse than not having one.
+      # and E9 (syntax/IO). These block the release for the code and the tests.
       - name: Lint (blocking - real errors)
-        run: ruff check src --select F,E9
+        run: ruff check src tests --select F,E9
+      # The full ruleset is advisory. A ruff release can add a rule, and a style
+      # rule should not stop a release on its own; the tree is clean as of 0.6.0.
       - name: Lint (advisory - full ruleset)
-        run: ruff check src || true
+        run: ruff check src tests || true
 
   build:
     name: Build distributions
