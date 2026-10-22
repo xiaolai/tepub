@@ -42,6 +42,13 @@ docs/
 .ruff_cache/
 .tepub/
 
+# AI tool state: machine-local, written wherever the tools run, never project
+# source. Bare names, not rules anchored to this directory, so a copy written
+# in a subdirectory is covered too. .codex/, CLAUDE.md and AGENTS.md are already
+# covered at any depth by the cc-suite block below.
+.cc-suite/
+.cc-suite.md
+
 # >>> cc-suite >>>
 # cc-suite-schema: 6
 # AI assistant local state
