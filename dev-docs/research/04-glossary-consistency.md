@@ -113,8 +113,9 @@ people decide what to do about them.
   "disregard translation constraints due to overconfidence in their initial
   outputs". Their fix was a second pass that names the unmet constraints and
   asks for a revision. It improved constraint accuracy by about 15% over
-  plain prompting, across four tasks ([Translate-and-Revise, arXiv
-  2407.13164](https://arxiv.org/abs/2407.13164v1)). This is the same move as
+  plain prompting, across four tasks ([Translate-and-Revise, CCL
+  2024](https://aclanthology.org/2024.ccl-1.82/) · [arXiv
+  2407.13164v1](https://arxiv.org/abs/2407.13164v1)). This is the same move as
   tepub's markup retry, which names what went missing.
 - **Shared-task evidence.** The WMT25 terminology task compared three
   conditions: no terms, the proper terms, and random terms. Proper
